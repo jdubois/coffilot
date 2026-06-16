@@ -37,7 +37,9 @@ agent with **Fix with Copilot**.
 - **Advisor scans (with BootUI)** &mdash; when the running app exposes
   [BootUI](https://github.com/jdubois/boot-ui), a toggle enables its MCP server and
   the advisor scans (architecture, Spring, security, Hibernate, …); findings can be
-  sent to the agent with one click.
+  sent to the agent with one click. A **Register with Copilot** button can also wire
+  the running MCP server into the Copilot CLI config so the agent can call the scans
+  directly as native MCP tools.
 
 ## Graceful degradation by capability
 

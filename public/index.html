@@ -946,6 +946,7 @@
                 data-tip="Run BootUI's MCP server inside the running app so its advisor scans (architecture, security, Hibernate, …) can analyze the project from this console."
                 >&#9432;</span
               >
+              <button id="mcp-register" class="fix tiny" style="margin-left: auto" hidden>Register with Copilot</button>
             </div>
             <div id="mcp-scans" class="scans">
               <span class="muted" style="font-size: 12px"
@@ -1044,6 +1045,7 @@
       const mcpState = document.getElementById("mcp-state");
       const mcpScansEl = document.getElementById("mcp-scans");
       const mcpResultEl = document.getElementById("mcp-result");
+      const mcpRegisterBtn = document.getElementById("mcp-register");
       let caps = {};
 
       if (warmCmd) {
@@ -1317,6 +1319,22 @@
       // ---- BootUI MCP server panel ------------------------------------------
       let mcpScansLoaded = false;
 
+      // Offer "Register with Copilot" only while the MCP server is enabled (and
+      // therefore reachable). Reset the button's label/enabled state only on the
+      // hidden→visible transition so a recent "Asked Copilot ✓" survives the
+      // frequent metrics re-renders.
+      function showMcpRegister(show) {
+        if (!show) {
+          mcpRegisterBtn.hidden = true;
+          return;
+        }
+        if (mcpRegisterBtn.hidden) {
+          mcpRegisterBtn.hidden = false;
+          mcpRegisterBtn.disabled = false;
+          mcpRegisterBtn.textContent = "Register with Copilot";
+        }
+      }
+
       // The MCP server lives inside the running app, so the toggle is only
       // actionable while a BootUI app (dev profile) exposes its endpoint. The
       // row stays visible in Settings either way; when unavailable we grey out
@@ -1327,6 +1345,7 @@
         mcpToggle.disabled = true;
         mcpToggleLabel.classList.add("disabled");
         mcpState.textContent = "";
+        showMcpRegister(false);
         mcpScansEl.innerHTML =
           '<span class="muted" style="font-size:12px">Start a BootUI app (dev profile) with <strong>Run</strong> to manage its MCP server and advisor scans.</span>';
         mcpResultEl.innerHTML = "";
@@ -1342,6 +1361,7 @@
         const enabled = mcp.enabled === true;
         mcpToggle.checked = enabled;
         mcpState.textContent = "";
+        showMcpRegister(enabled);
         if (!enabled) {
           mcpScansLoaded = false;
           mcpScansEl.innerHTML =
@@ -1371,6 +1391,7 @@
         const enabled = st.enabled === true;
         mcpToggle.checked = enabled;
         mcpState.textContent = "";
+        showMcpRegister(enabled);
         const scans = (st && st.scans) || [];
         if (!enabled) {
           mcpScansLoaded = false;
@@ -1855,6 +1876,12 @@
         await post("/api/mcp/toggle", { enabled });
         // Reflect the server's actual state and (re)load advisor scans.
         loadMcpScans();
+      };
+
+      mcpRegisterBtn.onclick = async () => {
+        mcpRegisterBtn.disabled = true;
+        mcpRegisterBtn.textContent = "Asked Copilot \u2713";
+        await post("/api/fix", { kind: "register-mcp" });
       };
 
       let lastRunnerLabel = null;
