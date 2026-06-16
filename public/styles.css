@@ -796,6 +796,39 @@ aside h2 {
 .tab-spin {
   margin-left: 0.1rem;
 }
+/* Full-cover overlay shown until the canvas has fetched its first state,
+         so opening Coffilot never flashes empty/placeholder panels. Fades out
+         (and is removed from the a11y tree) once the UI is populated. */
+#loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--background-color-default, #ffffff);
+  transition: opacity 0.2s ease;
+}
+#loading-overlay.hide {
+  opacity: 0;
+  pointer-events: none;
+}
+.loading-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--text-color-muted, #656d76);
+}
+.loading-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--border-color-default, #d0d7de);
+  border-top-color: var(--true-color-blue, #0969da);
+  animation: cof-spin 0.7s linear infinite;
+  flex: none;
+  display: inline-block;
+}
 .tprogress {
   height: 6px;
   border-radius: 3px;
