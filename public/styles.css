@@ -433,6 +433,10 @@ aside h2 {
   color: var(--true-color-blue, #0969da);
   border-color: var(--true-color-blue, #0969da);
 }
+.src.quarkus {
+  color: var(--true-color-purple, #8250df);
+  border-color: var(--true-color-purple, #8250df);
+}
 .src.process {
   color: var(--text-color-muted, #656d76);
 }

@@ -208,16 +208,16 @@
             </div>
           </div>
 
-          <!-- Spring Boot profiles (Spring only) -->
+          <!-- Run config profile (Spring Boot / Quarkus only) -->
           <div class="set-row" id="set-spring" hidden>
-            <label class="cap-label">Spring Boot profiles</label>
+            <label class="cap-label" id="lbl-profiles">Spring Boot profiles</label>
             <span class="combo">
               <input
                 id="in-profiles"
                 size="14"
                 value="dev"
                 autocomplete="off"
-                title="Spring Boot profiles to activate when running (spring-boot.run.profiles)."
+                title="Config profile(s) to activate when running (Spring spring-boot.run.profiles / Quarkus quarkus.profile)."
               />
               <div class="combo-menu" id="spring-menu" hidden></div>
             </span>
@@ -258,7 +258,7 @@
             >
           </div>
 
-          <!-- Use a random HTTP port (Spring only) -->
+          <!-- Use a random HTTP port (Spring Boot / Quarkus only) -->
           <div class="set-row switch-row" id="set-randomport" hidden>
             <label class="switch" id="randomport-toggle">
               <input type="checkbox" id="in-randomport" />
