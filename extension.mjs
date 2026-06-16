@@ -2294,11 +2294,62 @@ function killChild(child) {
 }
 
 /**
+ * Halt a warm build's daemon. A warm Build/Test/Package runs inside a persistent
+ * build daemon — the Maven Daemon (mvnd) or the Gradle daemon — whose work lives
+ * in a SEPARATE process, not in the spawned client's process group. So killing
+ * the client (killChild) stops the streaming wrapper but can leave the daemon
+ * compiling/testing in the background (CPU stays high, the run never really
+ * stops). The Run lane never hits this because it runs the app as a direct child
+ * in the killed group. The reliable, daemon-agnostic cancel is the tool's own
+ * `--stop`, which we've verified halts a *busy* daemon promptly. This trades the
+ * warm JVM away on an explicit Stop (the next build starts cold), which is the
+ * right call: Stop means stop, and the warm tier exists for back-to-back builds,
+ * not the build→Stop path. Best-effort and fire-and-forget.
+ */
+function stopBuildDaemon(op) {
+  try {
+    let bin;
+    if (buildTool === "gradle") {
+      bin = baseRunner().bin; // ./gradlew or a system gradle
+    } else if (buildTool === "maven") {
+      const m = detectMvnd();
+      if (!m.available) return; // a warm Maven build only uses a daemon via mvnd
+      bin = m.path;
+    } else {
+      return;
+    }
+    pushConsole(
+      `[coffilot] stopping the ${buildTool === "gradle" ? "Gradle" : "Maven (mvnd)"} daemon\u2026`,
+      "stdout",
+      op,
+    );
+    // Detached + ignored stdio so it outlives our own shutdown path and finishes
+    // stopping the daemon even if the extension is exiting; shell on Windows
+    // because gradlew.bat / mvnd.cmd are batch scripts.
+    const stopper = spawn(bin, ["--stop"], {
+      cwd: workspacePath,
+      env: toolEnv(),
+      stdio: "ignore",
+      shell: isWindows,
+      detached: !isWindows,
+    });
+    stopper.on("error", () => {
+      /* tool missing / already gone — the client kill above is the fallback */
+    });
+    stopper.unref?.();
+  } catch {
+    /* best effort */
+  }
+}
+
+/**
  * Stop one lane's process, the whole build group (op="maven" → build/test/
  * package), or all of them when `op` is omitted. The Run lane also tears down
- * metrics polling and live reload; the build lanes just kill the shared child.
- * Lanes are independent, so stopping the build group leaves Run running.
- * ("maven" names the group for back-compat; it applies to Gradle projects too.)
+ * metrics polling and live reload; the build lanes kill the shared child and,
+ * when the build ran warm, also stop the build daemon that owns the real work
+ * (see stopBuildDaemon). Lanes are independent, so stopping the build group
+ * leaves Run running. ("maven" names the group for back-compat; it applies to
+ * Gradle projects too.)
  */
 function stopApp(op) {
   let targets;
@@ -2306,17 +2357,22 @@ function stopApp(op) {
   else if (op && lanes[op]) targets = [op];
   else targets = ["build", "test", "package", "run"];
   let stopped = false;
+  let warmBuildOp = null; // a build lane whose work is inside a daemon
   for (const o of targets) {
     if (o === "run") {
       stopMetricsPolling();
       stopLiveReload();
     }
-    const child = lanes[o].child;
+    const lane = lanes[o];
+    const child = lane.child;
     if (child) {
       killChild(child);
       stopped = true;
+      if (o !== "run" && lane.warm) warmBuildOp = o;
     }
   }
+  // Build lanes are serialized, so at most one warm daemon build is ever live.
+  if (warmBuildOp) stopBuildDaemon(warmBuildOp);
   return stopped ? { ok: true, stopped: true } : { ok: true, stopped: false, note: "Nothing was running." };
 }
 
