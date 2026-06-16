@@ -24,9 +24,19 @@
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, writeFileSync, watch as fsWatch } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  mkdirSync,
+  writeFileSync,
+  unlinkSync,
+  watch as fsWatch,
+} from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, createHash } from "node:crypto";
+import { inflateRawSync } from "node:zlib";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -737,7 +747,24 @@ let lastTestTotal = loadLastTestTotal();
 // tagged with the capabilities detectable from its own build file: "runnable"
 // (a Spring Boot app, so it can be launched with spring-boot:run / bootRun),
 // springBoot, actuator, devtools, and bootui. These drive graceful UI degradation.
+// Non-Spring modules additionally carry "mainClass" (a configured main class, so
+// the generic runner can fall back to `java -cp …`) and, for Gradle, "application"
+// (the application plugin, whose `run` task is the canonical generic launcher).
 let projectModules = null;
+
+// A configured main class, read from common Maven run/packaging plugin config or
+// properties. Used by the generic runner when no executable jar is produced.
+function pomMainClass(xml) {
+  for (const re of [
+    /<exec\.mainClass>\s*([\w.$]+)\s*<\/exec\.mainClass>/, // exec-maven-plugin property
+    /<start-class>\s*([\w.$]+)\s*<\/start-class>/, // Spring Boot / generic start-class property
+    /<mainClass>\s*([\w.$]+)\s*<\/mainClass>/, // jar / shade / assembly / exec plugin config
+  ]) {
+    const m = xml.match(re);
+    if (m) return m[1];
+  }
+  return null;
+}
 
 // Per-pom capability flags, derived purely from the pom text (cheap + offline).
 function pomCaps(xml, name) {
@@ -748,7 +775,34 @@ function pomCaps(xml, name) {
     actuator: xml.includes("spring-boot-starter-actuator"),
     devtools: xml.includes("spring-boot-devtools"),
     bootui: /bootui-spring-boot-starter|julien-dubois\.bootui|jdubois\.bootui/.test(xml),
+    mainClass: pomMainClass(xml),
   };
+}
+
+// A configured main class from a Gradle build script: the application/JavaExec
+// `mainClass`, the legacy `mainClassName`, or a jar `Main-Class` manifest attribute.
+function gradleMainClass(text) {
+  for (const re of [
+    /mainClass\s*\.\s*set\s*\(\s*['"]([\w.$]+)['"]\s*\)/, // mainClass.set("…")
+    /mainClass\s*=\s*['"]([\w.$]+)['"]/, // mainClass = "…"
+    /mainClassName\s*=\s*['"]([\w.$]+)['"]/, // legacy mainClassName = "…"
+    /['"]Main-Class['"]\s*[:=]\s*['"]([\w.$]+)['"]/, // manifest attribute
+  ]) {
+    const m = text.match(re);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+// Whether a Gradle build script applies the `application` plugin (Groovy or Kotlin
+// DSL, plugins {} block or legacy apply). Its `run` task is the generic launcher.
+function gradleHasApplicationPlugin(text) {
+  return (
+    /id\s*\(?\s*['"]application['"]/.test(text) ||
+    /apply\s+plugin:\s*['"]application['"]/.test(text) ||
+    /^\s*application\s*\{/m.test(text) ||
+    /^\s*application\s*$/m.test(text)
+  );
 }
 
 // Per-build-file capability flags for Gradle, derived from the build script text
@@ -761,6 +815,8 @@ function gradleCaps(text, name) {
     actuator: text.includes("spring-boot-starter-actuator"),
     devtools: text.includes("spring-boot-devtools"),
     bootui: /bootui-spring-boot-starter|julien-dubois\.bootui|jdubois\.bootui/.test(text),
+    application: gradleHasApplicationPlugin(text),
+    mainClass: gradleMainClass(text),
   };
 }
 
@@ -1797,16 +1853,51 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
     return { ok: true, started: true, mode: "spring", command: `${baseRunner().label} ${args.join(" ")}` };
   }
 
-  // Pure-Java: build the module, then launch its jar with `java -jar`.
+  // Non-Spring: hand off to the generic runner (Gradle application run /
+  // executable jar via java -jar / configured main class via java -cp).
   runPureJava({ module, mavenProfiles });
   return { ok: true, started: true, mode: "java" };
 }
 
-/** Two-phase pure-Java launch: build (compile/package gate) then java -jar.
- * Both phases run on the independent Run lane so launching the app never blocks
- * (or is blocked by) a Build/Test on the shared build lane. */
+/** Mark the Run lane failed with a console message (used by the generic runner
+ * when it can't find anything launchable). */
+function failRunLane(msg) {
+  pushConsole(`[coffilot] ${msg}`, "stderr", "run");
+  lanes.run.phase = "failed";
+  lanes.run.exitCode = -1;
+  broadcast("status", statusSnapshot());
+}
+
+/** Two-phase pure-Java launch for non-Spring modules. Both phases run on the
+ * independent Run lane so launching the app never blocks (or is blocked by) a
+ * Build/Test on the shared build lane. The launch strategy degrades by capability:
+ *   1. Gradle `application` plugin  -> `gradle :module:run` (resolves classpath +
+ *      main class and forks the app JVM — the canonical generic launcher).
+ *   2. An executable jar            -> `java -jar <jar>` (fat/shaded jars, or a jar
+ *      whose manifest sets Main-Class).
+ *   3. A configured main class      -> `java -cp <runtime classpath> <mainClass>`
+ *      (Maven reconstructs the classpath via dependency:build-classpath; Gradle
+ *      falls back to compiled classes + resources).
+ * If none apply, the lane fails with actionable guidance. */
 async function runPureJava({ module, mavenProfiles }) {
   app.runMode = "java";
+  const mod = listModules().find((m) => m.name === (module || "")) || null;
+
+  // 1. Gradle application plugin: `run` compiles and launches in one step.
+  if (buildTool === "gradle" && mod && mod.application) {
+    const r = resolveRunner(false);
+    const task = gradleTaskPath(module, "run");
+    pushConsole(`[coffilot] launching via the Gradle application plugin (${task}).`, "stdout", "run");
+    spawnTool("run", [task, "--console=plain"], "running", {
+      bin: r.bin,
+      label: r.label,
+      env: toolEnv(),
+      onLine: detectPort,
+    });
+    return;
+  }
+
+  // Otherwise build, then resolve a jar / main class to launch.
   if (buildTool === "gradle") {
     const r = resolveRunner(false);
     const buildArgs = [gradleTaskPath(module, "build"), "-x", "test", "--console=plain"];
@@ -1821,21 +1912,107 @@ async function runPureJava({ module, mavenProfiles }) {
     if (code !== 0) return; // run lane already 'failed' -> "fix startup" path
   }
 
-  const jar = await findRunnableJar(module);
-  if (!jar) {
-    const dirLabel = buildTool === "gradle" ? "build/libs/" : "target/";
-    pushConsole(`[coffilot] no runnable .jar found under ${dirLabel} for this module.`, "stderr", "run");
-    lanes.run.phase = "failed";
-    lanes.run.exitCode = -1;
-    broadcast("status", statusSnapshot());
+  // 2. Prefer an executable jar (its manifest declares a Main-Class).
+  const found = await findLaunchJar(module);
+  if (found && found.mainClass) {
+    spawnTool("run", [NATIVE_ACCESS_FLAG, "-jar", found.jar], "running", {
+      bin: "java",
+      label: "java",
+      onLine: detectPort,
+    });
     return;
   }
-  spawnTool("run", [NATIVE_ACCESS_FLAG, "-jar", jar], "running", { bin: "java", label: "java", onLine: detectPort });
+
+  // 3. No executable jar — launch a configured main class on a runtime classpath.
+  const mainClass = mod && mod.mainClass;
+  if (mainClass) {
+    const cp = await runtimeClasspath(module, mavenProfiles);
+    if (cp) {
+      pushConsole(`[coffilot] launching ${mainClass} with java -cp.`, "stdout", "run");
+      spawnTool("run", [NATIVE_ACCESS_FLAG, "-cp", cp, mainClass], "running", {
+        bin: "java",
+        label: "java",
+        onLine: detectPort,
+      });
+      return;
+    }
+  }
+
+  // 4. Last resort: a candidate jar exists but we couldn't confirm an executable
+  //    manifest (and no main class was configured). Try `java -jar` anyway — it
+  //    preserves the legacy behavior and may still carry a Main-Class we failed
+  //    to read; the run lane surfaces a "fix startup" path if it doesn't.
+  if (found && found.jar) {
+    pushConsole(
+      "[coffilot] no executable manifest or configured main class confirmed; attempting java -jar as a fallback.",
+      "stdout",
+      "run",
+    );
+    spawnTool("run", [NATIVE_ACCESS_FLAG, "-jar", found.jar], "running", {
+      bin: "java",
+      label: "java",
+      onLine: detectPort,
+    });
+    return;
+  }
+
+  // 5. Nothing launchable.
+  const dirLabel = buildTool === "gradle" ? "build/libs/" : "target/";
+  const hint =
+    buildTool === "gradle"
+      ? "apply the Gradle `application` plugin (and set `mainClass`), or configure a `Main-Class` jar manifest"
+      : "set a `<mainClass>` on the Maven Jar/Shade/Assembly plugin, or an `<exec.mainClass>` property";
+  failRunLane(
+    `no runnable .jar under ${dirLabel} and no main class is configured for this module — ${hint}, then Run again.`,
+  );
 }
 
-/** Best-effort pick of a module's main artifact jar (skip sources/javadoc, and
- * Gradle's non-executable `-plain.jar`). */
-async function findRunnableJar(module) {
+/** Assemble a runtime classpath string for launching a module's main class.
+ * Maven asks the dependency plugin for the resolved runtime dependencies and
+ * prepends the module's compiled classes. Gradle (without the application plugin,
+ * which would otherwise be used) can't resolve external dependencies cheaply, so
+ * it falls back to the compiled classes + resources and warns. */
+async function runtimeClasspath(module, mavenProfiles) {
+  const moduleDir = path.join(workspacePath, module || "");
+  if (buildTool === "gradle") {
+    const classes = path.join(moduleDir, "build", "classes", "java", "main");
+    const resources = path.join(moduleDir, "build", "resources", "main");
+    pushConsole(
+      "[coffilot] no application plugin detected; launching with compiled classes only — external dependencies may be missing. " +
+        "Apply the Gradle `application` plugin for a complete runtime classpath.",
+      "stderr",
+      "run",
+    );
+    return [classes, resources].filter(existsSync).join(path.delimiter) || classes;
+  }
+
+  const cpFile = path.join(os.tmpdir(), `coffilot-cp-${process.pid}-${Date.now()}.txt`);
+  const args = ["-ntp", "-q"];
+  if (module) args.push("-pl", module);
+  if (mavenProfiles && mavenProfiles.trim()) args.push("-P", mavenProfiles.trim());
+  args.push("dependency:build-classpath", `-Dmdep.outputFile=${cpFile}`, "-Dmdep.includeScope=runtime");
+  const code = await spawnTool("run", args, "building", {});
+  let deps = "";
+  try {
+    deps = readFileSync(cpFile, "utf8").trim();
+  } catch {
+    /* no dependencies, or the plugin failed — fall back to classes only */
+  }
+  try {
+    if (existsSync(cpFile)) unlinkSync(cpFile);
+  } catch {
+    /* best-effort cleanup */
+  }
+  if (code !== 0 && !deps) return null;
+  const classes = path.join(moduleDir, "target", "classes");
+  return deps ? classes + path.delimiter + deps : classes;
+}
+
+/** Pick a module's launch jar, preferring an executable one. Skips sources/javadoc
+ * and Gradle's non-executable `-plain.jar`. Returns `{ jar, mainClass }` where
+ * `mainClass` is the manifest's Main-Class (non-null only when the jar is
+ * executable), or null when no candidate jar exists. */
+async function findLaunchJar(module) {
   const sub = buildTool === "gradle" ? path.join("build", "libs") : "target";
   const dir = path.join(workspacePath, module || "", sub);
   let files;
@@ -1849,9 +2026,75 @@ async function findRunnableJar(module) {
       f.endsWith(".jar") && !f.endsWith("-sources.jar") && !f.endsWith("-javadoc.jar") && !f.endsWith("-plain.jar"),
   );
   if (!jars.length) return null;
-  // The shortest name is the main artifact (classifier-less) in most layouts.
+  // Shortest name first (the classifier-less main artifact in most layouts), but an
+  // executable jar (e.g. a shaded `-all.jar`) wins regardless of name length.
   jars.sort((a, b) => a.length - b.length);
-  return path.join(dir, jars[0]);
+  let fallback = null;
+  for (const name of jars) {
+    const full = path.join(dir, name);
+    if (fallback === null) fallback = full;
+    const mainClass = jarMainClass(full);
+    if (mainClass) return { jar: full, mainClass };
+  }
+  return { jar: fallback, mainClass: null };
+}
+
+/** Read a jar's `Main-Class` manifest attribute, or null if it isn't executable
+ * (or can't be read). A jar is a zip; this parses the central directory and
+ * inflates only META-INF/MANIFEST.MF, so it needs no external tools. */
+function jarMainClass(jarPath) {
+  try {
+    const manifest = readZipEntry(jarPath, "META-INF/MANIFEST.MF");
+    if (!manifest) return null;
+    // Manifests fold long values onto continuation lines that start with a space.
+    const unfolded = manifest.toString("utf8").replace(/\r\n/g, "\n").replace(/\n /g, "");
+    const m = unfolded.match(/^Main-Class:\s*(\S+)\s*$/m);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Extract a single entry from a zip file by name, returning its bytes (or null).
+ * Minimal reader: locate the End Of Central Directory record, walk the central
+ * directory to the named entry, then read + inflate its local data. Handles the
+ * stored (0) and deflate (8) methods, which cover every real jar manifest. */
+function readZipEntry(zipPath, entryName) {
+  const buf = readFileSync(zipPath);
+  const EOCD_SIG = 0x06054b50;
+  let eocd = -1;
+  const minEocd = Math.max(0, buf.length - 22 - 0xffff);
+  for (let i = buf.length - 22; i >= minEocd; i--) {
+    if (buf.readUInt32LE(i) === EOCD_SIG) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) return null;
+  const cdCount = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  for (let n = 0; n < cdCount; n++) {
+    if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) break;
+    const method = buf.readUInt16LE(p + 10);
+    const compSize = buf.readUInt32LE(p + 20);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    const localOff = buf.readUInt32LE(p + 42);
+    const name = buf.toString("utf8", p + 46, p + 46 + nameLen);
+    if (name === entryName) {
+      if (buf.readUInt32LE(localOff) !== 0x04034b50) return null;
+      const lNameLen = buf.readUInt16LE(localOff + 26);
+      const lExtraLen = buf.readUInt16LE(localOff + 28);
+      const dataStart = localOff + 30 + lNameLen + lExtraLen;
+      const data = buf.subarray(dataStart, dataStart + compSize);
+      if (method === 0) return Buffer.from(data);
+      if (method === 8) return inflateRawSync(data);
+      return null;
+    }
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return null;
 }
 
 /** SIGTERM (then SIGKILL) a child process tree, cross-platform. */
@@ -2328,7 +2571,7 @@ function buildFixPrompt(kind, extra = {}) {
     }
     case "run-java":
       return [
-        "The application failed to start as a plain Java process (`java -jar`). Diagnose the startup failure (missing Main-Class, classpath, uncaught exception, port already in use, etc.) and fix it.",
+        "The application failed to start as a non-Spring Java process (the generic runner: `gradle run`, `java -jar`, or `java -cp <classpath> <mainClass>`). Diagnose the startup failure (missing/incorrect main class, missing classpath entries or dependencies, uncaught exception, port already in use, etc.) and fix it.",
         where,
         "Recent output:",
         codeBlock(tail("run", 70)),
@@ -2936,7 +3179,7 @@ function makeCanvas() {
       {
         name: "start_app",
         description:
-          "Launch the app (returns immediately; output streams to the canvas). Spring Boot modules run via spring-boot:run (Maven) or bootRun (Gradle); otherwise the module is built and run with java -jar. Use the 'dev' profile so BootUI activates and live metrics become available.",
+          "Launch the app (returns immediately; output streams to the canvas). Spring Boot modules run via spring-boot:run (Maven) or bootRun (Gradle). Non-Spring modules use the generic runner: the Gradle application plugin's run task, else an executable jar via java -jar, else the configured main class via java -cp. Use the 'dev' profile so BootUI activates and live metrics become available.",
         inputSchema: {
           type: "object",
           properties: {

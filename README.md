@@ -26,7 +26,9 @@ wins; when neither is found the console says so and stays disabled until one is 
 - **Package** &mdash; Maven `./mvnw -ntp package` or Gradle `./gradlew assemble`,
   streamed live like Build.
 - **Run** &mdash; `spring-boot:run` (Maven) / `bootRun` (Gradle) for a Spring Boot
-  module (+ Spring profiles), or **build + `java -jar`** for a plain-Java module.
+  module (+ Spring profiles). For a non-Spring module the **generic runner** kicks
+  in: the Gradle `application` plugin's `run` task, else build + `java -jar` for an
+  executable jar, else the module's configured main class via `java -cp`.
   Optionally opens a browser window at the app once it is up.
 - **Parallel lanes** &mdash; Build / Test / Package share one build lane while Run
   is independent, so you can keep the app running while you re-test.
@@ -55,13 +57,13 @@ wins; when neither is found the console says so and stays disabled until one is 
 The console adapts to whatever the project provides, detected from the build files
 (static) and confirmed against the running app (runtime):
 
-| Tier                   | Detected from                                    | What the console offers                                                                                                                                |
-| ---------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **(none)**             | no Maven or Gradle markers                       | A "needs Maven or Gradle" notice; the Build / Test / Package / Run actions stay disabled                                                               |
-| **Java** (base)        | `pom.xml` / `mvnw` or `build.gradle` / `gradlew` | Build, Test (graphical JUnit report), Package                                                                                                          |
-| **Spring Boot**        | Spring Boot Maven plugin / Gradle plugin         | Run via `spring-boot:run` (Maven) or `bootRun` (Gradle) + editable Spring profiles. (No Spring Boot ⇒ Run builds the module and launches `java -jar`.) |
-| **Actuator** (runtime) | `/actuator/*` answers                            | Live metrics normalized from Actuator (heap, threads, health, uptime)                                                                                  |
-| **BootUI** (runtime)   | `/bootui/api/*` answers                          | Rich BootUI metrics **and** the MCP advisor-scan panel                                                                                                 |
+| Tier                   | Detected from                                    | What the console offers                                                                                                                                                                                                                 |
+| ---------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **(none)**             | no Maven or Gradle markers                       | A "needs Maven or Gradle" notice; the Build / Test / Package / Run actions stay disabled                                                                                                                                                |
+| **Java** (base)        | `pom.xml` / `mvnw` or `build.gradle` / `gradlew` | Build, Test (graphical JUnit report), Package                                                                                                                                                                                           |
+| **Spring Boot**        | Spring Boot Maven plugin / Gradle plugin         | Run via `spring-boot:run` (Maven) or `bootRun` (Gradle) + editable Spring profiles. (No Spring Boot ⇒ the generic runner uses the Gradle `application` plugin, an executable `java -jar`, or the configured main class via `java -cp`.) |
+| **Actuator** (runtime) | `/actuator/*` answers                            | Live metrics normalized from Actuator (heap, threads, health, uptime)                                                                                                                                                                   |
+| **BootUI** (runtime)   | `/bootui/api/*` answers                          | Rich BootUI metrics **and** the MCP advisor-scan panel                                                                                                                                                                                  |
 
 A capability summary is shown in the status bar (including the active build tool), and
 the metrics panel carries a small badge (`BootUI` / `Actuator` / `process`) indicating
