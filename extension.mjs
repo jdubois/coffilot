@@ -1591,6 +1591,12 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
       // mvnw.cmd / mvnd.cmd / gradlew.bat are batch scripts; modern Node refuses
       // to spawn .cmd/.bat directly, so route through the shell on Windows.
       shell: isWindows,
+      // POSIX: give the build tool its own process group so Stop can signal the
+      // whole tree. Maven Surefire (and Gradle) fork a separate test/run JVM that
+      // ignores a SIGTERM aimed only at the wrapper, so killing the single PID
+      // leaves the real work running. On Windows we kill the tree via taskkill /T
+      // instead, and `detached` there would spawn an unwanted console window.
+      detached: !isWindows,
     });
     lane.child = child;
 
@@ -2261,19 +2267,30 @@ function killChild(child) {
     } catch {
       /* ignore */
     }
-  } else {
-    child.kill("SIGTERM");
-    // Escalate if it ignores SIGTERM.
-    setTimeout(() => {
-      if (child && !child.killed) {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          /* already gone */
-        }
-      }
-    }, 5000);
+    return;
   }
+  // POSIX: the child was spawned detached, so it leads its own process group.
+  // Signalling the negative PID hits every member of that group — the wrapper
+  // plus any forked test/run JVM (Surefire, Gradle worker) — instead of only the
+  // wrapper, which is what made Stop appear to do nothing while tests kept going.
+  const signalGroup = (sig) => {
+    try {
+      process.kill(-child.pid, sig);
+    } catch {
+      // Group already gone (or never a leader): fall back to the lone process.
+      try {
+        child.kill(sig);
+      } catch {
+        /* already gone */
+      }
+    }
+  };
+  signalGroup("SIGTERM");
+  // Escalate unconditionally after a grace period. The group can still hold a
+  // member that ignored SIGTERM even after the wrapper itself exited, so we
+  // don't gate this on the tracked child's state; SIGKILL to an empty group is
+  // a harmless ESRCH that the catch above swallows.
+  setTimeout(() => signalGroup("SIGKILL"), 5000);
 }
 
 /**
@@ -2307,8 +2324,8 @@ function stopApp(op) {
 // Process shutdown — never let a spawned Maven/Java process outlive us.
 //
 // The host stops the extension by terminating this Node process (SIGTERM, or
-// SIGINT during a Ctrl-C). Our children are spawned *attached*, but on POSIX an
-// attached child is NOT killed when its parent dies — it is reparented to
+// SIGINT during a Ctrl-C). Our children run in their own process group, and on
+// POSIX such a child is NOT killed when its parent dies — it is reparented to
 // init/launchd and keeps running, holding its HTTP port. Closing the canvas
 // panel does not stop the app either (that is intentional; a panel can be
 // reopened). So the only safe place to guarantee no orphans is here, on the way
@@ -2333,11 +2350,19 @@ process.once("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.once("SIGINT", () => gracefulShutdown("SIGINT"));
 
 // Last-ditch synchronous sweep for any other exit path (process.exit elsewhere,
-// a handled fatal error). Only synchronous work runs during "exit".
+// a handled fatal error). Only synchronous work runs during "exit", so we
+// SIGKILL the process group directly rather than spawning taskkill. We don't
+// gate on child.killed: an earlier SIGTERM sets that flag while the forked JVM
+// tree is still alive, so checking it here would skip the very processes we need
+// to reap.
 process.on("exit", () => {
   for (const o of ["build", "test", "package", "run"]) {
     const child = lanes[o].child;
-    if (child && !child.killed) {
+    if (!child || !child.pid) continue;
+    try {
+      if (isWindows) child.kill("SIGKILL");
+      else process.kill(-child.pid, "SIGKILL");
+    } catch {
       try {
         child.kill("SIGKILL");
       } catch {
