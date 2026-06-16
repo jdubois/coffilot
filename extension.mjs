@@ -1975,6 +1975,24 @@ function buildFixPrompt(kind, extra = {}) {
         .filter(Boolean)
         .join("\n\n");
     }
+    case "register-mcp": {
+      const base = appBase();
+      const mcpUrl = base ? `${base}/bootui/api/mcp` : "http://127.0.0.1:<app-port>/bootui/api/mcp";
+      const cfg = JSON.stringify({ mcpServers: { bootui: { type: "http", url: mcpUrl } } }, null, 2);
+      return [
+        "Register this app's running BootUI MCP server with the GitHub Copilot CLI so its advisor scans (architecture, security, Spring, Hibernate, …) become callable as native MCP tools in this chat.",
+        `The BootUI MCP server is exposed by the running app over Streamable HTTP (JSON-RPC) at \`${mcpUrl}\`.`,
+        "Add it to the Copilot CLI MCP config (`~/.copilot/mcp-config.json`; create the file if it doesn't exist) under the `mcpServers` map, keyed as `bootui`:",
+        codeBlock(cfg, "json"),
+        [
+          "- Merge into any existing `mcpServers` block rather than overwriting it; if a `bootui` entry already exists, update its `url` instead of duplicating it.",
+          "- The URL points at the current run, so the app must stay up with its MCP server enabled for the tools to respond. If the app's port changes on a later run, update the `url`.",
+          "- After saving, the Copilot CLI must pick up the new server: reload the MCP config (e.g. the `/mcp` command) or restart the CLI, then confirm the `bootui` tools are listed.",
+        ].join("\n"),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
     default:
       return null;
   }
@@ -2132,6 +2150,21 @@ async function loadIndex() {
   return indexHtml;
 }
 
+// Static iframe assets that carry no secrets and are therefore served without the
+// instance/token gate: the iframe loads them as subresources, which the browser
+// requests without the query string the token check relies on.
+const STATIC_ASSETS = {
+  "/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
+  "/app.js": { file: "app.js", type: "text/javascript; charset=utf-8" },
+};
+const staticCache = new Map();
+async function loadStatic(name) {
+  if (!staticCache.has(name)) {
+    staticCache.set(name, await readFile(path.join(__dirname, "public", name), "utf8"));
+  }
+  return staticCache.get(name);
+}
+
 function valid(url) {
   const instanceId = url.searchParams.get("instance");
   const token = url.searchParams.get("token");
@@ -2160,6 +2193,14 @@ function sendJson(res, code, data) {
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  if (req.method === "GET" && STATIC_ASSETS[url.pathname]) {
+    const asset = STATIC_ASSETS[url.pathname];
+    res.writeHead(200, { "Content-Type": asset.type });
+    res.end(await loadStatic(asset.file));
+    return;
+  }
+
   const instanceId = valid(url);
   if (!instanceId) {
     res.writeHead(403);

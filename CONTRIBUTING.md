@@ -29,9 +29,13 @@ and shells out to Maven to build / test / package / run the target Java project.
 extension.mjs            The extension: SDK wiring, canvas + actions, loopback HTTP
                          server, Maven runner, Surefire parser, metrics/MCP proxy,
                          and the "fix with Copilot" bridge.
-public/index.html        The iframe UI (toolbar, Build/Test/Package/Run tabs, live
-                         console, graphical test results, metrics + MCP panels),
-                         styled with the canvas theme tokens.
+public/index.html        The iframe UI markup (toolbar, Build/Test/Package/Run tabs,
+                         live console, graphical test results, metrics + MCP panels);
+                         links public/styles.css and public/app.js.
+public/styles.css        The iframe styles, using the canvas theme tokens. Served
+                         unauthenticated (no secrets) so the iframe can load it.
+public/app.js            The iframe client logic. Served unauthenticated (no secrets);
+                         it reads the instance/token from its URL to call /api/*.
 public/favicon.svg       The canvas icon the host shows for the extension (the host
                          probes the extension directory for public/favicon.svg).
 copilot-extension.json   Manifest ({ "name": "coffilot", "version": 1 }) used by the
@@ -56,8 +60,9 @@ project, so develop against a checkout of a Java app:
 
 2. Open a Copilot session on that project, reload extensions, and open the
    **Coffilot** canvas.
-3. After every change to `extension.mjs` or `public/index.html`, **reload
-   extensions** and re-open the canvas so the new code and iframe are picked up.
+3. After every change to `extension.mjs`, `public/index.html`, `public/styles.css`,
+   or `public/app.js`, **reload extensions** and re-open the canvas so the new code
+   and iframe are picked up.
 
 ### Debugging
 
