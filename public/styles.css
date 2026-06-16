@@ -18,17 +18,53 @@ body {
   line-height: var(--leading-body-medium, 20px);
 }
 header {
-  padding: 0.75rem 1rem;
+  padding: 0.75rem 3rem 0.75rem 1rem;
   border-bottom: 1px solid var(--border-color-default, #d0d7de);
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
   align-items: center;
+  position: relative;
+  /* Height of the toolbar's first row, set by the Build/Test/Run button groups
+     (group border + padding wrapping a button's border + padding + line-box).
+     Used to vertically center the absolutely-positioned refresh button on that
+     same row. */
+  --toolbar-row-h: calc(4px + 1.1rem + var(--leading-body-medium, 20px));
 }
 h1 {
   font-size: var(--text-title-medium, 16px);
   font-weight: var(--font-weight-semibold, 600);
   margin: 0 0.5rem 0 0;
+}
+/* Pinned to the header's top-right corner. Re-runs project discovery (build
+   tool, modules, Maven/Spring/Quarkus profiles, detected technologies). The
+   header reserves right padding so wrapping controls never slide under it. */
+.icon-btn {
+  position: absolute;
+  /* Center on the toolbar's first row instead of pinning to the very top, so
+     the icon lines up with the Build/Test/Run controls. */
+  top: calc(0.75rem + (var(--toolbar-row-h) - 30px) / 2);
+  right: 1rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: var(--text-color-muted, #8c959f);
+}
+.icon-btn svg {
+  width: 15px;
+  height: 15px;
+}
+.icon-btn:hover {
+  color: var(--text-color-default, #1f2328);
+}
+.icon-btn.is-busy {
+  cursor: progress;
+}
+.icon-btn.is-busy svg {
+  animation: cof-spin 0.7s linear infinite;
 }
 .btn-group {
   display: inline-flex;

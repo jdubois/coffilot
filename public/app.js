@@ -38,6 +38,7 @@ const mvnProfilesLabel = document.getElementById("lbl-mvn-profiles");
 const mvnProfilesCombo = document.getElementById("mvn-profiles-combo");
 const noToolBanner = document.getElementById("no-tool-banner");
 const btnRecheck = document.getElementById("btn-recheck");
+const btnRefresh = document.getElementById("btn-refresh");
 const warmBanner = document.getElementById("warm-banner");
 const warmMsg = document.getElementById("warm-msg");
 const warmCmd = document.getElementById("warm-cmd");
@@ -1277,6 +1278,27 @@ if (btnRecheck) {
     } else {
       appendLine("[canvas] still no Maven or Gradle project detected.", "stderr");
     }
+  });
+}
+
+// Header refresh button: re-run the full project discovery the extension does at
+// launch (build tool, modules, Maven/Spring/Quarkus profiles, detected
+// technologies) and re-apply it, without reloading the extension. Shares the
+// /api/recheck backend with "Check again"; the spinning icon signals progress.
+if (btnRefresh) {
+  btnRefresh.addEventListener("click", async () => {
+    if (btnRefresh.classList.contains("is-busy")) return;
+    btnRefresh.classList.add("is-busy");
+    btnRefresh.disabled = true;
+    const env = await postJson("/api/recheck");
+    if (env && !env.error) {
+      applyEnv(env);
+      appendLine(`[canvas] re-scanned project: ${env.toolLabel || env.buildTool || "no build tool"}.`, "stdout");
+    } else {
+      appendLine("[canvas] refresh failed" + (env && env.error ? `: ${env.error}` : "."), "stderr");
+    }
+    btnRefresh.classList.remove("is-busy");
+    btnRefresh.disabled = false;
   });
 }
 

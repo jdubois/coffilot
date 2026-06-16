@@ -115,6 +115,7 @@ async function recheckBuildTool() {
   javaVersion = undefined;
   mavenProfiles = null;
   springProfiles = null;
+  quarkusProfiles = null;
   session.log(`[coffilot] re-checked build tool: ${TOOL_LABEL || "none"} at ${workspacePath}`, { level: "info" });
   return envSnapshot();
 }
