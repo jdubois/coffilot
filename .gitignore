@@ -13,3 +13,7 @@ npm-debug.log*
 
 # Misc
 *.tmp
+
+# Runtime state written by the extension when run from this clone
+# (e.g. via a ~/.copilot/extensions/coffilot symlink).
+artifacts/
