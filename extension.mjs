@@ -42,11 +42,27 @@ const isWindows = process.platform === "win32";
 
 const session = await joinSession({ canvases: [makeCanvas()] });
 
-// Resolve the project root. session.workspacePath points at the session artifacts
-// folder, not the repo, so we walk up from this extension's own location (it lives
-// at <repo>/.github/extensions/coffilot) until we find a directory owning a Maven
-// or Gradle build marker, then fall back gracefully.
-const workspacePath = findProjectRoot();
+// Project marker files used to locate the root and decide the build tool. Defined
+// here (before the resolution below) so findProjectRoot/detectBuildTool can read
+// them without hitting a temporal-dead-zone error during early startup.
+const MAVEN_MARKERS = ["pom.xml", "mvnw", "mvnw.cmd"];
+const GRADLE_MARKERS = [
+  "build.gradle",
+  "build.gradle.kts",
+  "settings.gradle",
+  "settings.gradle.kts",
+  "gradlew",
+  "gradlew.bat",
+];
+
+// Resolve the project root. The authoritative source is the session's primary
+// working directory (the project the user opened), read from the permission-paths
+// API. session.workspacePath is the session-artifacts folder, never the repo;
+// __dirname points into the coffilot repo for a user/global install; and the host
+// launches us with cwd=<COPILOT_HOME>, not the project. We fall back to __dirname
+// (project-embedded install at <repo>/.github/extensions/coffilot) and cwd.
+const sessionPrimaryDir = await getSessionPrimaryDir();
+const workspacePath = findProjectRoot(sessionPrimaryDir);
 
 // Auto-detect the build tool from the project. Maven wins when both are present,
 // per Coffilot's "prefer Maven" rule; null means neither was found (degraded UI).
@@ -81,17 +97,6 @@ function toolEnv(extra) {
   }
   return env;
 }
-
-// Project marker files used to locate the root and decide the build tool.
-const MAVEN_MARKERS = ["pom.xml", "mvnw", "mvnw.cmd"];
-const GRADLE_MARKERS = [
-  "build.gradle",
-  "build.gradle.kts",
-  "settings.gradle",
-  "settings.gradle.kts",
-  "gradlew",
-  "gradlew.bat",
-];
 
 /** Decide the build tool for a project root: Maven preferred, else Gradle, else null. */
 function detectBuildTool(root) {
@@ -415,20 +420,45 @@ function freePort() {
   });
 }
 
-function findProjectRoot() {
+// Read the session's primary working directory (the project the user opened) via
+// the permission-paths API. This is the only reliable signal for a user/global
+// install, where the host runs the extension with cwd=<COPILOT_HOME> and __dirname
+// resolves into the coffilot repo. Older hosts may not implement it, so failures
+// are tolerated and we fall back to path heuristics.
+async function getSessionPrimaryDir() {
+  try {
+    const res = await session.rpc?.permissions?.paths?.list?.();
+    if (res && typeof res.primary === "string" && res.primary) return res.primary;
+  } catch (e) {
+    session.log(`[coffilot] could not read session working directory: ${e.message}`, { level: "warn" });
+  }
+  return null;
+}
+
+function findProjectRoot(primary) {
   const markers = [...MAVEN_MARKERS, ...GRADLE_MARKERS];
-  const owns = (d) => markers.some((f) => existsSync(path.join(d, f)));
-  let dir = __dirname;
-  for (let i = 0; i < 8; i++) {
-    if (owns(dir)) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  if (session.workspacePath && owns(session.workspacePath)) {
-    return session.workspacePath;
-  }
-  return session.workspacePath || process.cwd();
+  const owns = (dir) => markers.some((f) => existsSync(path.join(dir, f)));
+  // Walk up from `start` (max 8 hops) to the first directory that owns a Maven or
+  // Gradle build marker; null if `start` is falsy or none is found.
+  const walkUp = (start) => {
+    if (!start) return null;
+    let dir = start;
+    for (let i = 0; i < 8; i++) {
+      if (owns(dir)) return dir;
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return null;
+  };
+  // 1) The session's primary working directory is the project the user opened —
+  //    the most reliable signal, and the only one that works for a user/global
+  //    install (where the host runs the extension with cwd=<COPILOT_HOME> and
+  //    __dirname is the coffilot repo).
+  // 2) Project-embedded install (.github/extensions/coffilot): walk up from here.
+  // 3) Launch cwd, as a last resort for older hosts that don't expose (1).
+  // If nothing owns a build marker, still prefer the opened project dir over cwd.
+  return walkUp(primary) || walkUp(__dirname) || walkUp(process.cwd()) || primary || process.cwd();
 }
 
 // ---------------------------------------------------------------------------
@@ -2164,6 +2194,24 @@ function buildFixPrompt(kind, extra = {}) {
         .filter(Boolean)
         .join("\n\n");
     }
+    case "register-mcp": {
+      const base = appBase();
+      const mcpUrl = base ? `${base}/bootui/api/mcp` : "http://127.0.0.1:<app-port>/bootui/api/mcp";
+      const cfg = JSON.stringify({ mcpServers: { bootui: { type: "http", url: mcpUrl } } }, null, 2);
+      return [
+        "Register this app's running BootUI MCP server with the GitHub Copilot CLI so its advisor scans (architecture, security, Spring, Hibernate, …) become callable as native MCP tools in this chat.",
+        `The BootUI MCP server is exposed by the running app over Streamable HTTP (JSON-RPC) at \`${mcpUrl}\`.`,
+        "Add it to the Copilot CLI MCP config (`~/.copilot/mcp-config.json`; create the file if it doesn't exist) under the `mcpServers` map, keyed as `bootui`:",
+        codeBlock(cfg, "json"),
+        [
+          "- Merge into any existing `mcpServers` block rather than overwriting it; if a `bootui` entry already exists, update its `url` instead of duplicating it.",
+          "- The URL points at the current run, so the app must stay up with its MCP server enabled for the tools to respond. If the app's port changes on a later run, update the `url`.",
+          "- After saving, the Copilot CLI must pick up the new server: reload the MCP config (e.g. the `/mcp` command) or restart the CLI, then confirm the `bootui` tools are listed.",
+        ].join("\n"),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
     default:
       return null;
   }
@@ -2321,6 +2369,21 @@ async function loadIndex() {
   return indexHtml;
 }
 
+// Static iframe assets that carry no secrets and are therefore served without the
+// instance/token gate: the iframe loads them as subresources, which the browser
+// requests without the query string the token check relies on.
+const STATIC_ASSETS = {
+  "/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
+  "/app.js": { file: "app.js", type: "text/javascript; charset=utf-8" },
+};
+const staticCache = new Map();
+async function loadStatic(name) {
+  if (!staticCache.has(name)) {
+    staticCache.set(name, await readFile(path.join(__dirname, "public", name), "utf8"));
+  }
+  return staticCache.get(name);
+}
+
 function valid(url) {
   const instanceId = url.searchParams.get("instance");
   const token = url.searchParams.get("token");
@@ -2349,6 +2412,14 @@ function sendJson(res, code, data) {
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  if (req.method === "GET" && STATIC_ASSETS[url.pathname]) {
+    const asset = STATIC_ASSETS[url.pathname];
+    res.writeHead(200, { "Content-Type": asset.type });
+    res.end(await loadStatic(asset.file));
+    return;
+  }
+
   const instanceId = valid(url);
   if (!instanceId) {
     res.writeHead(403);
