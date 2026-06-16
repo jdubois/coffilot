@@ -82,9 +82,18 @@ const wrapperPath = path.join(workspacePath, wrapperName);
 // Maven, the launched app JVM.
 const NATIVE_ACCESS_FLAG = "--enable-native-access=ALL-UNNAMED";
 
+// Maven 3.9+ embeds JLine for its console. When spawned without a TTY (as this
+// canvas always does), JLine can't open a system terminal and logs a noisy
+// "Unable to create a system terminal, creating a dumb terminal" warning at the
+// top of every build. Telling JLine to use a dumb terminal up front makes it do
+// so silently, without changing any build behaviour. Maven-only (Gradle uses
+// --console=plain instead).
+const JLINE_DUMB_FLAG = "-Dorg.jline.terminal.dumb=true";
+
 // Merge the native-access flag into the build tool's JVM options (MAVEN_OPTS for
 // Maven, GRADLE_OPTS for Gradle) so the build JVM doesn't print restricted-method
-// warnings, while preserving whatever the user already set. `extra` adds/overrides
+// warnings, while preserving whatever the user already set. For Maven we also add
+// the JLine dumb-terminal flag to suppress its no-TTY warning. `extra` adds/overrides
 // environment variables for a specific spawn (e.g. SPRING_PROFILES_ACTIVE).
 function toolEnv(extra) {
   const env = { ...process.env, ...(extra || {}) };
@@ -93,7 +102,7 @@ function toolEnv(extra) {
     env.GRADLE_OPTS = existing + NATIVE_ACCESS_FLAG;
   } else {
     const existing = process.env.MAVEN_OPTS ? process.env.MAVEN_OPTS.trim() + " " : "";
-    env.MAVEN_OPTS = existing + NATIVE_ACCESS_FLAG;
+    env.MAVEN_OPTS = existing + NATIVE_ACCESS_FLAG + " " + JLINE_DUMB_FLAG;
   }
   return env;
 }
