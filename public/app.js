@@ -33,6 +33,9 @@ const springInput = document.getElementById("in-profiles");
 const springMenu = document.getElementById("spring-menu");
 const mavenMenu = document.getElementById("maven-menu");
 const mvnProfilesInput = document.getElementById("in-mvn-profiles");
+const mvnProfilesLabel = document.getElementById("lbl-mvn-profiles");
+const mvnProfilesCombo = document.getElementById("mvn-profiles-combo");
+const noToolBanner = document.getElementById("no-tool-banner");
 const warmBanner = document.getElementById("warm-banner");
 const warmMsg = document.getElementById("warm-msg");
 const warmCmd = document.getElementById("warm-cmd");
@@ -94,6 +97,9 @@ const mcpScansEl = document.getElementById("mcp-scans");
 const mcpResultEl = document.getElementById("mcp-result");
 const mcpRegisterBtn = document.getElementById("mcp-register");
 let caps = {};
+// Whether a Maven/Gradle build tool is present. When false the canvas runs
+// in degraded mode: Build/Test/Package/Run stay disabled.
+let toolPresent = true;
 // Last JDTLS availability snapshot (env.jdtls), used for the toolchain pill.
 let jdtlsState = {};
 
@@ -261,7 +267,7 @@ function renderStatus(s) {
   // the Maven Stop covers build/test/package; the Run Stop covers run.
   const mvnBusy = (s.build && s.build.busy) || (s.test && s.test.busy) || (s.package && s.package.busy);
   btnStopMaven.disabled = !mvnBusy;
-  btnStopMaven.title = mvnBusy ? "Stop the running build, test or package" : "No Maven build is running";
+  btnStopMaven.title = mvnBusy ? "Stop the running build, test or package" : "No build is running";
   btnStopRun.disabled = !(run && run.busy);
   btnStopRun.title = run && run.busy ? "Stop the running app" : "The app isn't running";
   // Per-lane running spinners on the trigger buttons and tabs (global, so
@@ -271,15 +277,21 @@ function renderStatus(s) {
     if (btnSpin[op]) btnSpin[op].hidden = !busy;
     if (tabSpin[op]) tabSpin[op].hidden = !busy;
   }
-  // While a Maven op runs the lane is serialized, so grey out the other
+  // While a build op runs the lane is serialized, so grey out the other
   // Build/Test/Package buttons (the running one stays active with its spinner).
+  // Everything is also disabled when no build tool is present (degraded mode).
   const busyMvnOp = ["build", "test", "package"].find((op) => s[op] && s[op].busy);
   for (const op of ["build", "test", "package"]) {
     const btn = mvnButtons[op];
     if (!btn) continue;
-    btn.disabled = !!busyMvnOp && op !== busyMvnOp;
-    btn.title = btn.disabled ? `Stop the running ${busyMvnOp} first` : "";
+    btn.disabled = !toolPresent || (!!busyMvnOp && op !== busyMvnOp);
+    btn.title = !toolPresent
+      ? "Coffilot needs a Maven or Gradle project."
+      : btn.disabled
+        ? `Stop the running ${busyMvnOp} first`
+        : "";
   }
+  if (!toolPresent) btnRun.disabled = true;
   // Header (phase / command / exit / fix) follows the active tab.
   renderLaneHeader(s[activeTab] || {});
 }
@@ -589,7 +601,7 @@ function renderTests(report, opts) {
   html += "</div>";
 
   if (!report.suites.length) {
-    html += '<p class="empty">No surefire reports found for this run.</p>';
+    html += '<p class="empty">No test reports found for this run.</p>';
     testsEl.innerHTML = html;
     return;
   }
@@ -663,7 +675,7 @@ function updateDevSetup() {
   btnAddBootui.hidden = !showBootui;
   if (showBootui) {
     btnAddBootui.disabled = false;
-    btnAddBootui.textContent = "Add BootUI to dev profile";
+    btnAddBootui.textContent = caps.gradle ? "Add BootUI (developmentOnly)" : "Add BootUI to dev profile";
   }
 
   const hasDevtools = spring && !!mod.devtools;
@@ -671,7 +683,7 @@ function updateDevSetup() {
   btnAddDevtools.hidden = !showDevtools;
   if (showDevtools) {
     btnAddDevtools.disabled = false;
-    btnAddDevtools.textContent = "Add DevTools to dev profile";
+    btnAddDevtools.textContent = caps.gradle ? "Add DevTools (developmentOnly)" : "Add DevTools to dev profile";
   }
   // The DevTools toggle only makes sense once the dependency is on the
   // classpath; grey it out and explain via the info tooltip otherwise.
@@ -679,7 +691,9 @@ function updateDevSetup() {
   devtoolsInput.disabled = !hasDevtools;
   document.getElementById("devtools-info").dataset.tip = hasDevtools
     ? "Watch the running module's sources and recompile on save so DevTools restarts the app in place."
-    : "Add Spring Boot DevTools to the dev profile first (button below) to enable live reload.";
+    : caps.gradle
+      ? "Add Spring Boot DevTools (button below) to enable live reload."
+      : "Add Spring Boot DevTools to the dev profile first (button below) to enable live reload.";
 }
 
 // Suggestion lists backing the custom comboboxes (kept editable).
@@ -781,18 +795,34 @@ function applyEnv(env) {
   const spring = (env && env.springProfiles) || [];
   springItems = spring.includes("dev") ? spring : ["dev", ...spring];
   mavenItems = (env && env.mavenProfiles) || [];
-  const ok = env && env.mvndAvailable;
+
+  // Degraded mode: no Maven or Gradle project. Show the banner and disable
+  // the build/test/package/run actions; nothing can be invoked without a tool.
+  toolPresent = !!(env && env.buildTool);
+  if (noToolBanner) noToolBanner.hidden = toolPresent;
+  btnRun.disabled = !toolPresent;
+  for (const op of ["build", "test", "package"]) {
+    if (mvnButtons[op]) mvnButtons[op].disabled = !toolPresent;
+  }
+  if (statusSnap) renderStatus(statusSnap);
+
+  // Maven profiles are Maven-only; hide the control for Gradle / no tool.
+  const profilesSupported = !!(env && env.profilesSupported);
+  if (mvnProfilesLabel) mvnProfilesLabel.hidden = !profilesSupported;
+  if (mvnProfilesCombo) mvnProfilesCombo.hidden = !profilesSupported;
+
+  // Warm-JVM tier: mvnd for Maven (install-gated), the Gradle daemon for
+  // Gradle (always available). The backend reports the label/tip/availability.
+  const ok = !!(env && env.warmAvailable);
   warmInput.disabled = !ok;
   warmToggle.classList.toggle("disabled", !ok);
-  warmBanner.hidden = ok;
-  if (ok) {
-    warmInfo.dataset.tip =
-      "Use the Maven Daemon (mvnd) to keep a warm JVM pool between builds/tests for faster repeat runs.";
-    warmLabel.textContent = "Keep JVM warm (mvnd)";
-  } else {
-    warmInfo.dataset.tip = "Install the Maven Daemon (mvnd) to enable the warm-JVM option.";
-    warmLabel.textContent = "Keep JVM warm";
-    // Platform-specific install guidance (rendered in the settings banner).
+  warmLabel.textContent = (env && env.warmLabel) || "Keep JVM warm";
+  warmInfo.dataset.tip = (env && env.warmTip) || "Keep a warm JVM between builds/tests for faster repeat runs.";
+  // The install banner only applies to Maven when mvnd is missing; Gradle's
+  // daemon needs no install, so hide it whenever the warm tier is available
+  // (or there's no tool at all).
+  warmBanner.hidden = ok || !toolPresent;
+  if (!ok && toolPresent) {
     const install = (env && env.install) || {};
     const os = install.os ? ` on ${install.os}` : "";
     if (install.cmd) {
@@ -840,20 +870,31 @@ async function postJson(path, body) {
 // Show/hide capability-gated controls and render a capability summary.
 function applyCaps(c) {
   caps = c || {};
-  // Pure-Java modules can still Run (package + java -jar); Spring-specific
+  const toolLabel = caps.toolLabel || (caps.gradle ? "Gradle" : caps.maven ? "Maven" : null);
+  const springRun = caps.gradle ? "bootRun" : "spring-boot:run";
+  // Pure-Java modules can still Run (build + java -jar); Spring-specific
   // settings rows are toggled per selected module in updateDevSetup().
   btnRun.title = caps.springBoot
-    ? "Run the selected module with spring-boot:run."
-    : "Package the selected module and launch it with java -jar.";
+    ? `Run the selected module with ${springRun}.`
+    : "Build the selected module and launch it with java -jar.";
   const pill = (label, on, title) =>
     `<span class="cap ${on ? "on" : "off"}" title="${esc(title)}">${esc(label)}</span>`;
   let html = "";
-  html += pill("Java" + (caps.java ? " " + caps.java : ""), true, "Java + Maven build and test are always available.");
-  html += pill("Maven", caps.maven !== false, "Maven build/test.");
+  html += pill(
+    "Java" + (caps.java ? " " + caps.java : ""),
+    true,
+    toolLabel ? `Java + ${toolLabel} build and test are available.` : "Java build/test (no build tool detected).",
+  );
+  // Active build tool: Maven or Gradle (off/grey when neither is present).
+  html += pill(
+    toolLabel || "No build tool",
+    !!toolLabel,
+    toolLabel ? `${toolLabel} build/test.` : "No Maven or Gradle project detected.",
+  );
   html += pill(
     "Spring Boot",
     !!caps.springBoot,
-    caps.springBoot ? "spring-boot:run available." : "No Spring Boot module detected; Run uses java -jar.",
+    caps.springBoot ? `${springRun} available.` : "No Spring Boot module detected; Run uses java -jar.",
   );
   html += pill("Actuator", !!caps.actuator, "Spring Boot Actuator metrics (static hint; confirmed at runtime).");
   html += pill("BootUI", !!caps.bootui, "BootUI rich metrics + MCP advisor scans.");

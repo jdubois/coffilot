@@ -13,22 +13,23 @@ participating you are expected to uphold this code.
 Coffilot is a [GitHub Copilot canvas extension](https://docs.github.com/en/copilot/how-tos/github-copilot-app/working-with-canvas-extensions):
 a single Node process (`extension.mjs`) that speaks JSON-RPC to the Copilot CLI
 over stdio, serves an iframe UI (`public/index.html`) from a loopback HTTP server,
-and shells out to Maven to build / test / package / run the target Java project.
+and shells out to the project's build tool (Maven or Gradle) to build / test /
+package / run the target Java project.
 
 ## Prerequisites
 
 - **Node.js 20+** (the runtime the Copilot CLI uses to launch the extension).
 - The **GitHub Copilot app** or Copilot CLI with canvas-extension support.
-- A **Maven** Java / Spring Boot project to test against. [BootUI](https://github.com/jdubois/boot-ui)'s
-  `bootui-sample-app` is a convenient target because it lights up every metrics
-  tier.
+- A **Maven** or **Gradle** Java / Spring Boot project to test against.
+  [BootUI](https://github.com/jdubois/boot-ui)'s `bootui-sample-app` is a convenient
+  target because it lights up every metrics tier.
 
 ## Repository layout
 
 ```
 extension.mjs            The extension: SDK wiring, canvas + actions, loopback HTTP
-                         server, Maven runner, Surefire parser, metrics/MCP proxy,
-                         and the "fix with Copilot" bridge.
+                         server, Maven/Gradle runner, JUnit report parser, metrics/MCP
+                         proxy, and the "fix with Copilot" bridge.
 public/index.html        The iframe UI markup (toolbar, Build/Test/Package/Run tabs,
                          live console, graphical test results, metrics + MCP panels);
                          links public/styles.css and public/app.js.
@@ -45,8 +46,8 @@ copilot-extension.json   Manifest ({ "name": "coffilot", "version": 1 }) used by
 ## Develop and test
 
 The extension is discovered from `.github/extensions/<name>/` (relative to a git
-root) or `$COPILOT_HOME/extensions/<name>/`. Coffilot drives a _separate_ Maven
-project, so develop against a checkout of a Java app:
+root) or `$COPILOT_HOME/extensions/<name>/`. Coffilot drives a _separate_ Maven or
+Gradle project, so develop against a checkout of a Java app:
 
 1. Symlink or copy this repo into the target project's extensions folder:
 

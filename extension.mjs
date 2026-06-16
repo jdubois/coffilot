@@ -1,15 +1,20 @@
 // Extension: coffilot
 //
-// Coffilot — a GitHub Copilot canvas extension that turns a Maven-based Java /
-// Spring Boot project into an interactive console: Build, Test, Package, Run and
-// Stop the app, watch Maven output stream live, and — once the app is up — read
-// live JVM metrics from the richest source available (BootUI → Actuator →
+// Coffilot — a GitHub Copilot canvas extension that turns a Maven- or Gradle-based
+// Java / Spring Boot project into an interactive console: Build, Test, Package, Run
+// and Stop the app, watch the build output stream live, and — once the app is up —
+// read live JVM metrics from the richest source available (BootUI → Actuator →
 // process). Failures surface a "Fix with Copilot" button that pushes the error
 // context back into the chat.
 //
+// The build tool is auto-detected from the project: Maven (pom.xml / ./mvnw) is
+// preferred when present, otherwise Gradle (build.gradle[.kts] / ./gradlew). When
+// neither is found the canvas degrades to a "needs Maven or Gradle" message.
+//
 // Metrics tiers:
-//   * Build / test / package / run orchestration (shelling out to ./mvnw) lives
-//     here in the Node process.
+//   * Build / test / package / run orchestration (shelling out to the project's
+//     wrapper — ./mvnw or ./gradlew — or a system mvn/gradle) lives here in the
+//     Node process.
 //   * Live JVM metrics are read from a running app: when the app exposes BootUI
 //     (https://github.com/jdubois/boot-ui) it serves sanitized record DTOs at
 //     /bootui/api/overview, /live-memory, /health, /threads, which this canvas
@@ -33,38 +38,86 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Session + workspace wiring
 // ---------------------------------------------------------------------------
 
+const isWindows = process.platform === "win32";
+
 const session = await joinSession({ canvases: [makeCanvas()] });
 
-// Resolve the Maven project root. The authoritative source is the session's
-// primary working directory (the project the user actually opened), read from the
-// permission-paths API. The older heuristics are unreliable on their own:
-// session.workspacePath is the session-artifacts folder (checkpoints/, plan.md,
-// files/), never the repo; __dirname points into the coffilot repo for a
-// user/global install; and the extension host launches us with cwd=<COPILOT_HOME>,
-// not the project. We still fall back to __dirname (project-embedded install at
-// <repo>/.github/extensions/coffilot) and cwd for hosts that don't expose the
-// primary directory.
+// Project marker files used to locate the root and decide the build tool. Defined
+// here (before the resolution below) so findProjectRoot/detectBuildTool can read
+// them without hitting a temporal-dead-zone error during early startup.
+const MAVEN_MARKERS = ["pom.xml", "mvnw", "mvnw.cmd"];
+const GRADLE_MARKERS = [
+  "build.gradle",
+  "build.gradle.kts",
+  "settings.gradle",
+  "settings.gradle.kts",
+  "gradlew",
+  "gradlew.bat",
+];
+
+// Resolve the project root. The authoritative source is the session's primary
+// working directory (the project the user opened), read from the permission-paths
+// API. session.workspacePath is the session-artifacts folder, never the repo;
+// __dirname points into the coffilot repo for a user/global install; and the host
+// launches us with cwd=<COPILOT_HOME>, not the project. We fall back to __dirname
+// (project-embedded install at <repo>/.github/extensions/coffilot) and cwd.
 const sessionPrimaryDir = await getSessionPrimaryDir();
 const workspacePath = findProjectRoot(sessionPrimaryDir);
-const mvnw = path.join(workspacePath, process.platform === "win32" ? "mvnw.cmd" : "mvnw");
+
+// Auto-detect the build tool from the project. Maven wins when both are present,
+// per Coffilot's "prefer Maven" rule; null means neither was found (degraded UI).
+const buildTool = detectBuildTool(workspacePath); // "maven" | "gradle" | null
+const TOOL_LABEL = buildTool === "gradle" ? "Gradle" : buildTool === "maven" ? "Maven" : null;
+
+// The committed wrapper for the active tool, preferred over a system binary
+// because it pins the tool version. Gradle ships gradlew / gradlew.bat; Maven
+// ships mvnw / mvnw.cmd.
+const wrapperName = buildTool === "gradle" ? (isWindows ? "gradlew.bat" : "gradlew") : isWindows ? "mvnw.cmd" : "mvnw";
+const wrapperPath = path.join(workspacePath, wrapperName);
 
 // Silence the JDK native-access warnings (JEP 472) that Jansi (Maven's native
 // console) and FFM-using app dependencies emit at startup. The flag exists
 // since JDK 16, so it's safe for the Java 17+ toolchain and apps this canvas
-// runs. Applied to the Maven JVM (via MAVEN_OPTS) and the launched app JVM.
+// runs. Applied to the build-tool JVM (via MAVEN_OPTS/GRADLE_OPTS) and, for
+// Maven, the launched app JVM.
 const NATIVE_ACCESS_FLAG = "--enable-native-access=ALL-UNNAMED";
 
-// Merge the native-access flag into MAVEN_OPTS so the Maven JVM doesn't print
-// restricted-method warnings, while preserving any MAVEN_OPTS the user has set.
-function mavenEnv() {
-  const existing = process.env.MAVEN_OPTS ? process.env.MAVEN_OPTS.trim() + " " : "";
-  return { ...process.env, MAVEN_OPTS: existing + NATIVE_ACCESS_FLAG };
+// Merge the native-access flag into the build tool's JVM options (MAVEN_OPTS for
+// Maven, GRADLE_OPTS for Gradle) so the build JVM doesn't print restricted-method
+// warnings, while preserving whatever the user already set. `extra` adds/overrides
+// environment variables for a specific spawn (e.g. SPRING_PROFILES_ACTIVE).
+function toolEnv(extra) {
+  const env = { ...process.env, ...(extra || {}) };
+  if (buildTool === "gradle") {
+    const existing = process.env.GRADLE_OPTS ? process.env.GRADLE_OPTS.trim() + " " : "";
+    env.GRADLE_OPTS = existing + NATIVE_ACCESS_FLAG;
+  } else {
+    const existing = process.env.MAVEN_OPTS ? process.env.MAVEN_OPTS.trim() + " " : "";
+    env.MAVEN_OPTS = existing + NATIVE_ACCESS_FLAG;
+  }
+  return env;
+}
+
+/** Decide the build tool for a project root: Maven preferred, else Gradle, else null. */
+function detectBuildTool(root) {
+  const has = (f) => existsSync(path.join(root, f));
+  if (MAVEN_MARKERS.some(has)) return "maven";
+  if (GRADLE_MARKERS.some(has)) return "gradle";
+  return null;
+}
+
+/** A short result returned by actions/endpoints when no build tool was detected. */
+function noToolResult() {
+  return {
+    ok: false,
+    error: "Coffilot needs a Maven or Gradle project, but neither was detected in this folder.",
+  };
 }
 
 // "Keep JVM warm" uses the Maven Daemon (mvnd) when available: mvnd keeps a pool
 // of warm JVMs alive between invocations, so repeated build/test runs skip JVM
 // startup + JIT warmup. We auto-detect it and fall back to ./mvnw otherwise.
-const isWindows = process.platform === "win32";
+// (Gradle has an always-on daemon, so its warm tier needs no separate binary.)
 
 let mvndInfo = null;
 function detectMvnd() {
@@ -161,22 +214,105 @@ function detectMvn() {
   return mvnInfo;
 }
 
-// The base (non-daemon) Maven command for a run: the project's wrapper when it
-// exists, else a system `mvn` from PATH. mvnd layers on top of this for warm
-// builds. Cached because neither the wrapper's presence nor PATH change at
-// runtime.
+// When a project uses Gradle but ships no wrapper, fall back to a system `gradle`
+// discovered on PATH (and common install locations). Mirrors detectMvn().
+let gradleInfo = null;
+function detectGradle() {
+  if (gradleInfo) return gradleInfo;
+  // Windows resolves `gradle` to a batch script (gradle.bat) or a shim exe.
+  const exeNames = isWindows ? ["gradle.bat", "gradle.exe", "gradle"] : ["gradle"];
+  const candidates = [];
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue;
+    for (const exe of exeNames) candidates.push(path.join(dir, exe));
+  }
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  if (isWindows) {
+    if (home) {
+      candidates.push(
+        path.join(home, "scoop", "shims", "gradle.bat"),
+        path.join(home, "scoop", "shims", "gradle.exe"),
+        path.join(home, ".sdkman", "candidates", "gradle", "current", "bin", "gradle.bat"),
+      );
+    }
+    if (process.env.ProgramData) {
+      candidates.push(path.join(process.env.ProgramData, "chocolatey", "bin", "gradle.exe"));
+    }
+  } else {
+    candidates.push(
+      "/opt/homebrew/bin/gradle",
+      "/usr/local/bin/gradle",
+      "/usr/bin/gradle",
+      "/home/linuxbrew/.linuxbrew/bin/gradle",
+    );
+    if (home) candidates.push(path.join(home, ".sdkman/candidates/gradle/current/bin/gradle"));
+  }
+  for (const c of candidates) {
+    try {
+      if (existsSync(c)) {
+        gradleInfo = { available: true, path: c };
+        return gradleInfo;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  gradleInfo = { available: false, path: null };
+  return gradleInfo;
+}
+
+/** A system binary for the active tool (mvn or gradle), discovered on PATH. */
+function detectSystemTool() {
+  return buildTool === "gradle" ? detectGradle() : detectMvn();
+}
+
+// The base (non-daemon) command for a run: the project's wrapper when it exists,
+// else a system binary (mvn / gradle) from PATH. mvnd layers on top of this for
+// warm Maven builds. Cached because neither the wrapper's presence nor PATH
+// change at runtime.
 let baseRunnerInfo = null;
 function baseRunner() {
   if (baseRunnerInfo) return baseRunnerInfo;
-  if (existsSync(mvnw)) {
-    baseRunnerInfo = { bin: mvnw, label: "./mvnw" };
+  const wrapperLabel = buildTool === "gradle" ? "./gradlew" : "./mvnw";
+  const systemLabel = buildTool === "gradle" ? "gradle" : "mvn";
+  if (existsSync(wrapperPath)) {
+    baseRunnerInfo = { bin: wrapperPath, label: wrapperLabel };
   } else {
-    const m = detectMvn();
-    // Fall back to system `mvn`; if that's missing too, keep pointing at the
+    const sys = detectSystemTool();
+    // Fall back to the system binary; if that's missing too, keep pointing at the
     // wrapper path so the spawn fails with a clear ENOENT in the lane console.
-    baseRunnerInfo = m.available ? { bin: m.path, label: "mvn" } : { bin: mvnw, label: "./mvnw" };
+    baseRunnerInfo = sys.available ? { bin: sys.path, label: systemLabel } : { bin: wrapperPath, label: wrapperLabel };
   }
   return baseRunnerInfo;
+}
+
+/** Whether the active tool can actually be invoked (wrapper present or on PATH). */
+function toolAvailable() {
+  return buildTool != null && (existsSync(wrapperPath) || detectSystemTool().available);
+}
+
+// Capability describing the "Keep JVM warm" tier for the active tool. Maven uses
+// mvnd (optional, install-gated); Gradle uses its built-in daemon (always on).
+function warmCapability() {
+  if (buildTool === "gradle") {
+    return {
+      available: true,
+      kind: "gradle-daemon",
+      label: "Keep JVM warm (Gradle daemon)",
+      tip: "Use the Gradle daemon to keep a warm JVM between builds/tests for faster repeat runs (it is on by default).",
+      install: { os: null, cmd: null, url: null },
+    };
+  }
+  const m = detectMvnd();
+  return {
+    available: m.available,
+    kind: "mvnd",
+    label: m.available ? "Keep JVM warm (mvnd)" : "Keep JVM warm",
+    tip: m.available
+      ? "Use the Maven Daemon (mvnd) to keep a warm JVM pool between builds/tests for faster repeat runs."
+      : "Install the Maven Daemon (mvnd) to enable the warm-JVM option.",
+    install: mvndInstallHint(),
+  };
 }
 
 /** Platform-appropriate guidance for installing mvnd, shown when it's missing. */
@@ -418,14 +554,42 @@ function openExternalUrl(target) {
   }
 }
 
-/** Pick the Maven binary for a build/test run. mvnd only when warm + available. */
+/**
+ * Pick the binary + args modifier for a build/test run.
+ *  - Maven: mvnd only when "warm" is requested and available, else the wrapper/mvn.
+ *  - Gradle: always the wrapper/gradle; "warm" toggles the daemon (the arg builder
+ *    adds --no-daemon when warm is off) and is reported as the lane's warm state.
+ */
 function resolveRunner(warm) {
+  if (buildTool === "gradle") {
+    const b = baseRunner();
+    return { bin: b.bin, label: b.label, warm: !!warm };
+  }
   if (warm) {
     const m = detectMvnd();
     if (m.available) return { bin: m.path, label: "mvnd", warm: true };
   }
   const b = baseRunner();
   return { bin: b.bin, label: b.label, warm: false };
+}
+
+/** Gradle keeps its daemon warm by default; cold runs opt out with --no-daemon. */
+function gradleWarmFlags(warm) {
+  return warm ? [] : ["--no-daemon"];
+}
+
+/** Gradle task path for a module: "" → bare task; "web" → ":web:task"; "a/b" → ":a:b:task". */
+function gradleTaskPath(module, task) {
+  if (!module) return task;
+  return ":" + String(module).split("/").filter(Boolean).join(":") + ":" + task;
+}
+
+/** Resolve a Gradle module's build file, preferring the Kotlin DSL when present. */
+function gradleModuleBuildFile(moduleName) {
+  const dir = path.join(workspacePath, moduleName || "");
+  const kts = existsSync(path.join(dir, "build.gradle.kts"));
+  const rel = path.join(moduleName || "", kts ? "build.gradle.kts" : "build.gradle");
+  return { rel, kts };
 }
 
 /** Reserve a free loopback TCP port (for "Use a random HTTP port"). */
@@ -457,10 +621,10 @@ async function getSessionPrimaryDir() {
 }
 
 function findProjectRoot(primary) {
-  const wrapper = process.platform === "win32" ? "mvnw.cmd" : "mvnw";
-  const owns = (dir) => existsSync(path.join(dir, wrapper)) || existsSync(path.join(dir, "pom.xml"));
-  // Walk up from `start` (max 8 hops) to the first directory that owns the Maven
-  // wrapper or a pom.xml; null if `start` is falsy or none is found.
+  const markers = [...MAVEN_MARKERS, ...GRADLE_MARKERS];
+  const owns = (dir) => markers.some((f) => existsSync(path.join(dir, f)));
+  // Walk up from `start` (max 8 hops) to the first directory that owns a Maven or
+  // Gradle build marker; null if `start` is falsy or none is found.
   const walkUp = (start) => {
     if (!start) return null;
     let dir = start;
@@ -478,7 +642,7 @@ function findProjectRoot(primary) {
   //    __dirname is the coffilot repo).
   // 2) Project-embedded install (.github/extensions/coffilot): walk up from here.
   // 3) Launch cwd, as a last resort for older hosts that don't expose (1).
-  // If nothing owns a pom.xml, still prefer the opened project dir over the cwd.
+  // If nothing owns a build marker, still prefer the opened project dir over cwd.
   return walkUp(primary) || walkUp(__dirname) || walkUp(process.cwd()) || primary || process.cwd();
 }
 
@@ -499,7 +663,7 @@ function settingsPaths() {
 
 function defaultSettings() {
   return {
-    warm: detectMvnd().available, // on by default when the Maven Daemon is available
+    warm: warmCapability().available, // on by default when a warm tier exists (mvnd / Gradle daemon)
     springProfiles: "dev",
     devtools: false,
     randomPort: false,
@@ -570,9 +734,9 @@ const settings = loadSettings();
 let lastTestTotal = loadLastTestTotal();
 
 // the UI can offer a dropdown instead of a free-text module box. Each module is
-// tagged with the capabilities detectable from its own pom: "runnable" (applies
-// spring-boot-maven-plugin, so it can be launched with spring-boot:run),
-// springBoot, actuator, and bootui. These drive graceful UI degradation.
+// tagged with the capabilities detectable from its own build file: "runnable"
+// (a Spring Boot app, so it can be launched with spring-boot:run / bootRun),
+// springBoot, actuator, devtools, and bootui. These drive graceful UI degradation.
 let projectModules = null;
 
 // Per-pom capability flags, derived purely from the pom text (cheap + offline).
@@ -587,6 +751,19 @@ function pomCaps(xml, name) {
   };
 }
 
+// Per-build-file capability flags for Gradle, derived from the build script text
+// (Groovy or Kotlin DSL). Spring Boot is detected from its Gradle plugin id.
+function gradleCaps(text, name) {
+  return {
+    name,
+    runnable: text.includes("org.springframework.boot"),
+    springBoot: text.includes("org.springframework.boot"),
+    actuator: text.includes("spring-boot-starter-actuator"),
+    devtools: text.includes("spring-boot-devtools"),
+    bootui: /bootui-spring-boot-starter|julien-dubois\.bootui|jdubois\.bootui/.test(text),
+  };
+}
+
 // The project's own artifactId (skip the <parent> block so we don't read the
 // parent/BOM artifactId by mistake). Used as a display label for the root module.
 function artifactIdOf(xml) {
@@ -595,8 +772,47 @@ function artifactIdOf(xml) {
   return m ? m[1] : null;
 }
 
-function listModules() {
-  if (projectModules) return projectModules;
+/** Read a module's Gradle build script (Groovy or Kotlin DSL), or null if absent. */
+function readGradleBuildFile(dir) {
+  for (const f of ["build.gradle", "build.gradle.kts"]) {
+    try {
+      return readFileSync(path.join(dir, f), "utf8");
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
+/** rootProject.name from a settings script, used to label a single-module root. */
+function gradleRootName(settings) {
+  if (!settings) return null;
+  const m = settings.match(/rootProject\.name\s*=\s*['"]([^'"]+)['"]/);
+  return m ? m[1] : null;
+}
+
+// Parse `include` statements from a settings.gradle[.kts] file into module paths.
+// Handles Groovy and Kotlin DSL, single- or multi-project includes on one line,
+// e.g. `include ':web', ':lib'` or `include(":web", ":services:api")`. The
+// statement-boundary anchor and `(?!Build|Flat)` lookahead keep composite-build
+// declarations (`includeBuild`, `includeFlat`) out of the subproject list.
+function parseGradleIncludes(text) {
+  const names = [];
+  const seen = new Set();
+  for (const m of text.matchAll(/(?:^|\n)\s*include(?!Build|Flat)\b\s*\(?([^\n)]*)\)?/g)) {
+    for (const q of m[1].matchAll(/['"]([^'"]+)['"]/g)) {
+      // Gradle project paths are colon-separated; map to a relative directory.
+      const rel = q[1].replace(/^:/, "").split(":").filter(Boolean).join("/");
+      if (rel && !seen.has(rel)) {
+        seen.add(rel);
+        names.push(rel);
+      }
+    }
+  }
+  return names;
+}
+
+function listMavenModules() {
   const out = [];
   const seen = new Set();
   const visited = new Set();
@@ -639,15 +855,76 @@ function listModules() {
       /* ignore */
     }
   }
+  return out;
+}
+
+function listGradleModules() {
+  const out = [];
+  let settings = null;
+  for (const f of ["settings.gradle", "settings.gradle.kts"]) {
+    try {
+      settings = readFileSync(path.join(workspacePath, f), "utf8");
+      break;
+    } catch {
+      /* try next */
+    }
+  }
+  for (const rel of settings ? parseGradleIncludes(settings) : []) {
+    const text = readGradleBuildFile(path.join(workspacePath, rel)) || "";
+    const caps = gradleCaps(text, rel);
+    caps.artifactId = rel.split("/").pop();
+    out.push(caps);
+  }
+  // Single-module project (no includes): represent the root build script itself.
+  // name="" means "no module path" everywhere (bare Gradle tasks).
+  if (!out.length) {
+    const text = readGradleBuildFile(workspacePath);
+    if (text != null) {
+      const root = gradleCaps(text, "");
+      root.artifactId = gradleRootName(settings) || path.basename(workspacePath) || "app";
+      out.push(root);
+    }
+  }
+  return out;
+}
+
+function listModules() {
+  if (projectModules) return projectModules;
+  let out = [];
+  try {
+    if (buildTool === "maven") out = listMavenModules();
+    else if (buildTool === "gradle") out = listGradleModules();
+  } catch {
+    /* ignore */
+  }
   projectModules = out;
   return projectModules;
 }
 
-// Best-effort Java version from the root pom's common properties.
+// Best-effort Java version from the project's build files (Maven pom properties
+// or Gradle toolchain / source-compatibility declarations).
 let javaVersion = undefined;
 function detectJavaVersion() {
   if (javaVersion !== undefined) return javaVersion;
   javaVersion = null;
+  if (buildTool === "gradle") {
+    const text = readGradleBuildFile(workspacePath);
+    if (text) {
+      for (const re of [
+        /JavaLanguageVersion\.of\(\s*(\d+)\s*\)/,
+        /JavaVersion\.VERSION_(\d+)/,
+        /(?:source|target)Compatibility\s*=?\s*['"]?(?:1\.)?(\d+)/,
+        /['"]?(?:source|target)Compatibility['"]?\s*\(\s*['"]?(?:1\.)?(\d+)/,
+      ]) {
+        const m = text.match(re);
+        if (m) {
+          javaVersion = m[1];
+          break;
+        }
+      }
+    }
+    return javaVersion;
+  }
   try {
     const xml = readFileSync(path.join(workspacePath, "pom.xml"), "utf8");
     for (const re of [
@@ -667,13 +944,17 @@ function detectJavaVersion() {
   return javaVersion;
 }
 
-// Static capability tiers, derived from the poms. The runtime metrics tier
+// Static capability tiers, derived from the build files. The runtime metrics tier
 // (refreshMetrics) is authoritative once the app is up; these are the hints the
 // UI uses before/while running to decide what controls to show.
 function capabilitiesSnapshot() {
   const mods = listModules();
   return {
-    maven: existsSync(mvnw) || detectMvn().available,
+    buildTool,
+    toolLabel: TOOL_LABEL,
+    available: toolAvailable(),
+    maven: buildTool === "maven",
+    gradle: buildTool === "gradle",
     java: detectJavaVersion(),
     springBoot: mods.some((m) => m.springBoot),
     runnable: mods.some((m) => m.runnable),
@@ -686,9 +967,11 @@ function capabilitiesSnapshot() {
 // Maven build profiles declared across the reactor poms (<profiles><profile><id>).
 // Scoped to the <profiles> block so we don't pick up unrelated <id> elements
 // (executions, repositories, etc.). Cached and exposed so the UI can offer a
-// datalist instead of a free-text box.
+// datalist instead of a free-text box. Gradle has no profile concept, so the list
+// is empty there and the UI hides the control.
 let mavenProfiles = null;
 function listMavenProfiles() {
+  if (buildTool !== "maven") return [];
   if (mavenProfiles) return mavenProfiles;
   const ids = new Set();
   const dirs = [workspacePath, ...listModules().map((m) => path.join(workspacePath, m.name))];
@@ -919,14 +1202,21 @@ function triggerRecompile() {
   const ctx = reloadCtx;
   pushConsole("[live-reload] change detected — recompiling…", "stdout", "run");
   broadcast("status", statusSnapshot());
-  const args = ["-ntp", "-q", "-Dmaven.test.skip=true"];
-  if (ctx.module) args.push("-pl", ctx.module);
-  if (ctx.mavenProfiles && String(ctx.mavenProfiles).trim()) args.push("-P", String(ctx.mavenProfiles).trim());
-  args.push("compile");
+  let args;
+  if (buildTool === "gradle") {
+    // `classes` compiles main sources; Spring Boot DevTools watches build/classes
+    // and restarts the running app when they change.
+    args = [gradleTaskPath(ctx.module, "classes"), "-q", "--console=plain"];
+  } else {
+    args = ["-ntp", "-q", "-Dmaven.test.skip=true"];
+    if (ctx.module) args.push("-pl", ctx.module);
+    if (ctx.mavenProfiles && String(ctx.mavenProfiles).trim()) args.push("-P", String(ctx.mavenProfiles).trim());
+    args.push("compile");
+  }
   let out = "";
   let child;
   try {
-    child = spawn(ctx.bin, args, { cwd: workspacePath, env: mavenEnv(), shell: isWindows });
+    child = spawn(ctx.bin, args, { cwd: workspacePath, env: toolEnv(), shell: isWindows });
   } catch (e) {
     pushConsole(`[live-reload] recompile failed to start: ${e.message}`, "stderr", "run");
     return finishRecompile();
@@ -1074,19 +1364,30 @@ function statusSnapshot() {
   };
 }
 
-/** Capabilities the UI uses to enable/explain the "Keep JVM warm" toggle. */
+/** Build-tool + warm-JVM capabilities the UI uses to adapt its controls. */
 function envSnapshot() {
-  const m = detectMvnd();
+  const warm = warmCapability();
+  const m = buildTool === "maven" ? detectMvnd() : { available: false, path: null };
   return {
-    mvndAvailable: m.available,
-    mvndPath: m.path,
+    buildTool,
+    toolLabel: TOOL_LABEL,
+    available: toolAvailable(),
     modules: listModules(),
     mavenProfiles: listMavenProfiles(),
+    profilesSupported: buildTool === "maven",
     springProfiles: listSpringProfiles(),
     capabilities: capabilitiesSnapshot(),
     settings: settingsSnapshot(),
-    install: mvndInstallHint(),
+    // Warm-JVM tier (mvnd for Maven, daemon for Gradle).
+    warmAvailable: warm.available,
+    warmKind: warm.kind,
+    warmLabel: warm.label,
+    warmTip: warm.tip,
+    install: warm.install,
     jdtls: detectJdtls(),
+    // Back-compat fields retained for any external consumers.
+    mvndAvailable: m.available,
+    mvndPath: m.path,
   };
 }
 
@@ -1102,33 +1403,34 @@ function pushConsole(line, stream, op = "build") {
 }
 
 // ---------------------------------------------------------------------------
-// Maven runner
+// Build-tool runner
 // ---------------------------------------------------------------------------
 
 /**
- * Spawn the Maven binary for one op's lane, stream output into that lane's
- * console, and resolve with the exit code. `op` is "build" | "test" | "run".
+ * Spawn the build tool (or `java`) for one op's lane, stream output into that
+ * lane's console, and resolve with the exit code. `op` is "build" | "test" |
+ * "package" | "run". `env` overrides the spawn environment (defaults to toolEnv()).
  */
-function spawnMaven(op, args, phase, { onLine, bin, label } = {}) {
+function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
   const lane = lanes[op];
   const base = baseRunner();
-  const mavenBin = bin || base.bin;
-  const mavenLabel = label || base.label;
+  const toolBin = bin || base.bin;
+  const toolLabel = label || base.label;
   return new Promise((resolve) => {
     lane.phase = phase;
-    lane.runnerLabel = mavenLabel;
-    lane.command = `${mavenLabel} ${args.join(" ")}`;
+    lane.runnerLabel = toolLabel;
+    lane.command = `${toolLabel} ${args.join(" ")}`;
     lane.exitCode = null;
     broadcast("reset", { op });
     lane.console = [];
     broadcast("status", statusSnapshot());
     session.log(`[coffilot] ${lane.command}`, { level: "info", ephemeral: true });
 
-    const child = spawn(mavenBin, args, {
+    const child = spawn(toolBin, args, {
       cwd: workspacePath,
-      env: mavenEnv(),
-      // mvnw.cmd / mvnd.cmd are batch scripts; modern Node refuses to spawn
-      // .cmd/.bat directly, so route through the shell on Windows.
+      env: env || toolEnv(),
+      // mvnw.cmd / mvnd.cmd / gradlew.bat are batch scripts; modern Node refuses
+      // to spawn .cmd/.bat directly, so route through the shell on Windows.
       shell: isWindows,
     });
     lane.child = child;
@@ -1156,7 +1458,7 @@ function spawnMaven(op, args, phase, { onLine, bin, label } = {}) {
     wire(child.stderr, "stderr");
 
     child.on("error", (err) => {
-      pushConsole(`[coffilot] failed to start Maven: ${err.message}`, "stderr", op);
+      pushConsole(`[coffilot] failed to start ${toolLabel}: ${err.message}`, "stderr", op);
       lane.child = null;
       lane.phase = "failed";
       lane.exitCode = -1;
@@ -1289,18 +1591,41 @@ function onTestLine(line) {
   }
 }
 
+// Append Maven profile activation (-P). No-op for Gradle, which has no profiles.
 function withMavenProfiles(args, mavenProfiles) {
+  if (buildTool !== "maven") return args;
   const p = mavenProfiles && String(mavenProfiles).trim();
   return p ? [...args, "-P", p] : args;
 }
 
+// Default argument vectors per lane, per tool. `warm` only affects Gradle (daemon
+// vs --no-daemon); Maven's warm tier swaps the binary (mvnd) instead.
+function defaultBuildArgs(warm) {
+  if (buildTool === "gradle") return ["build", "-x", "test", "--console=plain", ...gradleWarmFlags(warm)];
+  return ["-ntp", "-DskipTests", "install"];
+}
+function defaultTestArgs(warm) {
+  // cleanTest forces Gradle to re-run tests even when nothing changed, so the
+  // canvas always produces a fresh report (mirroring Maven's always-run test).
+  if (buildTool === "gradle") return ["cleanTest", "test", "--console=plain", ...gradleWarmFlags(warm)];
+  return ["-ntp", "test"];
+}
+function defaultPackageArgs(warm) {
+  if (buildTool === "gradle") return ["assemble", "--console=plain", ...gradleWarmFlags(warm)];
+  return ["-ntp", "package"];
+}
+
 async function build(extraArgs, warm, mavenProfiles) {
+  if (!buildTool) {
+    pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "build");
+    return noToolResult();
+  }
   if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
-  const base = extraArgs && extraArgs.length ? extraArgs : ["-ntp", "-DskipTests", "install"];
-  const args = withMavenProfiles(base, mavenProfiles);
   const r = resolveRunner(warm);
+  const base = extraArgs && extraArgs.length ? extraArgs : defaultBuildArgs(r.warm);
+  const args = withMavenProfiles(base, mavenProfiles);
   lanes.build.warm = r.warm;
-  const code = await spawnMaven("build", args, "building", { bin: r.bin, label: r.label });
+  const code = await spawnTool("build", args, "building", { bin: r.bin, label: r.label });
   return {
     ok: code === 0,
     exitCode: code,
@@ -1312,12 +1637,16 @@ async function build(extraArgs, warm, mavenProfiles) {
 }
 
 async function packageApp(extraArgs, warm, mavenProfiles) {
+  if (!buildTool) {
+    pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "package");
+    return noToolResult();
+  }
   if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
-  const base = extraArgs && extraArgs.length ? extraArgs : ["-ntp", "package"];
-  const args = withMavenProfiles(base, mavenProfiles);
   const r = resolveRunner(warm);
+  const base = extraArgs && extraArgs.length ? extraArgs : defaultPackageArgs(r.warm);
+  const args = withMavenProfiles(base, mavenProfiles);
   lanes.package.warm = r.warm;
-  const code = await spawnMaven("package", args, "packaging", { bin: r.bin, label: r.label });
+  const code = await spawnTool("package", args, "packaging", { bin: r.bin, label: r.label });
   return {
     ok: code === 0,
     exitCode: code,
@@ -1329,15 +1658,19 @@ async function packageApp(extraArgs, warm, mavenProfiles) {
 }
 
 async function test(extraArgs, warm, mavenProfiles) {
+  if (!buildTool) {
+    pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "test");
+    return noToolResult();
+  }
   if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
-  const base = extraArgs && extraArgs.length ? extraArgs : ["-ntp", "test"];
-  const args = withMavenProfiles(base, mavenProfiles);
   const r = resolveRunner(warm);
+  const base = extraArgs && extraArgs.length ? extraArgs : defaultTestArgs(r.warm);
+  const args = withMavenProfiles(base, mavenProfiles);
   lanes.test.warm = r.warm;
   lastTestReport = null;
   broadcast("tests", null);
   // Seed the progress-bar estimate: persisted total if we have one, otherwise
-  // the total from any surefire reports already on disk (a prior run), so the
+  // the total from any test reports already on disk (a prior run), so the
   // bar is determinate from the first run instead of an indeterminate sweep.
   let estimate = lastTestTotal;
   if (!estimate) {
@@ -1350,7 +1683,11 @@ async function test(extraArgs, warm, mavenProfiles) {
   }
   resetTestProgress(estimate);
   testRunStartedAt = Date.now();
-  const code = await spawnMaven("test", args, "testing", { bin: r.bin, label: r.label, onLine: onTestLine });
+  // Live per-class progress is parsed from Surefire's console output (Maven only);
+  // Gradle's default output isn't per-test, so its graphical view fills in from
+  // the JUnit XML report once the run finishes.
+  const onLine = buildTool === "maven" ? onTestLine : undefined;
+  const code = await spawnTool("test", args, "testing", { bin: r.bin, label: r.label, onLine });
   if (testProgress) {
     testProgress.running = false;
     broadcastTestProgress();
@@ -1358,7 +1695,7 @@ async function test(extraArgs, warm, mavenProfiles) {
   const report = await collectSurefireReport(testRunStartedAt);
   lastTestReport = report;
   lastTest = report.summary;
-  // Persist the total only when Maven exited on its own (code is a number).
+  // Persist the total only when the tool exited on its own (code is a number).
   // A manual Stop kills the process (code === null), which would otherwise
   // persist a partial total and skew the next run's bar.
   if (code !== null && report.summary && report.summary.tests > 0) {
@@ -1379,6 +1716,10 @@ async function test(extraArgs, warm, mavenProfiles) {
 }
 
 async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
+  if (!buildTool) {
+    pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "run");
+    return noToolResult();
+  }
   if (runLaneBusy()) return { ok: false, error: "The app is already running. Stop it first." };
   lanes.run.warm = false;
   app.appPort = null;
@@ -1388,7 +1729,7 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
   lastMetrics = { appUp: false };
 
   // Pick the run strategy: explicit mode wins, else infer from whether the
-  // chosen module applies the spring-boot-maven-plugin.
+  // chosen module applies the Spring Boot plugin.
   const mod = listModules().find((m) => m.name === module);
   const resolved = mode === "java" || mode === "spring" ? mode : mod && mod.runnable ? "spring" : "java";
   app.runMode = resolved;
@@ -1396,7 +1737,36 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
   app.mavenProfiles = mavenProfiles || null;
 
   if (resolved === "spring") {
-    // The app is long-lived, so it always runs via the wrapper/mvn (mvnd is for builds).
+    // The app is long-lived, so it always runs via the wrapper/system tool
+    // (Maven's mvnd warm tier is for builds, not a foreground server).
+    const r = resolveRunner(false);
+
+    if (buildTool === "gradle") {
+      // bootRun forks the app JVM; profiles and port flow through env vars
+      // (SPRING_PROFILES_ACTIVE / SERVER_PORT) to avoid cross-platform --args
+      // quoting pitfalls.
+      const args = [gradleTaskPath(module, "bootRun"), "--console=plain"];
+      const extra = {};
+      if (profiles) extra.SPRING_PROFILES_ACTIVE = profiles;
+      if (settings.randomPort) {
+        let port = 0;
+        try {
+          port = await freePort();
+        } catch {
+          /* fall back: leave SERVER_PORT unset and let the app keep its default */
+        }
+        if (port) {
+          extra.SERVER_PORT = String(port);
+          pushConsole(`[coffilot] using HTTP port ${port} via SERVER_PORT.`, "stdout", "run");
+        }
+      }
+      spawnTool("run", args, "running", { bin: r.bin, label: r.label, env: toolEnv(extra), onLine: detectPort });
+      if (settings.devtools && mod && mod.devtools) {
+        startLiveReload({ module: module || "", mavenProfiles, bin: r.bin, label: r.label });
+      }
+      return { ok: true, started: true, mode: "spring", command: `${r.label} ${args.join(" ")}` };
+    }
+
     const args = ["-ntp"];
     if (module) args.push("-pl", module);
     if (mavenProfiles && mavenProfiles.trim()) args.push("-P", mavenProfiles.trim());
@@ -1417,54 +1787,67 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
       args.push(`-Dspring-boot.run.arguments=--server.port=${port}`);
       pushConsole(`[coffilot] using HTTP port ${port || "(random)"} via server.port.`, "stdout", "run");
     }
-    spawnMaven("run", args, "running", { onLine: detectPort }); // fire-and-forget
+    spawnTool("run", args, "running", { onLine: detectPort }); // fire-and-forget
     // DevTools restarts in place when target/classes changes, so watch sources
     // and recompile on save to drive that loop automatically.
     if (settings.devtools && mod && mod.devtools) {
-      const r = resolveRunner(true);
-      startLiveReload({ module: module || "", mavenProfiles, bin: r.bin, label: r.label });
+      const lr = resolveRunner(true);
+      startLiveReload({ module: module || "", mavenProfiles, bin: lr.bin, label: lr.label });
     }
     return { ok: true, started: true, mode: "spring", command: `${baseRunner().label} ${args.join(" ")}` };
   }
 
-  // Pure-Java: package the module, then launch its jar with `java -jar`.
+  // Pure-Java: build the module, then launch its jar with `java -jar`.
   runPureJava({ module, mavenProfiles });
   return { ok: true, started: true, mode: "java" };
 }
 
-/** Two-phase pure-Java launch: mvn package (compile gate) then java -jar.
+/** Two-phase pure-Java launch: build (compile/package gate) then java -jar.
  * Both phases run on the independent Run lane so launching the app never blocks
- * (or is blocked by) a Build/Test on the shared Maven lane. */
+ * (or is blocked by) a Build/Test on the shared build lane. */
 async function runPureJava({ module, mavenProfiles }) {
   app.runMode = "java";
-  const pkg = ["-ntp", "-Dmaven.test.skip=true"];
-  if (module) pkg.push("-pl", module);
-  if (mavenProfiles && mavenProfiles.trim()) pkg.push("-P", mavenProfiles.trim());
-  pkg.push("package");
-  const code = await spawnMaven("run", pkg, "building", {});
-  if (code !== 0) return; // run lane already 'failed' -> "fix startup" path
+  if (buildTool === "gradle") {
+    const r = resolveRunner(false);
+    const buildArgs = [gradleTaskPath(module, "build"), "-x", "test", "--console=plain"];
+    const code = await spawnTool("run", buildArgs, "building", { bin: r.bin, label: r.label });
+    if (code !== 0) return; // run lane already 'failed' -> "fix startup" path
+  } else {
+    const pkg = ["-ntp", "-Dmaven.test.skip=true"];
+    if (module) pkg.push("-pl", module);
+    if (mavenProfiles && mavenProfiles.trim()) pkg.push("-P", mavenProfiles.trim());
+    pkg.push("package");
+    const code = await spawnTool("run", pkg, "building", {});
+    if (code !== 0) return; // run lane already 'failed' -> "fix startup" path
+  }
 
   const jar = await findRunnableJar(module);
   if (!jar) {
-    pushConsole("[coffilot] no runnable .jar found under target/ for this module.", "stderr", "run");
+    const dirLabel = buildTool === "gradle" ? "build/libs/" : "target/";
+    pushConsole(`[coffilot] no runnable .jar found under ${dirLabel} for this module.`, "stderr", "run");
     lanes.run.phase = "failed";
     lanes.run.exitCode = -1;
     broadcast("status", statusSnapshot());
     return;
   }
-  spawnMaven("run", [NATIVE_ACCESS_FLAG, "-jar", jar], "running", { bin: "java", label: "java", onLine: detectPort });
+  spawnTool("run", [NATIVE_ACCESS_FLAG, "-jar", jar], "running", { bin: "java", label: "java", onLine: detectPort });
 }
 
-/** Best-effort pick of a module's main artifact jar (skip sources/javadoc). */
+/** Best-effort pick of a module's main artifact jar (skip sources/javadoc, and
+ * Gradle's non-executable `-plain.jar`). */
 async function findRunnableJar(module) {
-  const dir = path.join(workspacePath, module || "", "target");
+  const sub = buildTool === "gradle" ? path.join("build", "libs") : "target";
+  const dir = path.join(workspacePath, module || "", sub);
   let files;
   try {
     files = await readdir(dir);
   } catch {
     return null;
   }
-  const jars = files.filter((f) => f.endsWith(".jar") && !f.endsWith("-sources.jar") && !f.endsWith("-javadoc.jar"));
+  const jars = files.filter(
+    (f) =>
+      f.endsWith(".jar") && !f.endsWith("-sources.jar") && !f.endsWith("-javadoc.jar") && !f.endsWith("-plain.jar"),
+  );
   if (!jars.length) return null;
   // The shortest name is the main artifact (classifier-less) in most layouts.
   jars.sort((a, b) => a.length - b.length);
@@ -1498,14 +1881,15 @@ function killChild(child) {
 }
 
 /**
- * Stop one lane's process, the whole Maven group (op="maven" → build/test/
+ * Stop one lane's process, the whole build group (op="maven" → build/test/
  * package), or all of them when `op` is omitted. The Run lane also tears down
- * metrics polling and live reload; the Maven lanes just kill the shared child.
- * Lanes are independent, so stopping the Maven group leaves Run running.
+ * metrics polling and live reload; the build lanes just kill the shared child.
+ * Lanes are independent, so stopping the build group leaves Run running.
+ * ("maven" names the group for back-compat; it applies to Gradle projects too.)
  */
 function stopApp(op) {
   let targets;
-  if (op === "maven") targets = ["build", "test", "package"];
+  if (op === "maven" || op === "build-group") targets = ["build", "test", "package"];
   else if (op && lanes[op]) targets = [op];
   else targets = ["build", "test", "package", "run"];
   let stopped = false;
@@ -1569,16 +1953,17 @@ function xmlAttr(tag, name) {
 }
 
 /**
- * Parse every surefire TEST-*.xml into a structured report with per-method
- * results. {@code sinceMs} filters out stale reports left by earlier builds of
- * other modules so only the freshly-run module's results are reported.
+ * Parse every JUnit TEST-*.xml (Maven Surefire/Failsafe and Gradle
+ * build/test-results) into a structured report with per-method results.
+ * {@code sinceMs} filters out stale reports left by earlier builds of other
+ * modules so only the freshly-run module's results are reported.
  */
 async function collectSurefireReport(sinceMs) {
   const report = {
     summary: { tests: 0, passed: 0, failures: 0, errors: 0, skipped: 0, timeSec: 0, files: 0 },
     suites: [],
   };
-  const dirs = await findSurefireDirs(workspacePath, 0);
+  const dirs = await findTestResultDirs(workspacePath, 0);
   for (const dir of dirs) {
     let files;
     try {
@@ -1685,9 +2070,12 @@ function trimReportForAgent(report) {
   };
 }
 
-const SKIP_DIRS = new Set(["node_modules", ".git", ".m2", "src", "frontend"]);
+const SKIP_DIRS = new Set(["node_modules", ".git", ".m2", ".gradle", "src", "frontend"]);
 
-async function findSurefireDirs(root, depth, acc = []) {
+// Collect every directory that may hold JUnit TEST-*.xml: Maven's
+// target/surefire-reports + failsafe-reports, and Gradle's
+// build/test-results/<task> subfolders.
+async function findTestResultDirs(root, depth, acc = []) {
   if (depth > 4) return acc;
   let entries;
   try {
@@ -1698,12 +2086,22 @@ async function findSurefireDirs(root, depth, acc = []) {
   for (const e of entries) {
     if (!e.isDirectory()) continue;
     const full = path.join(root, e.name);
-    if (e.name === "surefire-reports") {
+    if (e.name === "surefire-reports" || e.name === "failsafe-reports") {
       acc.push(full);
       continue;
     }
+    if (e.name === "test-results") {
+      // Gradle nests results one level deeper, per test task (test, integrationTest…).
+      try {
+        const subs = await readdir(full, { withFileTypes: true });
+        for (const s of subs) if (s.isDirectory()) acc.push(path.join(full, s.name));
+      } catch {
+        /* ignore unreadable */
+      }
+      continue;
+    }
     if (SKIP_DIRS.has(e.name)) continue;
-    await findSurefireDirs(full, depth + 1, acc);
+    await findTestResultDirs(full, depth + 1, acc);
   }
   return acc;
 }
@@ -1843,7 +2241,7 @@ function codeBlock(lines, lang = "") {
 /** Console lines that look like build/compiler/startup errors. */
 function errorLines(op, max = 60) {
   const re =
-    /\[ERROR\]|BUILD FAILURE|Caused by:|Exception|cannot find symbol|incompatible types|APPLICATION FAILED TO START|Error creating bean|Port \d+ was already in use|FAILED/;
+    /\[ERROR\]|BUILD FAILURE|BUILD FAILED|error:|Caused by:|Exception|cannot find symbol|incompatible types|APPLICATION FAILED TO START|Error creating bean|Port \d+ was already in use|FAILED/;
   return lanes[op].console
     .map((e) => e.line)
     .filter((l) => re.test(l))
@@ -1861,7 +2259,7 @@ function buildFixPrompt(kind, extra = {}) {
     case "compile":
     case "package":
       return [
-        "The Maven build in this project failed to compile/package. Find the root cause and fix the code so the build passes.",
+        `The ${TOOL_LABEL} build in this project failed to compile/package. Find the root cause and fix the code so the build passes.`,
         where,
         "Build errors:",
         codeBlock(errorLines(op).length ? errorLines(op) : tail(op, 60)),
@@ -1912,6 +2310,24 @@ function buildFixPrompt(kind, extra = {}) {
         .join("\n\n");
     case "install-bootui": {
       const moduleName = extra.module || "";
+      if (buildTool === "gradle") {
+        const { rel, kts } = gradleModuleBuildFile(moduleName);
+        const dep = kts
+          ? `developmentOnly("com.julien-dubois.bootui:bootui-spring-boot-starter:VERSION")`
+          : `developmentOnly 'com.julien-dubois.bootui:bootui-spring-boot-starter:VERSION'`;
+        return [
+          "This is a Spring Boot application that does not yet depend on BootUI. Add the BootUI Spring Boot starter so its local developer console becomes available, scoped to dev-time only.",
+          `Edit \`${rel}\` and add the starter to the \`developmentOnly\` configuration inside the \`dependencies { }\` block (the Spring Boot Gradle plugin puts \`developmentOnly\` dependencies on the \`bootRun\` classpath but keeps them out of the packaged jar):`,
+          codeBlock(`dependencies {\n  ${dep}\n}`, kts ? "kotlin" : "groovy"),
+          [
+            "- If a `developmentOnly` line for this starter already exists, leave it; don't duplicate it.",
+            "- Use the latest released version of `com.julien-dubois.bootui:bootui-spring-boot-starter` from Maven Central; pin a concrete version rather than a range (replace `VERSION`).",
+          ].join("\n"),
+          "When done, tell me the version you pinned and the command to launch with BootUI enabled (e.g. `./gradlew bootRun`, then open http://localhost:8080/bootui).",
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+      }
       const pomRel = moduleName ? `${moduleName}/pom.xml` : "pom.xml";
       return [
         "This is a Spring Boot application that does not yet depend on BootUI. Add the BootUI Spring Boot starter so its local developer console becomes available, scoped to a dev-only Maven profile.",
@@ -1929,6 +2345,24 @@ function buildFixPrompt(kind, extra = {}) {
     }
     case "install-devtools": {
       const moduleName = extra.module || "";
+      if (buildTool === "gradle") {
+        const { rel, kts } = gradleModuleBuildFile(moduleName);
+        const resDir = moduleName ? `${moduleName}/src/main/resources` : "src/main/resources";
+        const dep = kts
+          ? `developmentOnly("org.springframework.boot:spring-boot-devtools")`
+          : `developmentOnly 'org.springframework.boot:spring-boot-devtools'`;
+        return [
+          "This is a Spring Boot application that doesn't yet use Spring Boot DevTools. Add DevTools (dev-time only) and turn on live reload so the app restarts automatically on code changes.",
+          `1. Edit \`${rel}\` and add DevTools to the \`developmentOnly\` configuration inside \`dependencies { }\` (this keeps it off the packaged jar):`,
+          codeBlock(`dependencies {\n  ${dep}\n}`, kts ? "kotlin" : "groovy"),
+          "   Omit the version so it inherits from the Spring Boot plugin's dependency management. Don't duplicate the line if it's already present.",
+          `2. In \`${resDir}/application.properties\` (create it if it doesn't exist), enable live reload:`,
+          codeBlock("spring.devtools.restart.enabled=true\nspring.devtools.livereload.enabled=true", "properties"),
+          "After editing, tell me to run with `./gradlew bootRun` — the canvas then recompiles on save so DevTools restarts the app.",
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+      }
       const pomRel = moduleName ? `${moduleName}/pom.xml` : "pom.xml";
       const resDir = moduleName ? `${moduleName}/src/main/resources` : "src/main/resources";
       return [
@@ -2379,21 +2813,28 @@ function makeCanvas() {
     id: "java-app",
     displayName: "Coffilot",
     description:
-      "Build, test, package and run a Maven Java/Spring Boot app, watch live JVM metrics, run advisor scans, and push fixes back to the agent. Degrades gracefully by capability (plain Java → Spring Boot → Actuator → BootUI).",
+      "Build, test, package and run a Maven or Gradle Java/Spring Boot app, watch live JVM metrics, run advisor scans, and push fixes back to the agent. Degrades gracefully by capability (plain Java → Spring Boot → Actuator → BootUI).",
     inputSchema: { type: "object", properties: {} },
     actions: [
       {
         name: "build_app",
-        description: "Run a Maven build (default: ./mvnw -ntp -DskipTests install). Waits for completion.",
+        description:
+          "Run a build with the project's build tool — Maven (default: ./mvnw -ntp -DskipTests install) or Gradle (default: ./gradlew build -x test). Waits for completion.",
         inputSchema: {
           type: "object",
           properties: {
-            args: { type: "string", description: "Override Maven args, space-separated (e.g. '-pl core test')." },
-            mavenProfiles: { type: "string", description: "Maven build profiles to activate via -P (e.g. 'fast,it')." },
+            args: {
+              type: "string",
+              description: "Override the build-tool args, space-separated (e.g. '-pl core test' or ':web:build').",
+            },
+            mavenProfiles: {
+              type: "string",
+              description: "Maven build profiles to activate via -P (Maven projects only; ignored for Gradle).",
+            },
             warm: {
               type: "boolean",
               description:
-                "Keep the JVM warm between runs by using the Maven Daemon (mvnd) when available for faster startup.",
+                "Keep the JVM warm between runs (Maven Daemon mvnd when available, or the Gradle daemon) for faster startup.",
             },
           },
         },
@@ -2402,16 +2843,22 @@ function makeCanvas() {
       {
         name: "run_tests",
         description:
-          "Run Maven tests (default: ./mvnw -ntp test) and return a parsed surefire report (per-suite counts plus failure details).",
+          "Run the project's tests — Maven (./mvnw -ntp test) or Gradle (./gradlew cleanTest test) — and return a parsed JUnit report (per-suite counts plus failure details).",
         inputSchema: {
           type: "object",
           properties: {
-            args: { type: "string", description: "Override Maven args, space-separated (e.g. '-pl core test')." },
-            mavenProfiles: { type: "string", description: "Maven build profiles to activate via -P (e.g. 'fast,it')." },
+            args: {
+              type: "string",
+              description: "Override the build-tool args, space-separated (e.g. '-pl core test' or ':web:test').",
+            },
+            mavenProfiles: {
+              type: "string",
+              description: "Maven build profiles to activate via -P (Maven projects only; ignored for Gradle).",
+            },
             warm: {
               type: "boolean",
               description:
-                "Keep the JVM warm between runs by using the Maven Daemon (mvnd) when available for faster startup.",
+                "Keep the JVM warm between runs (Maven Daemon mvnd when available, or the Gradle daemon) for faster startup.",
             },
           },
         },
@@ -2420,19 +2867,22 @@ function makeCanvas() {
       {
         name: "package_app",
         description:
-          "Run a Maven package build (default: ./mvnw -ntp package) to produce the artifact(s). Waits for completion. Shares the Maven lane with build/test (serialized), independent of a running app.",
+          "Build the deployable artifact(s) with the project's build tool — Maven (./mvnw -ntp package) or Gradle (./gradlew assemble). Waits for completion. Shares the build lane with build/test (serialized), independent of a running app.",
         inputSchema: {
           type: "object",
           properties: {
             args: {
               type: "string",
-              description: "Override Maven args, space-separated (e.g. '-pl core -DskipTests package').",
+              description: "Override the build-tool args, space-separated (e.g. '-pl core -DskipTests package').",
             },
-            mavenProfiles: { type: "string", description: "Maven build profiles to activate via -P (e.g. 'fast,it')." },
+            mavenProfiles: {
+              type: "string",
+              description: "Maven build profiles to activate via -P (Maven projects only; ignored for Gradle).",
+            },
             warm: {
               type: "boolean",
               description:
-                "Keep the JVM warm between runs by using the Maven Daemon (mvnd) when available for faster startup.",
+                "Keep the JVM warm between runs (Maven Daemon mvnd when available, or the Gradle daemon) for faster startup.",
             },
           },
         },
@@ -2442,16 +2892,19 @@ function makeCanvas() {
       {
         name: "start_app",
         description:
-          "Launch the app (returns immediately; output streams to the canvas). Spring Boot modules run via spring-boot:run; otherwise the module is packaged and run with java -jar. Use the 'dev' profile so BootUI activates and live metrics become available.",
+          "Launch the app (returns immediately; output streams to the canvas). Spring Boot modules run via spring-boot:run (Maven) or bootRun (Gradle); otherwise the module is built and run with java -jar. Use the 'dev' profile so BootUI activates and live metrics become available.",
         inputSchema: {
           type: "object",
           properties: {
-            module: { type: "string", description: "Maven module to run via -pl (e.g. 'web')." },
+            module: { type: "string", description: "Module to run (Maven -pl / Gradle subproject, e.g. 'web')." },
             profiles: {
               type: "string",
               description: "Spring profiles to activate (default 'dev'); ignored for non-Spring runs.",
             },
-            mavenProfiles: { type: "string", description: "Maven build profiles to activate via -P (e.g. 'fast')." },
+            mavenProfiles: {
+              type: "string",
+              description: "Maven build profiles to activate via -P (Maven projects only; ignored for Gradle).",
+            },
             mode: {
               type: "string",
               enum: ["spring", "java"],
