@@ -82,6 +82,7 @@ const mcpToggleLabel = document.getElementById("mcp-toggle-label");
 const mcpState = document.getElementById("mcp-state");
 const mcpScansEl = document.getElementById("mcp-scans");
 const mcpResultEl = document.getElementById("mcp-result");
+const mcpRegisterBtn = document.getElementById("mcp-register");
 let caps = {};
 
 if (warmCmd) {
@@ -355,6 +356,22 @@ function renderMetrics(m) {
 // ---- BootUI MCP server panel ------------------------------------------
 let mcpScansLoaded = false;
 
+// Offer "Register with Copilot" only while the MCP server is enabled (and
+// therefore reachable). Reset the button's label/enabled state only on the
+// hidden→visible transition so a recent "Asked Copilot ✓" survives the
+// frequent metrics re-renders.
+function showMcpRegister(show) {
+  if (!show) {
+    mcpRegisterBtn.hidden = true;
+    return;
+  }
+  if (mcpRegisterBtn.hidden) {
+    mcpRegisterBtn.hidden = false;
+    mcpRegisterBtn.disabled = false;
+    mcpRegisterBtn.textContent = "Register with Copilot";
+  }
+}
+
 // The MCP server lives inside the running app, so the toggle is only
 // actionable while a BootUI app (dev profile) exposes its endpoint. The
 // row stays visible in Settings either way; when unavailable we grey out
@@ -365,6 +382,7 @@ function setMcpUnavailable() {
   mcpToggle.disabled = true;
   mcpToggleLabel.classList.add("disabled");
   mcpState.textContent = "";
+  showMcpRegister(false);
   mcpScansEl.innerHTML =
     '<span class="muted" style="font-size:12px">Start a BootUI app (dev profile) with <strong>Run</strong> to manage its MCP server and advisor scans.</span>';
   mcpResultEl.innerHTML = "";
@@ -380,6 +398,7 @@ function renderMcp(mcp) {
   const enabled = mcp.enabled === true;
   mcpToggle.checked = enabled;
   mcpState.textContent = "";
+  showMcpRegister(enabled);
   if (!enabled) {
     mcpScansLoaded = false;
     mcpScansEl.innerHTML = '<span class="muted" style="font-size:12px">Enable the server to run advisor scans.</span>';
@@ -408,6 +427,7 @@ async function loadMcpScans() {
   const enabled = st.enabled === true;
   mcpToggle.checked = enabled;
   mcpState.textContent = "";
+  showMcpRegister(enabled);
   const scans = (st && st.scans) || [];
   if (!enabled) {
     mcpScansLoaded = false;
@@ -893,6 +913,12 @@ mcpToggle.onclick = async () => {
   await post("/api/mcp/toggle", { enabled });
   // Reflect the server's actual state and (re)load advisor scans.
   loadMcpScans();
+};
+
+mcpRegisterBtn.onclick = async () => {
+  mcpRegisterBtn.disabled = true;
+  mcpRegisterBtn.textContent = "Asked Copilot \u2713";
+  await post("/api/fix", { kind: "register-mcp" });
 };
 
 let lastRunnerLabel = null;

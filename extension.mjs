@@ -1738,6 +1738,24 @@ function buildFixPrompt(kind, extra = {}) {
         .filter(Boolean)
         .join("\n\n");
     }
+    case "register-mcp": {
+      const base = appBase();
+      const mcpUrl = base ? `${base}/bootui/api/mcp` : "http://127.0.0.1:<app-port>/bootui/api/mcp";
+      const cfg = JSON.stringify({ mcpServers: { bootui: { type: "http", url: mcpUrl } } }, null, 2);
+      return [
+        "Register this app's running BootUI MCP server with the GitHub Copilot CLI so its advisor scans (architecture, security, Spring, Hibernate, …) become callable as native MCP tools in this chat.",
+        `The BootUI MCP server is exposed by the running app over Streamable HTTP (JSON-RPC) at \`${mcpUrl}\`.`,
+        "Add it to the Copilot CLI MCP config (`~/.copilot/mcp-config.json`; create the file if it doesn't exist) under the `mcpServers` map, keyed as `bootui`:",
+        codeBlock(cfg, "json"),
+        [
+          "- Merge into any existing `mcpServers` block rather than overwriting it; if a `bootui` entry already exists, update its `url` instead of duplicating it.",
+          "- The URL points at the current run, so the app must stay up with its MCP server enabled for the tools to respond. If the app's port changes on a later run, update the `url`.",
+          "- After saving, the Copilot CLI must pick up the new server: reload the MCP config (e.g. the `/mcp` command) or restart the CLI, then confirm the `bootui` tools are listed.",
+        ].join("\n"),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
     default:
       return null;
   }
