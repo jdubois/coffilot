@@ -58,8 +58,11 @@ optional metrics + advisor-scan tier, not the project's identity.
   `public/styles.css` (canvas theme tokens, e.g. `var(--background-color-default, …)`)
   and client logic in `public/app.js`; both are served unauthenticated since they
   hold no secrets, while `/api/*` and `/events` stay token-gated.
-- The Maven project root is resolved by walking up from the extension folder to the
-  directory that owns `mvnw`, so Coffilot works regardless of where it is installed.
+- The Maven project root is resolved from the session's primary working directory
+  (the project the user opened, via the SDK permission-paths API), falling back to
+  walking up from the extension folder / launch cwd to the directory that owns
+  `mvnw`, so Coffilot works regardless of where it is installed (project-embedded or
+  a user/global symlink).
 
 ## Scope
 
