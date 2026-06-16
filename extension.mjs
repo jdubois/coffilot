@@ -1582,7 +1582,6 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
     lane.exitCode = null;
     broadcast("reset", { op });
     lane.console = [];
-    broadcast("status", statusSnapshot());
     session.log(`[coffilot] ${lane.command}`, { level: "info", ephemeral: true });
 
     const child = spawn(toolBin, withJLineDumbFlag(args, toolBin), {
@@ -1599,6 +1598,11 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
       detached: !isWindows,
     });
     lane.child = child;
+    // Broadcast status only after the child is tracked: statusSnapshot() reports a
+    // lane as busy via `lane.child !== null`, so emitting it earlier would mark the
+    // lane idle for the whole run, leaving the Stop button disabled (and the running
+    // spinner / button-greying off) until the process exits.
+    broadcast("status", statusSnapshot());
 
     const wire = (stream, name) => {
       let buf = "";
