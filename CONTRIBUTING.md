@@ -20,7 +20,7 @@ package / run the target Java project.
 
 - **Node.js 20+** (the runtime the Copilot CLI uses to launch the extension).
 - The **GitHub Copilot app** or Copilot CLI with canvas-extension support.
-- A **Maven** or **Gradle** Java / Spring Boot project to test against.
+- A **Maven** or **Gradle** Java / Spring Boot / Quarkus project to test against.
   [BootUI](https://github.com/jdubois/boot-ui)'s `bootui-sample-app` is a convenient
   target because it lights up every metrics tier.
 

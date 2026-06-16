@@ -1,7 +1,7 @@
 # Coffilot — Copilot instructions
 
 Coffilot is a **GitHub Copilot canvas extension** (not a Java app). It turns a
-Maven- or Gradle-based Java / Spring Boot project into an interactive console in the
+Maven- or Gradle-based Java / Spring Boot / Quarkus project into an interactive console in the
 Copilot app's side panel: Build / Test / Package / Run lanes, live JVM metrics, and a
 "Fix with Copilot" bridge. Read `README.md`, `PLAN.md`, and `CONTRIBUTING.md`
 before changing visible behavior.
@@ -52,9 +52,11 @@ are both first-class build tools, auto-detected per project.
   declaration + agent actions (`build_app`, `run_tests`, `package_app`, `start_app`,
   `stop_app`, `get_status`, `get_metrics`, `fix_issue`, `run_scan`), the build-tool
   runner (`spawn` of `./mvnw`/`mvnd` for Maven or `./gradlew`/`gradle` for Gradle,
-  with `--enable-native-access=ALL-UNNAMED` via `MAVEN_OPTS` / `GRADLE_OPTS`), the
-  JUnit report parser (Maven Surefire / Gradle `build/test-results`), the metrics/MCP
-  proxy (tiered BootUI → Actuator → process), and the fix-prompt builder.
+  with `--enable-native-access=ALL-UNNAMED` via `MAVEN_OPTS` / `GRADLE_OPTS`), the run
+  modes (`spring-boot:run`/`bootRun` for Spring Boot, `quarkus:dev`/`quarkusDev` for
+  Quarkus, else the generic Java runner), the JUnit report parser (Maven Surefire /
+  Gradle `build/test-results`), the metrics/MCP proxy (tiered BootUI → Actuator →
+  Quarkus Micrometer/health → process), and the fix-prompt builder.
 - `public/index.html`: the iframe UI markup (Build/Test/Package/Run + Live JVM +
   Settings tabs, live console, graphical test view, MCP panel). Styles live in
   `public/styles.css` (canvas theme tokens, e.g. `var(--background-color-default, …)`)

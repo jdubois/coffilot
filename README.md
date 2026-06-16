@@ -26,7 +26,6 @@ wins; when neither is found the console says so and stays disabled until one is 
 - **Package** &mdash; Maven `./mvnw -ntp package` or Gradle `./gradlew assemble`,
   streamed live like Build.
 - **Run** &mdash; `spring-boot:run` (Maven) / `bootRun` (Gradle) for a Spring Boot
-- **Run** &mdash; `spring-boot:run` (Maven) / `bootRun` (Gradle) for a Spring Boot
   module (+ Spring profiles), `quarkus:dev` (Maven) / `quarkusDev` (Gradle) for a
   Quarkus module (+ run profile), or, for a non-Spring/non-Quarkus module, the
   **generic runner**: the Gradle `application` plugin's `run` task, else build +
