@@ -81,6 +81,19 @@ button.danger:hover {
   background: color-mix(in srgb, #000 14%, var(--true-color-red, #cf222e));
   border-color: color-mix(in srgb, #000 14%, var(--true-color-red, #cf222e));
 }
+/* A Stop button that's been clicked but whose process hasn't exited yet: keep
+   it visibly "busy" (spinner + label) rather than letting :disabled grey it
+   out, so the click clearly registered. */
+button.is-stopping,
+button.is-stopping:hover {
+  opacity: 0.9;
+  cursor: progress;
+}
+button.danger.is-stopping,
+button.danger.is-stopping:hover {
+  background: var(--true-color-red, #cf222e);
+  border-color: var(--true-color-red, #cf222e);
+}
 button.fix {
   border-color: var(--true-color-orange, #bc4c00);
   color: var(--color-white, #fff);

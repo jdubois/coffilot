@@ -246,6 +246,54 @@ function appendLine(line, stream, op) {
 // Last status snapshot ({ build, test, package, run, reload }).
 // (declared above, near activeTab, so showTab can read it)
 
+// Optimistic "stopping" state for the two grouped Stop buttons. A stop request
+// is fire-and-forget, and the lane only reports !busy once the child process
+// actually dies (which can take a few seconds for a server). Without local
+// feedback the button looks dead, so we flip it to a disabled "Stopping…"
+// spinner the moment it's clicked and clear it when the lane goes idle (or a
+// safety timeout fires, in case the process ignores the stop and the user
+// needs to retry).
+const stopping = { maven: false, run: false };
+const stopTimers = { maven: null, run: null };
+
+function markStopping(which, op) {
+  if (stopping[which]) return;
+  stopping[which] = true;
+  appendLine(`[canvas] stopping ${which === "run" ? "the app" : "the build"}\u2026`, "stdout", op);
+  if (statusSnap) renderStatus(statusSnap);
+  clearTimeout(stopTimers[which]);
+  stopTimers[which] = setTimeout(() => {
+    if (!stopping[which]) return;
+    stopping[which] = false;
+    if (statusSnap) renderStatus(statusSnap);
+  }, 8000);
+}
+
+function clearStopping(which) {
+  stopping[which] = false;
+  clearTimeout(stopTimers[which]);
+  stopTimers[which] = null;
+}
+
+function applyStopButton(btn, which, busy) {
+  // The process has actually stopped: drop the optimistic state.
+  if (stopping[which] && !busy) clearStopping(which);
+  const isStopping = stopping[which];
+  btn.disabled = !busy || isStopping;
+  btn.classList.toggle("is-stopping", isStopping);
+  const spin = btn.querySelector(".btn-spin");
+  if (spin) spin.hidden = !isStopping;
+  const label = btn.querySelector(".btn-label");
+  if (label) label.textContent = isStopping ? "Stopping\u2026" : "Stop";
+  if (isStopping) {
+    btn.title = which === "run" ? "Stopping the app\u2026" : "Stopping the build\u2026";
+  } else if (busy) {
+    btn.title = which === "run" ? "Stop the running app" : "Stop the running build, test or package";
+  } else {
+    btn.title = which === "run" ? "The app isn't running" : "No build is running";
+  }
+}
+
 function renderStatus(s) {
   if (!s) return;
   statusSnap = s;
@@ -267,10 +315,8 @@ function renderStatus(s) {
   // The two grouped Stop buttons are global, not tied to the active tab:
   // the Maven Stop covers build/test/package; the Run Stop covers run.
   const mvnBusy = (s.build && s.build.busy) || (s.test && s.test.busy) || (s.package && s.package.busy);
-  btnStopMaven.disabled = !mvnBusy;
-  btnStopMaven.title = mvnBusy ? "Stop the running build, test or package" : "No build is running";
-  btnStopRun.disabled = !(run && run.busy);
-  btnStopRun.title = run && run.busy ? "Stop the running app" : "The app isn't running";
+  applyStopButton(btnStopMaven, "maven", mvnBusy);
+  applyStopButton(btnStopRun, "run", !!(run && run.busy));
   // Per-lane running spinners on the trigger buttons and tabs (global, so
   // they reflect activity regardless of which tab is showing).
   for (const op of ["build", "test", "package", "run"]) {
@@ -1000,8 +1046,18 @@ document.getElementById("btn-run").onclick = () => {
 // Two grouped Stop buttons: the Maven Stop kills the shared build/test/
 // package lane; the Run Stop kills the independent app. They are global,
 // so you can stop a build without killing the running app, or vice versa.
-btnStopMaven.onclick = () => post("/api/stop", { op: "maven" });
-btnStopRun.onclick = () => post("/api/stop", { op: "run" });
+btnStopMaven.onclick = () => {
+  if (btnStopMaven.disabled) return;
+  const s = statusSnap || {};
+  const op = ["build", "test", "package"].find((o) => s[o] && s[o].busy) || activeTab;
+  markStopping("maven", op);
+  post("/api/stop", { op: "maven" });
+};
+btnStopRun.onclick = () => {
+  if (btnStopRun.disabled) return;
+  markStopping("run", "run");
+  post("/api/stop", { op: "run" });
+};
 
 // Run tab: force-open the running app in a browser.
 btnOpenBrowser.onclick = () => post("/api/open-app", {});
