@@ -1523,6 +1523,50 @@ function stopApp(op) {
   return stopped ? { ok: true, stopped: true } : { ok: true, stopped: false, note: "Nothing was running." };
 }
 
+// ---------------------------------------------------------------------------
+// Process shutdown — never let a spawned Maven/Java process outlive us.
+//
+// The host stops the extension by terminating this Node process (SIGTERM, or
+// SIGINT during a Ctrl-C). Our children are spawned *attached*, but on POSIX an
+// attached child is NOT killed when its parent dies — it is reparented to
+// init/launchd and keeps running, holding its HTTP port. Closing the canvas
+// panel does not stop the app either (that is intentional; a panel can be
+// reopened). So the only safe place to guarantee no orphans is here, on the way
+// out: SIGTERM the whole lane group (which lets Spring Boot run its shutdown
+// hook / the plugin kill its forked JVM) and tear down the polling timers.
+let shuttingDown = false;
+function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try {
+    session.log(`[coffilot] received ${signal}; stopping child processes`, { level: "info", ephemeral: true });
+  } catch {
+    /* host channel may already be gone */
+  }
+  stopApp(); // SIGTERM every lane + stop metrics polling / live reload timers
+  // Don't block on killChild's 5s SIGKILL escalation; exit promptly. The "exit"
+  // handler below force-kills anything still alive as a last resort.
+  setTimeout(() => process.exit(0), 1500).unref();
+}
+
+process.once("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.once("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// Last-ditch synchronous sweep for any other exit path (process.exit elsewhere,
+// a handled fatal error). Only synchronous work runs during "exit".
+process.on("exit", () => {
+  for (const o of ["build", "test", "package", "run"]) {
+    const child = lanes[o].child;
+    if (child && !child.killed) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+});
+
 const PORT_PATTERNS = [
   /Tomcat (?:started|initialized).*?port[s]?(?:\(s\))?:?\s*(\d+)/i,
   /Netty started on port[s]?(?:\(s\))?:?\s*(\d+)/i,
