@@ -17,3 +17,7 @@ npm-debug.log*
 # Runtime state written by the extension when run from this clone
 # (e.g. via a ~/.copilot/extensions/coffilot symlink).
 artifacts/
+
+# JDTLS (Eclipse JDT Language Server) data workspace, created by the Copilot
+# CLI's Java language server when it indexes this project.
+.jdtls-workspace/
