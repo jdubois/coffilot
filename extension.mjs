@@ -497,7 +497,30 @@ const app = {
   appReachedUp: false, // app served a metrics endpoint at least once this run
   module: null, // module selected for the current run (for live reload)
   mavenProfiles: null, // Maven profiles used for the current run (for live reload)
+  // Structured Spring Boot startup summary, parsed from the run console so it
+  // works from plain stdout (no Actuator/BootUI needed). null until first Run.
+  startup: null,
 };
+
+// Reset the Spring Boot startup summary at the start of a Run. status walks
+// starting -> started (banner "Started … in N s") -> stopped | failed (on exit).
+function resetStartup() {
+  app.startup = {
+    status: "starting", // starting | started | stopped | failed
+    appName: null,
+    bootVersion: null,
+    javaVersion: null,
+    pid: null,
+    profiles: [],
+    server: null, // Tomcat | Netty | Undertow | Jetty
+    port: null,
+    contextPath: null,
+    startupSeconds: null,
+    events: [], // { level: "WARN" | "ERROR", message } captured during startup
+    failureReason: null, // human-readable reason from Spring's failure analyzer
+  };
+  awaitingFailureDesc = false;
+}
 
 // Latest unit-test results (from a foreground Test run).
 let lastTest = null; // summary { tests, failures, errors, skipped }
@@ -890,6 +913,10 @@ function spawnMaven(op, args, phase, { onLine, bin, label } = {}) {
         // A run that exits non-zero before the app ever served metrics is a
         // startup crash (surface a Fix button); otherwise it was a clean stop.
         lane.phase = code === 0 || app.appReachedUp ? "stopped" : "failed";
+        if (app.startup) {
+          app.startup.status = lane.phase === "failed" ? "failed" : "stopped";
+          broadcast("run-startup", app.startup);
+        }
       } else {
         lane.phase = code === 0 ? "idle" : "failed";
       }
@@ -1099,6 +1126,8 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
   app.appPort = null;
   app.appUp = false;
   app.appReachedUp = false;
+  resetStartup();
+  broadcast("run-startup", app.startup);
   csrfToken = null;
   lastMetrics = { appUp: false };
 
@@ -1132,7 +1161,7 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
       args.push(`-Dspring-boot.run.arguments=--server.port=${port}`);
       pushConsole(`[coffilot] using HTTP port ${port || "(random)"} via server.port.`, "stdout", "run");
     }
-    spawnMaven("run", args, "running", { onLine: detectPort }); // fire-and-forget
+    spawnMaven("run", args, "running", { onLine: onRunLine }); // fire-and-forget
     // DevTools restarts in place when target/classes changes, so watch sources
     // and recompile on save to drive that loop automatically.
     if (settings.devtools && mod && mod.devtools) {
@@ -1167,7 +1196,7 @@ async function runPureJava({ module, mavenProfiles }) {
     broadcast("status", statusSnapshot());
     return;
   }
-  spawnMaven("run", [NATIVE_ACCESS_FLAG, "-jar", jar], "running", { bin: "java", label: "java", onLine: detectPort });
+  spawnMaven("run", [NATIVE_ACCESS_FLAG, "-jar", jar], "running", { bin: "java", label: "java", onLine: onRunLine });
 }
 
 /** Best-effort pick of a module's main artifact jar (skip sources/javadoc). */
@@ -1254,12 +1283,142 @@ function detectPort(line) {
     const m = line.match(re);
     if (m) {
       app.appPort = Number(m[1]);
+      if (app.startup && app.startup.port == null) app.startup.port = app.appPort;
       pushConsole(`[coffilot] detected app port ${app.appPort}; polling /bootui/api`, "stdout", "run");
       broadcast("status", statusSnapshot());
       startMetricsPolling();
       return;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Spring Boot startup parsing (drives the Run tab's graphical "Startup" view)
+// ---------------------------------------------------------------------------
+//
+// Spring Boot prints a structured startup sequence to stdout regardless of
+// whether Actuator / BootUI are present, so parsing it gives a useful summary
+// for plain `java -jar` fat jars and `spring-boot:run` alike. Each matcher is
+// defensive about version-to-version wording differences.
+
+// ":: Spring Boot ::                (v3.4.1)"
+const SB_VERSION_RE = /:: Spring Boot ::\s*\(v?([^)\s]+)\)/i;
+// "Starting DemoApplication using Java 21.0.1 with PID 12345 (… started by …)"
+// Older: "Starting DemoApplication v0.0.1 using Java 17 on HOST with PID 12345"
+const SB_STARTING_RE =
+  /\bStarting\s+(\S+?)(?:\s+v\S+)?\s+(?:using\s+Java\s+(\S+)\s+)?(?:on\s+\S+\s+)?with\s+PID\s+(\d+)/i;
+// "The following 1 profile is active: "dev"" / "… 2 profiles are active: "dev", "local""
+const SB_PROFILES_RE = /following\s+\d+\s+profiles?\s+(?:is|are)\s+active:\s*(.+)$/i;
+const SB_NO_PROFILE_RE = /No active profile set/i;
+// "Tomcat started on port 8080 (http) with context path '/'" and the earlier
+// "Tomcat initialized with port 8080 (http)"; also Netty/Undertow/Jetty. The
+// server name must be followed by started/initialized so it matches the message
+// wording rather than the logger's package (e.g. "…embedded.tomcat.Tomcat…").
+const SB_SERVER_RE =
+  /\b(Tomcat|Netty|Undertow|Jetty)\s+(?:started|initialized)\b[^\n]*?\bport[s]?(?:\(s\))?:?\s*(\d+)/i;
+const SB_CONTEXT_RE = /context path '([^']*)'/i;
+// "Started DemoApplication in 3.456 seconds (process running for 3.789)"
+const SB_STARTED_RE = /\bStarted\s+\S+\s+in\s+([\d.]+)\s+seconds/i;
+const SB_FAILED_RE = /APPLICATION FAILED TO START/i;
+// Default logback pattern: "<ISO ts>  WARN 12345 --- [thread] logger : message".
+// Anchored on a leading timestamp + level so a stray "WARN" inside a message
+// (or one of our own [coffilot] lines) is never mistaken for a log event. The
+// bracket group repeats because tracing setups (e.g. BootUI) insert an extra
+// "[traceId,spanId]" correlation field between the thread name and the logger.
+const SB_EVENT_RE =
+  /^\d{4}-\d\d-\d\d[ T][\d:.,]+(?:[+-]\d\d:?\d\d|Z)?\s+(WARN|ERROR)\s+\d+\s+---\s+(?:\[[^\]]*\]\s+)+(\S+)\s+:\s+(.*)$/;
+
+const STARTUP_EVENT_CAP = 50;
+
+// Tracks whether we are inside Spring Boot's "APPLICATION FAILED TO START" block,
+// waiting for the "Description:" reason line so it can be captured.
+let awaitingFailureDesc = false;
+
+function splitProfiles(raw) {
+  return raw
+    .split(",")
+    .map((p) => p.trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean);
+}
+
+function parseStartupLine(line) {
+  const su = app.startup;
+  if (!su) return;
+  let changed = false;
+
+  let m = line.match(SB_VERSION_RE);
+  if (m && su.bootVersion !== m[1]) {
+    su.bootVersion = m[1];
+    changed = true;
+  }
+
+  m = line.match(SB_STARTING_RE);
+  if (m) {
+    su.appName = m[1];
+    if (m[2]) su.javaVersion = m[2];
+    su.pid = Number(m[3]);
+    changed = true;
+  }
+
+  m = line.match(SB_PROFILES_RE);
+  if (m) {
+    su.profiles = splitProfiles(m[1]);
+    changed = true;
+  } else if (SB_NO_PROFILE_RE.test(line) && !su.profiles.length) {
+    su.profiles = ["default"];
+    changed = true;
+  }
+
+  m = line.match(SB_SERVER_RE);
+  if (m) {
+    su.server = m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
+    if (su.port == null) su.port = Number(m[2]);
+    const ctx = line.match(SB_CONTEXT_RE);
+    if (ctx) su.contextPath = ctx[1] || "/";
+    changed = true;
+  }
+
+  m = line.match(SB_STARTED_RE);
+  if (m) {
+    su.startupSeconds = Number(m[1]);
+    su.status = "started";
+    changed = true;
+  }
+
+  if (SB_FAILED_RE.test(line)) {
+    su.status = "failed";
+    awaitingFailureDesc = false;
+    changed = true;
+  }
+
+  // After the "APPLICATION FAILED TO START" banner, Spring's failure analyzer
+  // prints a human-readable reason under "Description:" with no log prefix.
+  // Capture the first non-blank line that follows so the failed view can explain
+  // *why* (e.g. "Web server failed to start. Port 8080 was already in use.").
+  if (su.status === "failed" && !su.failureReason) {
+    if (/^Description:\s*$/.test(line)) {
+      awaitingFailureDesc = true;
+    } else if (awaitingFailureDesc && line.trim()) {
+      su.failureReason = line.trim();
+      awaitingFailureDesc = false;
+      changed = true;
+    }
+  }
+
+  m = line.match(SB_EVENT_RE);
+  if (m && m[3].trim()) {
+    su.events.push({ level: m[1], message: m[3].trim() });
+    if (su.events.length > STARTUP_EVENT_CAP) su.events.shift();
+    changed = true;
+  }
+
+  if (changed) broadcast("run-startup", su);
+}
+
+// Per-line hook for the Run lane: app-port detection + Spring Boot startup parse.
+function onRunLine(line) {
+  detectPort(line);
+  parseStartupLine(line);
 }
 
 // ---------------------------------------------------------------------------
@@ -1882,6 +2041,7 @@ const server = createServer(async (req, res) => {
       // UI replays it into the right console.
       console: [...lanes.build.console, ...lanes.test.console, ...lanes.package.console, ...lanes.run.console],
       tests: lastTestReport,
+      startup: app.startup,
       env: envSnapshot(),
     });
     return;

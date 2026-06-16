@@ -25,6 +25,10 @@ Shipped in the extension today:
 
 - Build / Test / Package / Run lanes with live SSE-streamed console output, a
   graphical Surefire test view with a live progress bar, and a console toggle.
+- Run lane "Startup" graphical view: a Spring Boot startup summary parsed from
+  stdout (status, Boot version, Java, PID, active profiles, web server + clickable
+  port, notable WARN/ERROR events, and the failure reason on a failed start) with
+  a Startup / Console sub-toggle. Works from plain stdout, no Actuator/BootUI needed.
 - Maven lane (Build/Test/Package) running independently of the long-lived Run lane.
 - Reactor scan for runnable modules, Spring Boot detection, and Spring + Maven
   profile discovery.
