@@ -1,8 +1,8 @@
 # Coffilot — Copilot instructions
 
 Coffilot is a **GitHub Copilot canvas extension** (not a Java app). It turns a
-Maven-based Java / Spring Boot project into an interactive console in the Copilot
-app's side panel: Build / Test / Package / Run lanes, live JVM metrics, and a
+Maven- or Gradle-based Java / Spring Boot project into an interactive console in the
+Copilot app's side panel: Build / Test / Package / Run lanes, live JVM metrics, and a
 "Fix with Copilot" bridge. Read `README.md`, `PLAN.md`, and `CONTRIBUTING.md`
 before changing visible behavior.
 
@@ -43,28 +43,33 @@ before changing visible behavior.
 
 The project identity is **Coffilot**. Keep references to **BootUI**, **Actuator**,
 and **`mvnd`** only where they name a real integration/tier — BootUI is the richest
-optional metrics + advisor-scan tier, not the project's identity.
+optional metrics + advisor-scan tier, not the project's identity. Maven and Gradle
+are both first-class build tools, auto-detected per project.
 
 ## How it works (orientation)
 
 - `extension.mjs`: `joinSession({ canvases: [makeCanvas()] })`, the canvas
   declaration + agent actions (`build_app`, `run_tests`, `package_app`, `start_app`,
-  `stop_app`, `get_status`, `get_metrics`, `fix_issue`, `run_scan`), the Maven runner
-  (`spawn` of `./mvnw`/`mvnd` with `--enable-native-access=ALL-UNNAMED` via
-  `MAVEN_OPTS`), the Surefire report parser, the metrics/MCP proxy (tiered
-  BootUI → Actuator → process), and the fix-prompt builder.
+  `stop_app`, `get_status`, `get_metrics`, `fix_issue`, `run_scan`), the build-tool
+  runner (`spawn` of `./mvnw`/`mvnd` for Maven or `./gradlew`/`gradle` for Gradle,
+  with `--enable-native-access=ALL-UNNAMED` via `MAVEN_OPTS` / `GRADLE_OPTS`), the
+  JUnit report parser (Maven Surefire / Gradle `build/test-results`), the metrics/MCP
+  proxy (tiered BootUI → Actuator → process), and the fix-prompt builder.
 - `public/index.html`: the iframe UI markup (Build/Test/Package/Run + Live JVM +
   Settings tabs, live console, graphical test view, MCP panel). Styles live in
   `public/styles.css` (canvas theme tokens, e.g. `var(--background-color-default, …)`)
   and client logic in `public/app.js`; both are served unauthenticated since they
   hold no secrets, while `/api/*` and `/events` stay token-gated.
-- The Maven project root is resolved from the session's primary working directory
-  (the project the user opened, via the SDK permission-paths API), falling back to
-  walking up from the extension folder / launch cwd to the directory that owns
-  `mvnw`, so Coffilot works regardless of where it is installed (project-embedded or
-  a user/global symlink).
+- The build tool is auto-detected per project: Maven (`pom.xml` / `mvnw`) wins when
+  present, otherwise Gradle (`build.gradle[.kts]` / `gradlew`). The project root is
+  resolved from the session's primary working directory (the project the user opened,
+  via the SDK permission-paths API), falling back to walking up from the extension
+  folder / launch cwd to the directory that owns the build wrapper (`mvnw` or
+  `gradlew`), so Coffilot works regardless of where it is installed (project-embedded
+  or a user/global symlink).
 
 ## Scope
 
-Maven only (Gradle is out of scope), loopback only (no remote access), and no
-mutation of the target project's source without an explicit agent action.
+Maven and Gradle build tools (auto-detected per project), loopback only (no remote
+access), and no mutation of the target project's source without an explicit agent
+action.

@@ -12,7 +12,7 @@
 
 - [ ] `npm run check` passes (syntax check of `extension.mjs`).
 - [ ] `npm run format:check` passes (Prettier).
-- [ ] Manually verified the change in a live Coffilot canvas on a Maven project.
+- [ ] Manually verified the change in a live Coffilot canvas on a Maven or Gradle project.
 - [ ] Updated `README.md` / `PLAN.md` if behaviour changed.
 - [ ] No secrets committed.
 
