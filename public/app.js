@@ -43,6 +43,16 @@ const warmCopied = document.getElementById("warm-copied");
 const warmDocs = document.getElementById("warm-docs");
 const btnAddBootui = document.getElementById("btn-add-bootui");
 const btnAddDevtools = document.getElementById("btn-add-devtools");
+const setJdtls = document.getElementById("set-jdtls");
+const jdtlsDot = document.getElementById("jdtls-dot");
+const jdtlsStateEl = document.getElementById("jdtls-state");
+const jdtlsInfoEl = document.getElementById("jdtls-info");
+const btnSetupJdtls = document.getElementById("btn-setup-jdtls");
+const jdtlsBanner = document.getElementById("jdtls-banner");
+const jdtlsMsg = document.getElementById("jdtls-msg");
+const jdtlsCmd = document.getElementById("jdtls-cmd");
+const jdtlsCopied = document.getElementById("jdtls-copied");
+const jdtlsDocs = document.getElementById("jdtls-docs");
 const reloadPill = document.getElementById("reload-pill");
 const setSpring = document.getElementById("set-spring");
 const setDevtools = document.getElementById("set-devtools");
@@ -90,6 +100,8 @@ let caps = {};
 // Whether a Maven/Gradle build tool is present. When false the canvas runs
 // in degraded mode: Build/Test/Package/Run stay disabled.
 let toolPresent = true;
+// Last JDTLS availability snapshot (env.jdtls), used for the toolchain pill.
+let jdtlsState = {};
 
 if (warmCmd) {
   warmCmd.onclick = async () => {
@@ -101,6 +113,22 @@ if (warmCmd) {
       // Clipboard may be unavailable in the sandbox; selecting is the fallback.
       const r = document.createRange();
       r.selectNodeContents(warmCmd);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+  };
+}
+
+if (jdtlsCmd) {
+  jdtlsCmd.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(jdtlsCmd.textContent.trim());
+      jdtlsCopied.hidden = false;
+      setTimeout(() => (jdtlsCopied.hidden = true), 1500);
+    } catch {
+      const r = document.createRange();
+      r.selectNodeContents(jdtlsCmd);
       const sel = window.getSelection();
       sel.removeAllRanges();
       sel.addRange(r);
@@ -760,6 +788,7 @@ function applySettingsState(s) {
 function applyEnv(env) {
   moduleList = (env && env.modules) || [];
   populateModules(env && env.modules);
+  applyJdtls(env && env.jdtls);
   applyCaps(env && env.capabilities);
   updateDevSetup();
   // "dev" is always offered for Spring (it's the default and activates BootUI).
@@ -869,7 +898,76 @@ function applyCaps(c) {
   );
   html += pill("Actuator", !!caps.actuator, "Spring Boot Actuator metrics (static hint; confirmed at runtime).");
   html += pill("BootUI", !!caps.bootui, "BootUI rich metrics + MCP advisor scans.");
+  html += pill(
+    "JDTLS",
+    !!jdtlsState.available,
+    jdtlsState.available
+      ? "Eclipse JDT Language Server is available — Copilot has Java code intelligence."
+      : "JDTLS (Java code intelligence) isn't available; set it up from Settings.",
+  );
   capsEl.innerHTML = html;
+}
+
+// Render the JDTLS availability indicator + setup affordance in Settings.
+// JDTLS isn't part of this extension (the Copilot CLI launches it), so this
+// reflects a real availability check from the backend.
+function applyJdtls(j) {
+  jdtlsState = j || {};
+  // The row is meaningful for any Java project, which Coffilot always is.
+  setJdtls.hidden = false;
+  const available = !!jdtlsState.available;
+  const reason = jdtlsState.reason || null;
+  const install = jdtlsState.install || {};
+  const java = jdtlsState.java || {};
+
+  jdtlsDot.classList.toggle("on", available);
+  jdtlsDot.classList.toggle("off", !available && reason !== "old-jdk");
+  jdtlsDot.classList.toggle("warn", !available && reason === "old-jdk");
+
+  if (available) {
+    jdtlsStateEl.textContent = jdtlsState.indexed ? "working · indexed this project" : "working";
+    jdtlsInfoEl.dataset.tip =
+      "JDTLS is installed and wired into the Copilot CLI" +
+      (java.version ? ` (JDK ${java.version})` : "") +
+      " — Java go-to-definition, find references and hover are available.";
+    btnSetupJdtls.hidden = true;
+    jdtlsBanner.hidden = true;
+    return;
+  }
+
+  // Not available: explain why, surface the install command, offer setup.
+  const label =
+    reason === "no-launcher"
+      ? "not installed"
+      : reason === "old-jdk"
+        ? `needs Java ${jdtlsState.minJava || 21}+`
+        : reason === "no-config"
+          ? "not configured"
+          : "not available";
+  jdtlsStateEl.textContent = label;
+
+  const msg =
+    reason === "no-launcher"
+      ? "The <strong>jdtls</strong> launcher isn't on your PATH, so Copilot can't provide Java code intelligence. Install it:"
+      : reason === "old-jdk"
+        ? `The active JDK (${esc(java.version || "unknown")}) is older than Java ${jdtlsState.minJava || 21}, which JDTLS requires. Install/select a newer JDK, then:`
+        : reason === "no-config"
+          ? "The Copilot CLI has no Java language-server entry, so it never launches JDTLS. Set it up:"
+          : "JDTLS (Java code intelligence) couldn't be confirmed. Set it up:";
+  jdtlsMsg.innerHTML = msg;
+  if (install.cmd) {
+    jdtlsCmd.textContent = install.cmd;
+    jdtlsCmd.hidden = false;
+  } else {
+    jdtlsCmd.hidden = true;
+  }
+  jdtlsDocs.href = install.url || "https://github.com/eclipse-jdtls/eclipse.jdt.ls";
+  jdtlsInfoEl.dataset.tip =
+    "JDTLS gives Copilot Java go-to-definition, find references and hover. It isn't available right now — use “Set up JDTLS” to have Copilot install and wire it.";
+  btnSetupJdtls.hidden = false;
+  btnSetupJdtls.disabled = false;
+  btnSetupJdtls.textContent = "Set up JDTLS";
+  jdtlsBanner.hidden = false;
 }
 
 const warm = () => warmInput.checked === true;
@@ -920,6 +1018,20 @@ btnAddDevtools.onclick = async () => {
   btnAddDevtools.disabled = true;
   btnAddDevtools.textContent = "Asked Copilot \u2713";
   await post("/api/fix", { kind: "install-devtools", module: moduleSelect.value });
+};
+btnSetupJdtls.onclick = async () => {
+  btnSetupJdtls.disabled = true;
+  btnSetupJdtls.textContent = "Asked Copilot \u2713";
+  const j = jdtlsState || {};
+  await post("/api/fix", {
+    kind: "install-jdtls",
+    reason: j.reason || null,
+    os: (j.install && j.install.os) || null,
+    installCmd: (j.install && j.install.cmd) || null,
+    minJava: j.minJava || null,
+    javaVersion: (j.java && j.java.version) || null,
+    configFile: j.configFile || null,
+  });
 };
 
 // Persist every setting (auto-saved on change). The backend reacts to

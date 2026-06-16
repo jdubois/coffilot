@@ -977,6 +977,34 @@ aside h2 {
   align-items: flex-start;
   gap: 0.45rem;
 }
+/* Java language server (JDTLS) status row */
+.jdtls-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.45rem;
+}
+.jdtls-row .mcp-state {
+  color: var(--text-color-muted, #656d76);
+  font-style: italic;
+  font-size: 12px;
+}
+.jdtls-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--text-color-muted, #656d76);
+  flex: 0 0 auto;
+}
+.jdtls-dot.on {
+  background: var(--true-color-green, #1a7f37);
+}
+.jdtls-dot.off {
+  background: var(--true-color-red, #cf222e);
+}
+.jdtls-dot.warn {
+  background: var(--true-color-orange, #bc4c00);
+}
 .setting-banner {
   border: 1px solid var(--border-color-default, #d0d7de);
   border-radius: 6px;

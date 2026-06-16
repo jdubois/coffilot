@@ -25,7 +25,7 @@ import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, writeFileSync, watch as fsWatch } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -327,6 +327,191 @@ function mvndInstallHint() {
     return { os: "macOS", cmd: "brew install mvndaemon/homebrew-mvnd/mvnd", url };
   }
   return { os: "Linux", cmd: "sdk install mvnd", url };
+}
+
+// ---------------------------------------------------------------------------
+// JDTLS (Eclipse JDT Language Server) detection
+// ---------------------------------------------------------------------------
+//
+// JDTLS powers the Copilot CLI's Java code intelligence (go-to-definition, find
+// references, hover, …). It is NOT part of this extension: the CLI launches it
+// out-of-process from whatever its lsp-config declares. So "is JDTLS available?"
+// is the conjunction of three things the CLI itself needs:
+//   1. The CLI is wired to a Java language server — its lsp-config maps `.java`.
+//   2. That server's launcher command resolves to a real executable on disk.
+//   3. A JDK new enough to run JDTLS (Java 21+) is what would launch it.
+// We also surface whether it has already indexed this project (a populated
+// `-data` workspace), which is strong proof it actually ran here. The detection
+// mirrors exactly what the CLI does rather than hard-coding "jdtls", so it stays
+// correct if the user points the Java server at a different launcher.
+
+const JDTLS_MIN_JAVA = 21; // Eclipse JDT LS 1.x requires a Java 21+ runtime.
+
+// Copilot CLI config dirs, most-specific first. Honor explicit overrides, then
+// the conventional ~/.copilot home.
+function copilotConfigDirs() {
+  const dirs = [];
+  for (const v of [process.env.COPILOT_CONFIG_DIR, process.env.COPILOT_HOME, process.env.GH_COPILOT_HOME]) {
+    if (v) dirs.push(v);
+  }
+  const home = os.homedir();
+  if (home) dirs.push(path.join(home, ".copilot"));
+  return dirs;
+}
+
+// The Java language-server entry the CLI would load: the first lsp-config.json
+// under a config dir that maps `.java` to a server. lsp-config.json is the
+// canonical active file (the *-java / *-jdtls / *-grep variants are presets the
+// user swaps in). Returns { id, command, args, file } or null.
+function readJavaLspConfig() {
+  for (const dir of copilotConfigDirs()) {
+    const file = path.join(dir, "lsp-config.json");
+    let json;
+    try {
+      json = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      continue;
+    }
+    const servers = json && json.lspServers;
+    if (!servers || typeof servers !== "object") continue;
+    for (const [id, cfg] of Object.entries(servers)) {
+      const exts = cfg && cfg.fileExtensions;
+      const mapsJava = exts && typeof exts === "object" && Object.keys(exts).some((e) => e.toLowerCase() === ".java");
+      if (mapsJava && cfg.command) {
+        return { id, command: cfg.command, args: Array.isArray(cfg.args) ? cfg.args : [], file };
+      }
+    }
+  }
+  return null;
+}
+
+// Resolve an executable by name across PATH + common package-manager bin dirs
+// (mirrors detectMvn's strategy). An explicit path in the config is honored as-is.
+function resolveExecutable(command) {
+  if (!command) return null;
+  if (command.includes("/") || command.includes("\\")) {
+    return existsSync(command) ? command : null;
+  }
+  const exeNames = isWindows ? [command + ".cmd", command + ".bat", command + ".exe", command] : [command];
+  const dirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  const extra = isWindows ? [] : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/home/linuxbrew/.linuxbrew/bin"];
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  if (home && !isWindows) {
+    extra.push(path.join(home, ".local/bin"));
+    extra.push(path.join(home, ".local/share/nvim/mason/bin")); // nvim/mason installs jdtls here
+  }
+  for (const dir of [...dirs, ...extra]) {
+    for (const exe of exeNames) {
+      const c = path.join(dir, exe);
+      try {
+        if (existsSync(c)) return c;
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return null;
+}
+
+// The JDK that would actually launch JDTLS: JAVA_HOME if set (launchers honor it),
+// else `java` on PATH. We read its major version to confirm the Java 21+ floor.
+// Cached only once adequate, so fixing JAVA_HOME and refocusing self-heals.
+let runtimeJdkInfo = null;
+function detectRuntimeJdk() {
+  if (runtimeJdkInfo && runtimeJdkInfo.ok) return runtimeJdkInfo;
+  const info = { ok: false, version: null, major: null, home: process.env.JAVA_HOME || null };
+  const bin = info.home ? path.join(info.home, "bin", isWindows ? "java.exe" : "java") : "java";
+  try {
+    const res = spawnSync(bin, ["-version"], { encoding: "utf8", timeout: 5000 });
+    const out = `${res.stderr || ""}${res.stdout || ""}`;
+    const m = out.match(/version "([^"]+)"/); // e.g. "21.0.2" or legacy "1.8.0_392"
+    if (m) {
+      info.version = m[1];
+      const parts = m[1].split(".");
+      const major = parts[0] === "1" ? parseInt(parts[1], 10) : parseInt(parts[0], 10);
+      if (!Number.isNaN(major)) {
+        info.major = major;
+        info.ok = major >= JDTLS_MIN_JAVA;
+      }
+    }
+  } catch {
+    /* no resolvable java */
+  }
+  runtimeJdkInfo = info;
+  return info;
+}
+
+// The JDTLS `-data` workspace dir from the config args. A relative path is
+// created by the CLI relative to its working dir, which is normally the Maven
+// project root but can differ from the extension's own cwd, so callers resolve
+// it against several candidate bases. Defaults to .jdtls-workspace.
+function jdtlsDataArg(cfg) {
+  const args = (cfg && cfg.args) || [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "-data" && args[i + 1]) return args[i + 1];
+    if (typeof a === "string" && a.startsWith("-data=")) return a.slice("-data=".length);
+  }
+  return ".jdtls-workspace";
+}
+
+// True once JDTLS has created its JDT LS core state in the data workspace, which
+// only happens after it has actually launched and started indexing a project.
+// For a relative -data path we probe the likely project roots.
+function jdtlsHasIndexed(cfg) {
+  const dataArg = jdtlsDataArg(cfg);
+  const bases = path.isAbsolute(dataArg)
+    ? [dataArg]
+    : [...new Set([workspacePath, process.cwd()])].map((b) => path.join(b, dataArg));
+  return bases.some((dir) => {
+    try {
+      return existsSync(path.join(dir, ".metadata", ".plugins", "org.eclipse.jdt.ls.core"));
+    } catch {
+      return false;
+    }
+  });
+}
+
+// Platform guidance for installing the JDTLS launcher, used when it's missing.
+function jdtlsInstallHint() {
+  const url = "https://github.com/eclipse-jdtls/eclipse.jdt.ls";
+  if (isWindows) return { os: "Windows", cmd: "scoop install jdtls", url };
+  if (process.platform === "darwin") return { os: "macOS", cmd: "brew install jdtls", url };
+  return { os: "Linux", cmd: "brew install jdtls", url };
+}
+
+// Cached only once fully available, so installing/repairing JDTLS while the
+// canvas is open self-heals on the next focus-triggered env refresh.
+let jdtlsInfo = null;
+function detectJdtls() {
+  if (jdtlsInfo && jdtlsInfo.available) return jdtlsInfo;
+  const cfg = readJavaLspConfig();
+  const configured = !!cfg;
+  const command = cfg ? cfg.command : "jdtls";
+  const launcher = resolveExecutable(command);
+  const jdk = detectRuntimeJdk();
+  // Only let the JDK gate availability when we positively detect an inadequate
+  // one; an undetectable java shouldn't cause a false negative (a launcher may
+  // pin its own JAVA_HOME).
+  const javaInadequate = !!(jdk.version && !jdk.ok);
+  const available = !!(configured && launcher && !javaInadequate);
+  let reason = null;
+  if (!configured) reason = "no-config";
+  else if (!launcher) reason = "no-launcher";
+  else if (javaInadequate) reason = "old-jdk";
+  jdtlsInfo = {
+    available,
+    configured,
+    command,
+    launcher,
+    java: jdk,
+    indexed: jdtlsHasIndexed(cfg),
+    reason,
+    minJava: JDTLS_MIN_JAVA,
+    configFile: cfg ? cfg.file : path.join(copilotConfigDirs()[0] || "~/.copilot", "lsp-config.json"),
+    install: jdtlsInstallHint(),
+  };
+  return jdtlsInfo;
 }
 
 /**
@@ -1199,6 +1384,7 @@ function envSnapshot() {
     warmLabel: warm.label,
     warmTip: warm.tip,
     install: warm.install,
+    jdtls: detectJdtls(),
     // Back-compat fields retained for any external consumers.
     mvndAvailable: m.available,
     mvndPath: m.path,
@@ -2194,6 +2380,57 @@ function buildFixPrompt(kind, extra = {}) {
         .filter(Boolean)
         .join("\n\n");
     }
+    case "install-jdtls": {
+      const platformName = extra.os || (process.platform === "darwin" ? "macOS" : isWindows ? "Windows" : "Linux");
+      const installCmd = extra.installCmd || "brew install jdtls";
+      const minJava = extra.minJava || JDTLS_MIN_JAVA;
+      const reason = extra.reason || "unknown";
+      const javaVersion = extra.javaVersion || "not detected";
+      const configFile = extra.configFile || "~/.copilot/lsp-config.json";
+      const lspBlock = codeBlock(
+        JSON.stringify(
+          {
+            lspServers: {
+              java: {
+                command: "jdtls",
+                args: [
+                  "--jvm-arg=-Xmx4G",
+                  "--jvm-arg=-Dlog.level=WARN",
+                  "--jvm-arg=-XX:+UseStringDeduplication",
+                  "-data",
+                  ".jdtls-workspace",
+                ],
+                fileExtensions: { ".java": "java" },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+        "json",
+      );
+      // Lead with the step that matches the detected gap so Copilot fixes the
+      // right thing first, then include the rest for completeness.
+      const lead =
+        reason === "no-launcher"
+          ? "The `jdtls` launcher isn't on the PATH, so the language server can't start."
+          : reason === "old-jdk"
+            ? `The active JDK (${javaVersion}) is older than Java ${minJava}, which JDTLS requires to run.`
+            : reason === "no-config"
+              ? "The Copilot CLI has no Java language-server entry, so it never launches JDTLS."
+              : "JDTLS could not be confirmed as available.";
+      return [
+        `Java code intelligence (go-to-definition, find references, hover) isn't working in this Copilot CLI session because JDTLS — the Eclipse JDT Language Server — isn't available. ${lead} Please set it up for this environment (detected OS: ${platformName}).`,
+        `1. Install the \`jdtls\` launcher if it isn't already on the PATH. On ${platformName} the usual one-liner is \`${installCmd}\`. Verify afterwards that \`which jdtls\` (or \`where jdtls\`) resolves.`,
+        `2. Make sure a JDK ${minJava} or newer is installed and is what runs JDTLS — either set \`JAVA_HOME\` to it or put its \`java\` first on the PATH. (Detected runtime JDK: ${javaVersion}.)`,
+        `3. Ensure the Copilot CLI is wired to use it: \`${configFile}\` must declare a \`java\` language server that maps \`.java\` files to the \`jdtls\` command, for example:`,
+        lspBlock,
+        "4. Reload the Copilot CLI extensions (or restart the session) so the language server is picked up, then re-open this canvas.",
+        "When you're done, tell me which steps were needed and confirm that `jdtls` resolves on the PATH.",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
     case "register-mcp": {
       const base = appBase();
       const mcpUrl = base ? `${base}/bootui/api/mcp` : "http://127.0.0.1:<app-port>/bootui/api/mcp";
@@ -2375,6 +2612,7 @@ async function loadIndex() {
 const STATIC_ASSETS = {
   "/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
   "/app.js": { file: "app.js", type: "text/javascript; charset=utf-8" },
+  "/favicon.svg": { file: "favicon.svg", type: "image/svg+xml; charset=utf-8" },
 };
 const staticCache = new Map();
 async function loadStatic(name) {

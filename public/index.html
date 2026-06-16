@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Coffilot</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -167,6 +168,33 @@
         </div>
 
         <div id="atab-settings" class="apane">
+          <!-- Java language server (JDTLS): powers Copilot's Java code
+               intelligence (go-to-definition, find references, hover). Not part
+               of this extension — the CLI launches it — so we report whether
+               it's actually available and offer to set it up if not. Kept at the
+               top so its status is the first thing visible in Settings. -->
+          <div class="set-row jdtls-row" id="set-jdtls" hidden>
+            <div class="switch-row">
+              <span class="jdtls-dot" id="jdtls-dot"></span>
+              <span class="switch-label">Java IntelliSense (JDTLS)</span>
+              <span id="jdtls-state" class="mcp-state"></span>
+              <span
+                class="info"
+                id="jdtls-info"
+                tabindex="0"
+                data-tip="JDTLS gives Copilot Java go-to-definition, find references and hover. Checking availability…"
+                >&#9432;</span
+              >
+            </div>
+            <button id="btn-setup-jdtls" class="fix tiny" hidden>Set up JDTLS</button>
+            <div id="jdtls-banner" class="banner setting-banner" hidden>
+              <span id="jdtls-msg"></span>
+              <code id="jdtls-cmd" title="Click to copy" hidden></code>
+              <span id="jdtls-copied" class="copied" hidden>copied</span>
+              <a id="jdtls-docs" href="#" target="_blank" rel="noopener">docs</a>
+            </div>
+          </div>
+
           <!-- Spring Boot profiles (Spring only) -->
           <div class="set-row" id="set-spring" hidden>
             <label class="cap-label">Spring Boot profiles</label>
