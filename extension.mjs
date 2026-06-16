@@ -35,10 +35,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const session = await joinSession({ canvases: [makeCanvas()] });
 
-// Resolve the Maven project root. session.workspacePath points at the session
-// artifacts folder, not the repo, so we walk up from this extension's own
-// location (it lives at <repo>/.github/extensions/coffilot) until we find
-// the directory that owns the Maven wrapper, then fall back gracefully.
+// Resolve the Maven project root. The CLI forks this extension with its cwd set
+// to the project the user opened, so we walk up from process.cwd() first — this
+// is the only signal that works for a user-scope install (~/.copilot/extensions),
+// where the extension lives outside the target repo. We then fall back to walking
+// up from the extension's own folder (in-project installs at
+// <repo>/.github/extensions/coffilot), and finally to cwd itself. We never use
+// session.workspacePath: it points at the infinite-session artifacts folder
+// (checkpoints/, plan.md, files/), not the repo.
 const workspacePath = findProjectRoot();
 const mvnw = path.join(workspacePath, process.platform === "win32" ? "mvnw.cmd" : "mvnw");
 
@@ -184,19 +188,24 @@ function freePort() {
 
 function findProjectRoot() {
   const wrapper = process.platform === "win32" ? "mvnw.cmd" : "mvnw";
-  let dir = __dirname;
-  for (let i = 0; i < 8; i++) {
-    if (existsSync(path.join(dir, wrapper)) || existsSync(path.join(dir, "pom.xml"))) {
-      return dir;
+  const ownsMaven = (dir) => existsSync(path.join(dir, wrapper)) || existsSync(path.join(dir, "pom.xml"));
+
+  // Walk up from `start` until we hit the directory that owns the Maven wrapper
+  // (or a pom.xml), at most `levels` parents up. Returns null if none is found.
+  const walkUp = (start, levels = 8) => {
+    let dir = start;
+    for (let i = 0; i < levels; i++) {
+      if (ownsMaven(dir)) return dir;
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
     }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  if (session.workspacePath && existsSync(path.join(session.workspacePath, wrapper))) {
-    return session.workspacePath;
-  }
-  return session.workspacePath || process.cwd();
+    return null;
+  };
+
+  // cwd reflects the project the user opened (works for user-scope installs);
+  // __dirname handles in-project installs; cwd itself is the last-resort default.
+  return walkUp(process.cwd()) || walkUp(__dirname) || process.cwd();
 }
 
 // ---------------------------------------------------------------------------
