@@ -35,13 +35,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const session = await joinSession({ canvases: [makeCanvas()] });
 
-// Resolve the Maven project root. session.workspacePath is the session-artifacts
-// folder (checkpoints/, plan.md, files/), never the repo, so it must not be used
-// as the project root. We look in two places: the extension's own location (for a
-// project-embedded install at <repo>/.github/extensions/coffilot) and the CLI's
-// working directory (for a user/global install, where the CLI launches us with
-// cwd set to the project the user opened).
-const workspacePath = findProjectRoot();
+// Resolve the Maven project root. The authoritative source is the session's
+// primary working directory (the project the user actually opened), read from the
+// permission-paths API. The older heuristics are unreliable on their own:
+// session.workspacePath is the session-artifacts folder (checkpoints/, plan.md,
+// files/), never the repo; __dirname points into the coffilot repo for a
+// user/global install; and the extension host launches us with cwd=<COPILOT_HOME>,
+// not the project. We still fall back to __dirname (project-embedded install at
+// <repo>/.github/extensions/coffilot) and cwd for hosts that don't expose the
+// primary directory.
+const sessionPrimaryDir = await getSessionPrimaryDir();
+const workspacePath = findProjectRoot(sessionPrimaryDir);
 const mvnw = path.join(workspacePath, process.platform === "win32" ? "mvnw.cmd" : "mvnw");
 
 // Silence the JDK native-access warnings (JEP 472) that Jansi (Maven's native
@@ -252,12 +256,28 @@ function freePort() {
   });
 }
 
-function findProjectRoot() {
+// Read the session's primary working directory (the project the user opened) via
+// the permission-paths API. This is the only reliable signal for a user/global
+// install, where the host runs the extension with cwd=<COPILOT_HOME> and __dirname
+// resolves into the coffilot repo. Older hosts may not implement it, so failures
+// are tolerated and we fall back to path heuristics.
+async function getSessionPrimaryDir() {
+  try {
+    const res = await session.rpc?.permissions?.paths?.list?.();
+    if (res && typeof res.primary === "string" && res.primary) return res.primary;
+  } catch (e) {
+    session.log(`[coffilot] could not read session working directory: ${e.message}`, { level: "warn" });
+  }
+  return null;
+}
+
+function findProjectRoot(primary) {
   const wrapper = process.platform === "win32" ? "mvnw.cmd" : "mvnw";
   const owns = (dir) => existsSync(path.join(dir, wrapper)) || existsSync(path.join(dir, "pom.xml"));
   // Walk up from `start` (max 8 hops) to the first directory that owns the Maven
-  // wrapper or a pom.xml; null if none is found.
+  // wrapper or a pom.xml; null if `start` is falsy or none is found.
   const walkUp = (start) => {
+    if (!start) return null;
     let dir = start;
     for (let i = 0; i < 8; i++) {
       if (owns(dir)) return dir;
@@ -267,12 +287,14 @@ function findProjectRoot() {
     }
     return null;
   };
-  // 1) Project-embedded install (.github/extensions/coffilot): walk up from here.
-  // 2) User/global install (e.g. symlinked into ~/.copilot/extensions): the CLI
-  //    launches the extension with cwd set to the project, so walk up from there.
-  //    session.workspacePath is the session-artifacts folder, never the Maven
-  //    project, so it is deliberately not consulted.
-  return walkUp(__dirname) || walkUp(process.cwd()) || process.cwd();
+  // 1) The session's primary working directory is the project the user opened —
+  //    the most reliable signal, and the only one that works for a user/global
+  //    install (where the host runs the extension with cwd=<COPILOT_HOME> and
+  //    __dirname is the coffilot repo).
+  // 2) Project-embedded install (.github/extensions/coffilot): walk up from here.
+  // 3) Launch cwd, as a last resort for older hosts that don't expose (1).
+  // If nothing owns a pom.xml, still prefer the opened project dir over the cwd.
+  return walkUp(primary) || walkUp(__dirname) || walkUp(process.cwd()) || primary || process.cwd();
 }
 
 // ---------------------------------------------------------------------------
