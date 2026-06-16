@@ -4,10 +4,10 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **Coffilot** is a [GitHub Copilot **canvas extension**](https://docs.github.com/en/copilot/how-tos/github-copilot-app/working-with-canvas-extensions)
-that turns a Maven- or Gradle-based Java / Spring Boot project into an interactive
-console in the Copilot app's side panel. Build, test, package and run your app, watch
-live JVM metrics, and — when something breaks — push the failure straight back to the
-agent with **Fix with Copilot**.
+that turns a Maven- or Gradle-based Java / Spring Boot / Quarkus project into an
+interactive console in the Copilot app's side panel. Build, test, package and run your
+app, watch live JVM metrics, and — when something breaks — push the failure straight
+back to the agent with **Fix with Copilot**.
 
 > Coffee for your Copilot: brew, taste and ship your Java app without leaving the chat. ☕
 
@@ -26,19 +26,23 @@ wins; when neither is found the console says so and stays disabled until one is 
 - **Package** &mdash; Maven `./mvnw -ntp package` or Gradle `./gradlew assemble`,
   streamed live like Build.
 - **Run** &mdash; `spring-boot:run` (Maven) / `bootRun` (Gradle) for a Spring Boot
-  module (+ Spring profiles). For a non-Spring module the **generic runner** kicks
-  in: the Gradle `application` plugin's `run` task, else build + `java -jar` for an
-  executable jar, else the module's configured main class via `java -cp`.
+- **Run** &mdash; `spring-boot:run` (Maven) / `bootRun` (Gradle) for a Spring Boot
+  module (+ Spring profiles), `quarkus:dev` (Maven) / `quarkusDev` (Gradle) for a
+  Quarkus module (+ run profile), or, for a non-Spring/non-Quarkus module, the
+  **generic runner**: the Gradle `application` plugin's `run` task, else build +
+  `java -jar` for an executable jar, else the configured main class via `java -cp`.
   Optionally opens a browser window at the app once it is up.
 - **Parallel lanes** &mdash; Build / Test / Package share one build lane while Run
   is independent, so you can keep the app running while you re-test.
 - **Stop** &mdash; terminates the running app / build process.
-- **Profiles** &mdash; for Maven projects the toolbar scans the reactor for available
-  **Spring Boot profiles** and **Maven profiles** and offers each as an editable
-  dropdown. (Gradle has no profile concept, so the Maven-profiles control is hidden.)
+- **Profiles** &mdash; the toolbar scans the project for available run profiles —
+  **Spring Boot** profiles (`application-<profile>.*`) or **Quarkus** profiles
+  (`dev` / `test` / `prod` plus any `%<profile>.` keys) — and, for Maven, the reactor's
+  **Maven profiles**, offering each as an editable dropdown. (Gradle has no Maven-profile
+  concept, so that control is hidden.)
 - **Live JVM metrics** &mdash; once the app is up, the panel shows heap / non-heap,
   threads, health, profiles and startup info, sourced from the richest endpoint
-  available (BootUI → Actuator → process).
+  available (BootUI → Actuator → Quarkus Micrometer/health → process).
 - **Fix with Copilot** &mdash; on a compile error, failing tests, or a startup
   crash, a button pushes a context-rich request back into the chat so the agent
   can diagnose and fix it.
@@ -57,17 +61,19 @@ wins; when neither is found the console says so and stays disabled until one is 
 The console adapts to whatever the project provides, detected from the build files
 (static) and confirmed against the running app (runtime):
 
-| Tier                   | Detected from                                    | What the console offers                                                                                                                                                                                                                 |
-| ---------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **(none)**             | no Maven or Gradle markers                       | A "needs Maven or Gradle" notice; the Build / Test / Package / Run actions stay disabled                                                                                                                                                |
-| **Java** (base)        | `pom.xml` / `mvnw` or `build.gradle` / `gradlew` | Build, Test (graphical JUnit report), Package                                                                                                                                                                                           |
-| **Spring Boot**        | Spring Boot Maven plugin / Gradle plugin         | Run via `spring-boot:run` (Maven) or `bootRun` (Gradle) + editable Spring profiles. (No Spring Boot ⇒ the generic runner uses the Gradle `application` plugin, an executable `java -jar`, or the configured main class via `java -cp`.) |
-| **Actuator** (runtime) | `/actuator/*` answers                            | Live metrics normalized from Actuator (heap, threads, health, uptime)                                                                                                                                                                   |
-| **BootUI** (runtime)   | `/bootui/api/*` answers                          | Rich BootUI metrics **and** the MCP advisor-scan panel                                                                                                                                                                                  |
+| Tier                          | Detected from                                     | What the console offers                                                                                                                                                                                                                 |
+| ----------------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **(none)**                    | no Maven or Gradle markers                        | A "needs Maven or Gradle" notice; the Build / Test / Package / Run actions stay disabled                                                                                                                                                |
+| **Java** (base)               | `pom.xml` / `mvnw` or `build.gradle` / `gradlew`  | Build, Test (graphical JUnit report), Package                                                                                                                                                                                           |
+| **Spring Boot**               | Spring Boot Maven plugin / Gradle plugin          | Run via `spring-boot:run` (Maven) or `bootRun` (Gradle) + editable Spring profiles. (No Spring Boot ⇒ the generic runner uses the Gradle `application` plugin, an executable `java -jar`, or the configured main class via `java -cp`.) |
+| **Quarkus**                   | Quarkus Maven plugin / `io.quarkus` Gradle plugin | Run via `quarkus:dev` (Maven) or `quarkusDev` (Gradle) — dev mode with built-in live reload — + editable Quarkus profile                                                                                                                |
+| **Actuator** (runtime)        | `/actuator/*` answers                             | Live metrics normalized from Actuator (heap, threads, health, uptime)                                                                                                                                                                   |
+| **Quarkus metrics** (runtime) | `/q/metrics` / `/q/health` answer                 | Live metrics normalized from Quarkus Micrometer (Prometheus) + SmallRye Health                                                                                                                                                          |
+| **BootUI** (runtime)          | `/bootui/api/*` answers                           | Rich BootUI metrics **and** the MCP advisor-scan panel                                                                                                                                                                                  |
 
 A capability summary is shown in the status bar (including the active build tool), and
-the metrics panel carries a small badge (`BootUI` / `Actuator` / `process`) indicating
-which source is live.
+the metrics panel carries a small badge (`BootUI` / `Actuator` / `Quarkus` / `process`)
+indicating which source is live.
 
 ## Requirements
 
@@ -124,10 +130,10 @@ automatically (`canvasId: java-app`).
 In a Copilot app session on a Maven or Gradle project, open the **Coffilot** canvas, then:
 
 1. **Build** to compile the project (first run), or **Run** to start an app (pick a
-   module and Spring profiles).
+   module and a run profile).
 2. Watch the console stream the build-tool / app output.
 3. Once the app is up, watch the **Live JVM metrics** panel populate (badge:
-   `BootUI` / `Actuator` / `process`).
+   `BootUI` / `Actuator` / `Quarkus` / `process`).
 4. If something fails, click **Fix with Copilot** to hand the error to the agent.
 5. **Stop** when done.
 
@@ -146,7 +152,8 @@ Coffilot is a Node process (the extension) that:
   graphical test view;
 - once an app is up, polls it for live metrics from the richest source available,
   proxying [BootUI](https://github.com/jdubois/boot-ui)'s sanitized `/bootui/api/**`
-  DTOs when present and falling back to Actuator, then to coarse process metrics;
+  DTOs when present and falling back to Spring Boot Actuator, then to Quarkus
+  Micrometer/health (`/q/*`), then to coarse process metrics;
 - pushes contextual "fix this" turns back into the chat through the Copilot SDK.
 
 The loopback HTTP server that backs the iframe binds to `127.0.0.1` only. See
