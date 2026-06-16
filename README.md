@@ -4,28 +4,36 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **Coffilot** is a [GitHub Copilot **canvas extension**](https://docs.github.com/en/copilot/how-tos/github-copilot-app/working-with-canvas-extensions)
-that turns a Maven-based Java / Spring Boot project into an interactive console in
-the Copilot app's side panel. Build, test, package and run your app, watch live
-JVM metrics, and — when something breaks — push the failure straight back to the
+that turns a Maven- or Gradle-based Java / Spring Boot project into an interactive
+console in the Copilot app's side panel. Build, test, package and run your app, watch
+live JVM metrics, and — when something breaks — push the failure straight back to the
 agent with **Fix with Copilot**.
 
 > Coffee for your Copilot: brew, taste and ship your Java app without leaving the chat. ☕
 
+The build tool is auto-detected: **Maven** (`pom.xml` / `./mvnw`) is used when present;
+otherwise **Gradle** (`build.gradle[.kts]` / `./gradlew`). When both are present Maven
+wins; when neither is found the console says so and stays disabled until one is added.
+
 ## Features
 
-- **Build** &mdash; `./mvnw -ntp -DskipTests install` (args overridable).
-- **Test** &mdash; `./mvnw -ntp test`, with the Surefire results parsed into a
-  graphical, per-test view (summary chips, per-suite grouping, expandable failure
-  stack traces) and a live progress bar. A console toggle shows the raw output.
-- **Package** &mdash; `./mvnw -ntp package`, streamed live like Build.
-- **Run** &mdash; `spring-boot:run` for a Spring Boot module (+ Spring profiles),
-  or **package + `java -jar`** for a plain-Java module. Optionally opens a browser
-  window at the app once it is up.
-- **Parallel lanes** &mdash; Build / Test / Package share one Maven lane while Run
+- **Build** &mdash; Maven `./mvnw -ntp -DskipTests install` or Gradle
+  `./gradlew build -x test` (args overridable).
+- **Test** &mdash; Maven `./mvnw -ntp test` or Gradle `./gradlew cleanTest test`, with
+  the JUnit results parsed into a graphical, per-test view (summary chips, per-suite
+  grouping, expandable failure stack traces) and a live progress bar. A console toggle
+  shows the raw output.
+- **Package** &mdash; Maven `./mvnw -ntp package` or Gradle `./gradlew assemble`,
+  streamed live like Build.
+- **Run** &mdash; `spring-boot:run` (Maven) / `bootRun` (Gradle) for a Spring Boot
+  module (+ Spring profiles), or **build + `java -jar`** for a plain-Java module.
+  Optionally opens a browser window at the app once it is up.
+- **Parallel lanes** &mdash; Build / Test / Package share one build lane while Run
   is independent, so you can keep the app running while you re-test.
-- **Stop** &mdash; terminates the running app / Maven process.
-- **Profiles** &mdash; the toolbar scans the reactor for available **Spring Boot
-  profiles** and **Maven profiles** and offers each as an editable dropdown.
+- **Stop** &mdash; terminates the running app / build process.
+- **Profiles** &mdash; for Maven projects the toolbar scans the reactor for available
+  **Spring Boot profiles** and **Maven profiles** and offers each as an editable
+  dropdown. (Gradle has no profile concept, so the Maven-profiles control is hidden.)
 - **Live JVM metrics** &mdash; once the app is up, the panel shows heap / non-heap,
   threads, health, profiles and startup info, sourced from the richest endpoint
   available (BootUI → Actuator → process).
@@ -33,7 +41,8 @@ agent with **Fix with Copilot**.
   crash, a button pushes a context-rich request back into the chat so the agent
   can diagnose and fix it.
 - **Keep the JVM warm** &mdash; optionally use the [Maven Daemon (`mvnd`)](https://github.com/apache/maven-mvnd)
-  for Build / Test / Package so repeat runs skip JVM startup and JIT warmup.
+  (Maven) or the always-on **Gradle daemon** for Build / Test / Package so repeat runs
+  skip JVM startup and JIT warmup.
 - **Advisor scans (with BootUI)** &mdash; when the running app exposes
   [BootUI](https://github.com/jdubois/boot-ui), a toggle enables its MCP server and
   the advisor scans (architecture, Spring, security, Hibernate, …); findings can be
@@ -41,26 +50,31 @@ agent with **Fix with Copilot**.
 
 ## Graceful degradation by capability
 
-The console adapts to whatever the project provides, detected from the reactor
-poms (static) and confirmed against the running app (runtime):
+The console adapts to whatever the project provides, detected from the build files
+(static) and confirmed against the running app (runtime):
 
-| Tier                    | Detected from              | What the console offers                                                                                                    |
-| ----------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| **Java + Maven** (base) | always                     | Build, Test (graphical Surefire report), Package                                                                           |
-| **Spring Boot**         | `spring-boot-maven-plugin` | Run via `spring-boot:run` + editable Spring profiles. (No Spring Boot ⇒ Run packages the module and launches `java -jar`.) |
-| **Actuator** (runtime)  | `/actuator/*` answers      | Live metrics normalized from Actuator (heap, threads, health, uptime)                                                      |
-| **BootUI** (runtime)    | `/bootui/api/*` answers    | Rich BootUI metrics **and** the MCP advisor-scan panel                                                                     |
+| Tier                   | Detected from                                    | What the console offers                                                                                                                                |
+| ---------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **(none)**             | no Maven or Gradle markers                       | A "needs Maven or Gradle" notice; the Build / Test / Package / Run actions stay disabled                                                               |
+| **Java** (base)        | `pom.xml` / `mvnw` or `build.gradle` / `gradlew` | Build, Test (graphical JUnit report), Package                                                                                                          |
+| **Spring Boot**        | Spring Boot Maven plugin / Gradle plugin         | Run via `spring-boot:run` (Maven) or `bootRun` (Gradle) + editable Spring profiles. (No Spring Boot ⇒ Run builds the module and launches `java -jar`.) |
+| **Actuator** (runtime) | `/actuator/*` answers                            | Live metrics normalized from Actuator (heap, threads, health, uptime)                                                                                  |
+| **BootUI** (runtime)   | `/bootui/api/*` answers                          | Rich BootUI metrics **and** the MCP advisor-scan panel                                                                                                 |
 
-A capability summary is shown in the status bar, and the metrics panel carries a
-small badge (`BootUI` / `Actuator` / `process`) indicating which source is live.
+A capability summary is shown in the status bar (including the active build tool), and
+the metrics panel carries a small badge (`BootUI` / `Actuator` / `process`) indicating
+which source is live.
 
 ## Requirements
 
 - The [GitHub Copilot app](https://docs.github.com/en/copilot) or Copilot CLI with
   canvas-extension support.
-- A target project built with **Maven** (the committed `./mvnw` wrapper is used when
-  present, otherwise a system `mvn` on `PATH`) on **Java 17+**.
-- Optional: [`mvnd`](https://github.com/apache/maven-mvnd) for warm builds, and
+- A target project built with **Maven** or **Gradle** on **Java 17+**. The committed
+  wrapper (`./mvnw` or `./gradlew`) is used when present, otherwise a system `mvn` /
+  `gradle` on `PATH`. Works on macOS, Linux and Windows. If both build tools are
+  present, Maven is used.
+- Optional: [`mvnd`](https://github.com/apache/maven-mvnd) for warm Maven builds (the
+  Gradle daemon serves the same role and is always available), and
   [BootUI](https://github.com/jdubois/boot-ui) on the target app for the richest
   metrics and advisor scans.
 
@@ -103,11 +117,11 @@ automatically (`canvasId: java-app`).
 
 ## Use
 
-In a Copilot app session on a Maven project, open the **Coffilot** canvas, then:
+In a Copilot app session on a Maven or Gradle project, open the **Coffilot** canvas, then:
 
-1. **Build** to install modules (first run), or **Run** to start an app (pick a
+1. **Build** to compile the project (first run), or **Run** to start an app (pick a
    module and Spring profiles).
-2. Watch the console stream the Maven / app output.
+2. Watch the console stream the build-tool / app output.
 3. Once the app is up, watch the **Live JVM metrics** panel populate (badge:
    `BootUI` / `Actuator` / `process`).
 4. If something fails, click **Fix with Copilot** to hand the error to the agent.
@@ -121,10 +135,11 @@ and `run_scan` actions.
 
 Coffilot is a Node process (the extension) that:
 
-- shells out to `./mvnw` (the Maven wrapper, or a system `mvn` when no wrapper is
-  present — or `mvnd`) for Build / Test / Package / Run and streams the output into
-  the canvas over Server-Sent Events;
-- parses the Surefire XML reports into a graphical test view;
+- shells out to the project's build tool — `./mvnw` / `mvn` / `mvnd` for Maven, or
+  `./gradlew` / `gradle` for Gradle — for Build / Test / Package / Run and streams the
+  output into the canvas over Server-Sent Events;
+- parses the JUnit XML reports (Maven Surefire or Gradle `build/test-results`) into a
+  graphical test view;
 - once an app is up, polls it for live metrics from the richest source available,
   proxying [BootUI](https://github.com/jdubois/boot-ui)'s sanitized `/bootui/api/**`
   DTOs when present and falling back to Actuator, then to coarse process metrics;

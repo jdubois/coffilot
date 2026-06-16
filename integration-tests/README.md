@@ -1,9 +1,9 @@
 # Coffilot integration-test projects
 
-Four **independent** Maven projects used to exercise Coffilot against every
-capability tier it supports. Each folder is a self-contained project with its own
-Maven wrapper (`./mvnw`) — none of them depend on each other or on this repo's
-Node tooling.
+Five **independent** projects used to exercise Coffilot against every capability
+tier it supports. Four are Maven and one is Gradle, so both build tools get real
+coverage. Each folder is a self-contained project with its own wrapper (`./mvnw`
+or `./gradlew`) — none of them depend on each other or on this repo's Node tooling.
 
 Coffilot degrades gracefully by capability, so each project targets a different
 rung of that ladder:
@@ -11,6 +11,7 @@ rung of that ladder:
 | Project | What it is | Coffilot tier exercised |
 | ------- | ---------- | ----------------------- |
 | [`hello-world`](hello-world) | Plain Maven project (no Spring), one JUnit 5 test | **Plain Java** — Build / Test / Package only |
+| [`gradle-hello-world`](gradle-hello-world) | Plain Gradle project (no Spring), one JUnit 5 test | **Plain Java (Gradle)** — Build / Test / Package via `./gradlew` |
 | [`spring-mvc`](spring-mvc) | Spring Boot MVC app (`web`), from start.spring.io | **Spring Boot** — Run lane + process-level JVM metrics |
 | [`spring-mvc-actuator-devtools`](spring-mvc-actuator-devtools) | Same app + Actuator + DevTools | **Actuator** — richer live metrics via `/actuator` |
 | [`spring-mvc-bootui`](spring-mvc-bootui) | Same app with BootUI in a `dev` Maven profile | **BootUI** — richest metrics + advisor scan |
@@ -40,6 +41,16 @@ cd hello-world
 java -jar target/hello-world.jar   # prints "Hello, World!"
 ```
 
+`gradle-hello-world` is the Gradle equivalent — same sources, driven by the Gradle
+wrapper instead of Maven:
+
+```bash
+cd gradle-hello-world
+./gradlew test                      # run the tests
+./gradlew build -x test             # build the jar (skipping tests)
+java -jar build/libs/gradle-hello-world.jar   # prints "Hello, World!"
+```
+
 ### BootUI tier
 
 `spring-mvc-bootui` keeps the BootUI starter out of the default build. Activate the
@@ -53,10 +64,11 @@ cd spring-mvc-bootui
 
 ## Using them with Coffilot
 
-Coffilot drives a Maven project from that project's own folder, discovering the
-extension under `.github/extensions/` and walking up to the directory that owns
-`mvnw`. To point Coffilot at one of these projects, symlink this extension into it
-and open the canvas:
+Coffilot drives a Maven or Gradle project from that project's own folder,
+discovering the extension under `.github/extensions/` and walking up to the
+directory that owns the build wrapper (`mvnw` or `gradlew`). When a project has
+both, Maven wins. To point Coffilot at one of these projects, symlink this
+extension into it and open the canvas:
 
 ```bash
 # from one of the project folders, e.g. spring-mvc-actuator-devtools/
@@ -68,6 +80,7 @@ Then open a Copilot session on that project, reload extensions, and open the
 **Coffilot** canvas. Pick the project that matches the tier you want to test:
 
 - `hello-world` to confirm Build / Test / Package work with no Spring at all.
+- `gradle-hello-world` to confirm the same lanes drive a Gradle project.
 - `spring-mvc` for the Run lane and process-level metrics.
 - `spring-mvc-actuator-devtools` for the Actuator metrics tier.
 - `spring-mvc-bootui` (run with `-Pdev`) for the full BootUI metrics + advisor scan.

@@ -1,0 +1,39 @@
+plugins {
+    id 'application'
+}
+
+group = 'com.example'
+version = '0.0.1-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    // Compile for Java 17 with the running JDK (no toolchain auto-provisioning),
+    // mirroring the Maven sample's maven.compiler.release=17.
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+application {
+    mainClass = 'com.example.helloworld.App'
+}
+
+testing {
+    suites {
+        test {
+            useJUnitJupiter('5.11.4')
+        }
+    }
+}
+
+// Embed Main-Class so `java -jar build/libs/<name>.jar` works (Coffilot's
+// plain-Java run path), mirroring the Maven sample's maven-jar-plugin config.
+jar {
+    archiveBaseName = 'gradle-hello-world'
+    archiveVersion = ''
+    manifest {
+        attributes 'Main-Class': 'com.example.helloworld.App'
+    }
+}
