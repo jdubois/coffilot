@@ -1084,6 +1084,19 @@ es.addEventListener("reset", (e) => {
   if (el) el.innerHTML = "";
 });
 
+// Full-cover loading overlay: dismissed once the first /api/state lands (or a
+// safety timeout fires) so the canvas never shows empty panels on open.
+const loadingOverlay = document.getElementById("loading-overlay");
+let loadingHidden = false;
+function hideLoading() {
+  if (loadingHidden || !loadingOverlay) return;
+  loadingHidden = true;
+  loadingOverlay.classList.add("hide");
+  loadingOverlay.setAttribute("aria-hidden", "true");
+  setTimeout(() => loadingOverlay.setAttribute("hidden", ""), 220);
+}
+setTimeout(hideLoading, 4000);
+
 fetch(`/api/state?${qs}`)
   .then((r) => r.json())
   .then((s) => {
@@ -1096,7 +1109,8 @@ fetch(`/api/state?${qs}`)
     // Open the tab matching whatever the backend was last doing.
     followLaneActivity(s.status);
   })
-  .catch(() => {});
+  .catch(() => {})
+  .finally(hideLoading);
 
 // Env (mvnd availability, modules, profiles, capabilities) is only sampled
 // at page load, so installing mvnd while the canvas is open would otherwise
