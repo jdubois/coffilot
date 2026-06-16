@@ -2,7 +2,7 @@
   "name": "coffilot",
   "version": "0.1.0",
   "private": true,
-  "description": "A GitHub Copilot canvas extension to build, test, package, run and fix Maven or Gradle Java / Spring Boot apps from the Copilot app side panel.",
+  "description": "A GitHub Copilot canvas extension to build, test, package, run and fix Maven or Gradle Java / Spring Boot / Quarkus apps from the Copilot app side panel.",
   "license": "Apache-2.0",
   "author": "Julien Dubois",
   "homepage": "https://github.com/jdubois/coffilot#readme",
@@ -20,7 +20,8 @@
     "java",
     "maven",
     "gradle",
-    "spring-boot"
+    "spring-boot",
+    "quarkus"
   ],
   "scripts": {
     "check": "node --check extension.mjs",

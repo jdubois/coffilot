@@ -31,6 +31,7 @@ const warmInfo = document.getElementById("warm-info");
 const moduleSelect = document.getElementById("in-module");
 const springInput = document.getElementById("in-profiles");
 const springMenu = document.getElementById("spring-menu");
+const lblProfiles = document.getElementById("lbl-profiles");
 const mavenMenu = document.getElementById("maven-menu");
 const mvnProfilesInput = document.getElementById("in-mvn-profiles");
 const mvnProfilesLabel = document.getElementById("lbl-mvn-profiles");
@@ -343,21 +344,22 @@ function renderMetrics(m) {
     metricsSrc.hidden = true;
     renderMcp(null);
     metricsEl.innerHTML =
-      '<p class="muted">App not running. Click <strong>Run</strong> to start it (dev profile activates BootUI).</p>';
+      '<p class="muted">App not running. Click <strong>Run</strong> to start it (Spring\u2019s <code>dev</code> profile activates BootUI).</p>';
     metricsHint.innerHTML =
-      "Run a Spring Boot module with the <code>dev</code> profile for rich BootUI metrics, or any app exposing Actuator for a subset.";
+      "Run a Spring Boot app with the <code>dev</code> profile for rich BootUI metrics, a Quarkus app for Micrometer metrics, or anything exposing Actuator for a subset.";
     return;
   }
   const tier = m.metricsTier || "process";
   metricsSrc.hidden = false;
   metricsSrc.className = "src " + tier;
-  metricsSrc.textContent = tier === "bootui" ? "BootUI" : tier === "actuator" ? "Actuator" : "process";
+  metricsSrc.textContent =
+    tier === "bootui" ? "BootUI" : tier === "actuator" ? "Actuator" : tier === "quarkus" ? "Quarkus" : "process";
 
   if (tier === "process") {
     metricsEl.innerHTML =
-      '<p class="muted">App is running, but no <code>/bootui/api</code> or <code>/actuator</code> endpoint answered, so live JVM metrics aren\u2019t available.</p>';
+      '<p class="muted">App is running, but no <code>/bootui/api</code>, <code>/actuator</code> or <code>/q/metrics</code> endpoint answered, so live JVM metrics aren\u2019t available.</p>';
     metricsHint.innerHTML =
-      "Add <code>spring-boot-starter-actuator</code> (or BootUI) to surface heap, threads and health here.";
+      "Add <code>spring-boot-starter-actuator</code> / BootUI (Spring) or <code>quarkus-micrometer-registry-prometheus</code> (Quarkus) to surface heap, threads and health here.";
     renderMcp(null);
     return;
   }
@@ -386,6 +388,10 @@ function renderMetrics(m) {
     metricsHint.innerHTML =
       "Rich metrics read from the running app\u2019s <code>/bootui/api/**</code> endpoints \u2014 reused directly from BootUI.";
     renderMcp(m.mcp);
+  } else if (tier === "quarkus") {
+    metricsHint.innerHTML =
+      "Metrics read from Quarkus Micrometer (<code>/q/metrics</code>) and SmallRye Health (<code>/q/health</code>).";
+    renderMcp(null);
   } else {
     metricsHint.innerHTML =
       "Metrics normalized from Spring Boot <code>/actuator/**</code>. Add BootUI for advisor scans and richer detail.";
@@ -660,16 +666,25 @@ let moduleList = [];
 
 // Per selected module (one reactor can mix capabilities), decide which
 // settings rows/proposals to surface:
-// - Spring Boot -> show Spring profiles, DevTools, random-port rows.
+// - Spring Boot or Quarkus -> show the run-profile + random-port rows.
+// - Spring Boot -> also show DevTools (Quarkus dev mode has live reload built
+//   in, so no DevTools row) and the BootUI / DevTools "add" proposals.
 // - Spring Boot but no BootUI starter -> offer to add BootUI.
 // - Spring Boot but no DevTools -> offer to add DevTools and disable the
 //   "Enable Spring Boot DevTools" toggle until the dependency is present.
 function updateDevSetup() {
   const mod = moduleList.find((m) => m.name === moduleSelect.value);
   const spring = !!(mod && mod.springBoot);
-  setSpring.hidden = !spring;
+  const quarkus = !!(mod && mod.quarkus);
+  const framework = spring || quarkus;
+  // Profiles + random-port apply to both frameworks; DevTools is Spring-only.
+  setSpring.hidden = !framework;
   setDevtools.hidden = !spring;
-  setRandomport.hidden = !spring;
+  setRandomport.hidden = !framework;
+
+  // Relabel the run-profile combo and swap its suggestions for the framework.
+  if (lblProfiles) lblProfiles.textContent = quarkus ? "Quarkus profile" : "Spring Boot profiles";
+  profileItems = quarkus ? quarkusItems : springItems;
 
   const showBootui = spring && !mod.bootui;
   btnAddBootui.hidden = !showBootui;
@@ -698,6 +713,9 @@ function updateDevSetup() {
 
 // Suggestion lists backing the custom comboboxes (kept editable).
 let springItems = ["dev"];
+let quarkusItems = ["dev", "test", "prod"];
+// The run-profile combo shows whichever list matches the selected module.
+let profileItems = springItems;
 let mavenItems = [];
 
 // A lightweight combobox: editable input + an in-document suggestion menu,
@@ -790,11 +808,15 @@ function applyEnv(env) {
   populateModules(env && env.modules);
   applyJdtls(env && env.jdtls);
   applyCaps(env && env.capabilities);
-  updateDevSetup();
-  // "dev" is always offered for Spring (it's the default and activates BootUI).
+  // Build the run-profile suggestion lists before updateDevSetup() picks one.
+  // "dev" is always offered for Spring (it's the default and activates BootUI);
+  // Quarkus always offers its built-in dev / test / prod profiles.
   const spring = (env && env.springProfiles) || [];
   springItems = spring.includes("dev") ? spring : ["dev", ...spring];
+  const quarkus = (env && env.quarkusProfiles) || [];
+  quarkusItems = quarkus.length ? quarkus : ["dev", "test", "prod"];
   mavenItems = (env && env.mavenProfiles) || [];
+  updateDevSetup();
 
   // Degraded mode: no Maven or Gradle project. Show the banner and disable
   // the build/test/package/run actions; nothing can be invoked without a tool.
@@ -872,11 +894,14 @@ function applyCaps(c) {
   caps = c || {};
   const toolLabel = caps.toolLabel || (caps.gradle ? "Gradle" : caps.maven ? "Maven" : null);
   const springRun = caps.gradle ? "bootRun" : "spring-boot:run";
-  // Pure-Java modules can still Run (build + java -jar); Spring-specific
+  const quarkusRun = caps.gradle ? "quarkusDev" : "quarkus:dev";
+  // Pure-Java modules can still Run (build + java -jar); framework-specific
   // settings rows are toggled per selected module in updateDevSetup().
   btnRun.title = caps.springBoot
     ? `Run the selected module with ${springRun}.`
-    : "Build the selected module and launch it with java -jar.";
+    : caps.quarkus
+      ? `Run the selected module with ${quarkusRun}.`
+      : "Build the selected module and launch it with java -jar.";
   const pill = (label, on, title) =>
     `<span class="cap ${on ? "on" : "off"}" title="${esc(title)}">${esc(label)}</span>`;
   let html = "";
@@ -895,6 +920,13 @@ function applyCaps(c) {
     "Spring Boot",
     !!caps.springBoot,
     caps.springBoot ? `${springRun} available.` : "No Spring Boot module detected; Run uses java -jar.",
+  );
+  html += pill(
+    "Quarkus",
+    !!caps.quarkus,
+    caps.quarkus
+      ? `${quarkusRun} available (dev mode with live reload).`
+      : "No Quarkus module detected; Run uses java -jar.",
   );
   html += pill("Actuator", !!caps.actuator, "Spring Boot Actuator metrics (static hint; confirmed at runtime).");
   html += pill("BootUI", !!caps.bootui, "BootUI rich metrics + MCP advisor scans.");
@@ -973,7 +1005,7 @@ function applyJdtls(j) {
 const warm = () => warmInput.checked === true;
 const mvnProfiles = () => mvnProfilesInput.value.trim();
 
-setupCombo(springInput, springMenu, () => springItems);
+setupCombo(springInput, springMenu, () => profileItems);
 setupCombo(mvnProfilesInput, mavenMenu, () => mavenItems);
 
 document.getElementById("btn-build").onclick = () => {

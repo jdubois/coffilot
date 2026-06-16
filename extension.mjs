@@ -1,11 +1,11 @@
 // Extension: coffilot
 //
 // Coffilot — a GitHub Copilot canvas extension that turns a Maven- or Gradle-based
-// Java / Spring Boot project into an interactive console: Build, Test, Package, Run
-// and Stop the app, watch the build output stream live, and — once the app is up —
-// read live JVM metrics from the richest source available (BootUI → Actuator →
-// process). Failures surface a "Fix with Copilot" button that pushes the error
-// context back into the chat.
+// Java / Spring Boot / Quarkus project into an interactive console: Build, Test,
+// Package, Run and Stop the app, watch the build output stream live, and — once the
+// app is up — read live JVM metrics from the richest source available (BootUI →
+// Actuator → Quarkus Micrometer/health → process). Failures surface a "Fix with
+// Copilot" button that pushes the error context back into the chat.
 //
 // The build tool is auto-detected from the project: Maven (pom.xml / ./mvnw) is
 // preferred when present, otherwise Gradle (build.gradle[.kts] / ./gradlew). When
@@ -18,8 +18,9 @@
 //   * Live JVM metrics are read from a running app: when the app exposes BootUI
 //     (https://github.com/jdubois/boot-ui) it serves sanitized record DTOs at
 //     /bootui/api/overview, /live-memory, /health, /threads, which this canvas
-//     proxies and renders; otherwise it falls back to Actuator, then to coarse
-//     process metrics. BootUI also unlocks the MCP advisor-scan panel.
+//     proxies and renders; otherwise it falls back to Spring Boot Actuator, then to
+//     Quarkus Micrometer/health (/q/*), then to coarse process metrics. BootUI also
+//     unlocks the MCP advisor-scan panel.
 
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
@@ -744,16 +745,21 @@ let lastTestTotal = loadLastTestTotal();
 
 // the UI can offer a dropdown instead of a free-text module box. Each module is
 // tagged with the capabilities detectable from its own build file: "runnable"
-// (a Spring Boot app, so it can be launched with spring-boot:run / bootRun),
-// springBoot, actuator, devtools, and bootui. These drive graceful UI degradation.
+// (a Spring Boot or Quarkus app, so it can be launched with spring-boot:run /
+// bootRun or quarkus:dev / quarkusDev), springBoot, quarkus, actuator, devtools,
+// and bootui. These drive graceful UI degradation.
 let projectModules = null;
 
 // Per-pom capability flags, derived purely from the pom text (cheap + offline).
 function pomCaps(xml, name) {
+  const quarkus = /quarkus-maven-plugin|io\.quarkus/.test(xml);
   return {
     name,
-    runnable: xml.includes("spring-boot-maven-plugin"),
+    // A module is runnable when its build owns a launch plugin: the Spring Boot
+    // plugin (spring-boot:run) or the Quarkus plugin (quarkus:dev).
+    runnable: xml.includes("spring-boot-maven-plugin") || xml.includes("quarkus-maven-plugin"),
     springBoot: xml.includes("spring-boot-maven-plugin") || xml.includes("org.springframework.boot"),
+    quarkus,
     actuator: xml.includes("spring-boot-starter-actuator"),
     devtools: xml.includes("spring-boot-devtools"),
     bootui: /bootui-spring-boot-starter|julien-dubois\.bootui|jdubois\.bootui/.test(xml),
@@ -761,12 +767,15 @@ function pomCaps(xml, name) {
 }
 
 // Per-build-file capability flags for Gradle, derived from the build script text
-// (Groovy or Kotlin DSL). Spring Boot is detected from its Gradle plugin id.
+// (Groovy or Kotlin DSL). Spring Boot and Quarkus are detected from their Gradle
+// plugin ids (org.springframework.boot / io.quarkus).
 function gradleCaps(text, name) {
+  const quarkus = text.includes("io.quarkus");
   return {
     name,
-    runnable: text.includes("org.springframework.boot"),
+    runnable: text.includes("org.springframework.boot") || quarkus,
     springBoot: text.includes("org.springframework.boot"),
+    quarkus,
     actuator: text.includes("spring-boot-starter-actuator"),
     devtools: text.includes("spring-boot-devtools"),
     bootui: /bootui-spring-boot-starter|julien-dubois\.bootui|jdubois\.bootui/.test(text),
@@ -966,6 +975,7 @@ function capabilitiesSnapshot() {
     gradle: buildTool === "gradle",
     java: detectJavaVersion(),
     springBoot: mods.some((m) => m.springBoot),
+    quarkus: mods.some((m) => m.quarkus),
     runnable: mods.some((m) => m.runnable),
     actuator: mods.some((m) => m.actuator),
     devtools: mods.some((m) => m.devtools),
@@ -1031,6 +1041,40 @@ function listSpringProfiles() {
   return springProfiles;
 }
 
+// Quarkus config profiles. Quarkus has three built-in profiles (dev / test /
+// prod) and lets you define more inline with a `%<profile>.` key prefix in
+// application.properties / .yml (rather than per-profile files like Spring).
+// We always offer the built-ins and merge in any custom prefixes we can find.
+let quarkusProfiles = null;
+const QUARKUS_PROFILE_RE = /^%([A-Za-z0-9_-]+)\./gm;
+function listQuarkusProfiles() {
+  if (quarkusProfiles) return quarkusProfiles;
+  const names = new Set(["dev", "test", "prod"]);
+  const dirs = [workspacePath, ...listModules().map((m) => path.join(workspacePath, m.name))];
+  for (const dir of dirs) {
+    for (const sub of ["src/main/resources", "src/main/resources/config"]) {
+      let entries;
+      try {
+        entries = readdirSync(path.join(dir, sub));
+      } catch {
+        continue;
+      }
+      for (const f of entries) {
+        if (!/^application\.(?:properties|ya?ml)$/.test(f)) continue;
+        let text;
+        try {
+          text = readFileSync(path.join(dir, sub, f), "utf8");
+        } catch {
+          continue;
+        }
+        for (const m of text.matchAll(QUARKUS_PROFILE_RE)) names.add(m[1]);
+      }
+    }
+  }
+  quarkusProfiles = [...names].sort();
+  return quarkusProfiles;
+}
+
 // ---------------------------------------------------------------------------
 // Runner state (workspace-global: one app run at a time, like a dev inner loop)
 // ---------------------------------------------------------------------------
@@ -1066,7 +1110,7 @@ const lanes = {
 
 // Run-lane application state (only meaningful while the app is up).
 const app = {
-  runMode: null, // spring | java — how the app was launched (for run failures)
+  runMode: null, // spring | quarkus | java — how the app was launched (for run failures)
   appPort: null,
   appUp: false,
   appReachedUp: false, // app served a metrics endpoint at least once this run
@@ -1258,7 +1302,8 @@ function finishRecompile() {
 }
 
 // Start the live-reload watcher if DevTools is enabled and a Spring app with the
-// DevTools dependency is currently running. Safe to call repeatedly.
+// DevTools dependency is currently running. Safe to call repeatedly. (Quarkus dev
+// mode has its own built-in live reload, so it never needs this watcher.)
 function maybeStartLiveReload() {
   if (!settings.devtools) return;
   if (lanes.run.phase !== "running" || app.runMode !== "spring") return;
@@ -1331,9 +1376,9 @@ function fixInfo(op) {
     }
   }
   if (op === "run" && lane.phase === "failed") {
-    return app.runMode === "java"
-      ? { kind: "run-java", label: "Fix startup failure with Copilot" }
-      : { kind: "run-spring", label: "Fix Spring Boot startup with Copilot" };
+    if (app.runMode === "java") return { kind: "run-java", label: "Fix startup failure with Copilot" };
+    if (app.runMode === "quarkus") return { kind: "run-quarkus", label: "Fix Quarkus startup with Copilot" };
+    return { kind: "run-spring", label: "Fix Spring Boot startup with Copilot" };
   }
   return null;
 }
@@ -1385,6 +1430,7 @@ function envSnapshot() {
     mavenProfiles: listMavenProfiles(),
     profilesSupported: buildTool === "maven",
     springProfiles: listSpringProfiles(),
+    quarkusProfiles: listQuarkusProfiles(),
     capabilities: capabilitiesSnapshot(),
     settings: settingsSnapshot(),
     // Warm-JVM tier (mvnd for Maven, daemon for Gradle).
@@ -1737,10 +1783,12 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
   csrfToken = null;
   lastMetrics = { appUp: false };
 
-  // Pick the run strategy: explicit mode wins, else infer from whether the
-  // chosen module applies the Spring Boot plugin.
+  // Pick the run strategy: explicit mode wins, else infer from the chosen
+  // module's framework — Quarkus (quarkus:dev / quarkusDev) and Spring Boot
+  // (spring-boot:run / bootRun) are both "runnable"; anything else is plain Java.
   const mod = listModules().find((m) => m.name === module);
-  const resolved = mode === "java" || mode === "spring" ? mode : mod && mod.runnable ? "spring" : "java";
+  const inferred = mod && mod.quarkus ? "quarkus" : mod && mod.runnable ? "spring" : "java";
+  const resolved = mode === "java" || mode === "spring" || mode === "quarkus" ? mode : inferred;
   app.runMode = resolved;
   app.module = module || "";
   app.mavenProfiles = mavenProfiles || null;
@@ -1804,6 +1852,53 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
       startLiveReload({ module: module || "", mavenProfiles, bin: lr.bin, label: lr.label });
     }
     return { ok: true, started: true, mode: "spring", command: `${baseRunner().label} ${args.join(" ")}` };
+  }
+
+  if (resolved === "quarkus") {
+    // Quarkus dev mode (quarkus:dev / quarkusDev) runs the app in the foreground
+    // with built-in live reload — no DevTools-style recompile loop needed. The
+    // active config profile and HTTP port flow through -D / env vars.
+    const r = resolveRunner(false);
+
+    if (buildTool === "gradle") {
+      const args = [gradleTaskPath(module, "quarkusDev"), "--console=plain"];
+      const extra = {};
+      if (profiles) extra.QUARKUS_PROFILE = profiles;
+      if (settings.randomPort) {
+        let port = 0;
+        try {
+          port = await freePort();
+        } catch {
+          /* fall back: leave QUARKUS_HTTP_PORT unset and keep the default */
+        }
+        if (port) {
+          extra.QUARKUS_HTTP_PORT = String(port);
+          pushConsole(`[coffilot] using HTTP port ${port} via QUARKUS_HTTP_PORT.`, "stdout", "run");
+        }
+      }
+      spawnTool("run", args, "running", { bin: r.bin, label: r.label, env: toolEnv(extra), onLine: detectPort });
+      return { ok: true, started: true, mode: "quarkus", command: `${r.label} ${args.join(" ")}` };
+    }
+
+    const args = ["-ntp"];
+    if (module) args.push("-pl", module);
+    if (mavenProfiles && mavenProfiles.trim()) args.push("-P", mavenProfiles.trim());
+    if (profiles) args.push(`-Dquarkus.profile=${profiles}`);
+    if (settings.randomPort) {
+      let port = 0;
+      try {
+        port = await freePort();
+      } catch {
+        /* fall back: keep the default port */
+      }
+      if (port) {
+        args.push(`-Dquarkus.http.port=${port}`);
+        pushConsole(`[coffilot] using HTTP port ${port} via quarkus.http.port.`, "stdout", "run");
+      }
+    }
+    args.push("quarkus:dev");
+    spawnTool("run", args, "running", { onLine: detectPort }); // fire-and-forget
+    return { ok: true, started: true, mode: "quarkus", command: `${baseRunner().label} ${args.join(" ")}` };
   }
 
   // Pure-Java: build the module, then launch its jar with `java -jar`.
@@ -1964,6 +2059,8 @@ const PORT_PATTERNS = [
   /Tomcat (?:started|initialized).*?port[s]?(?:\(s\))?:?\s*(\d+)/i,
   /Netty started on port[s]?(?:\(s\))?:?\s*(\d+)/i,
   /Undertow.*?port[s]?(?:\(s\))?:?\s*(\d+)/i,
+  // Quarkus dev/prod startup banner, e.g. "Listening on: http://0.0.0.0:8080".
+  /Listening on:\s*https?:\/\/[^\s:/]+:(\d+)/i,
   /started on port[s]?(?:\(s\))?:?\s*(\d+)/i,
 ];
 
@@ -1976,7 +2073,7 @@ function detectPort(line) {
     const m = line.match(re);
     if (m) {
       app.appPort = Number(m[1]);
-      pushConsole(`[coffilot] detected app port ${app.appPort}; polling /bootui/api`, "stdout", "run");
+      pushConsole(`[coffilot] detected app port ${app.appPort}; polling for live metrics`, "stdout", "run");
       broadcast("status", statusSnapshot());
       startMetricsPolling();
       return;
@@ -2186,6 +2283,17 @@ async function fetchJson(base, p) {
   }
 }
 
+/** Fetch a text/plain body (e.g. a Prometheus exposition), or null. */
+async function fetchText(base, p) {
+  try {
+    const res = await fetch(base + p, { headers: { Accept: "text/plain" } });
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
+
 /** Pull a single Micrometer actuator metric's VALUE measurement (or null). */
 async function actuatorMetric(base, name, tag) {
   const q = tag ? `?tag=${encodeURIComponent(tag)}` : "";
@@ -2226,6 +2334,78 @@ async function actuatorMetrics(base, health) {
   };
 }
 
+// --- Quarkus metrics tier --------------------------------------------------
+// Quarkus exposes Micrometer JVM metrics in Prometheus text format at
+// /q/metrics (when quarkus-micrometer-registry-prometheus is present) and
+// SmallRye Health JSON at /q/health. The metric names match Spring's
+// Micrometer output, so we normalize them into the same shape as the BootUI /
+// Actuator tiers.
+
+/** Parse Prometheus exposition lines for one metric into {labels, value} samples. */
+function promSamples(text, metric) {
+  const out = [];
+  if (!text) return out;
+  const re = new RegExp(`^${metric.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\{[^}]*\\})?\\s+([-+0-9.eE]+)`, "gm");
+  let m;
+  while ((m = re.exec(text))) out.push({ labels: m[1] || "", value: Number(m[2]) });
+  return out;
+}
+
+/** Sum the (non-negative) samples of a metric, optionally filtered by a label substring. */
+function promSum(text, metric, labelFilter) {
+  return promSamples(text, metric)
+    .filter((s) => (labelFilter ? s.labels.includes(labelFilter) : true))
+    .reduce((acc, s) => (Number.isFinite(s.value) && s.value >= 0 ? acc + s.value : acc), 0);
+}
+
+/** First sample value of a metric (for single-series gauges), or null. */
+function promValue(text, metric) {
+  const s = promSamples(text, metric);
+  return s.length && Number.isFinite(s[0].value) ? s[0].value : null;
+}
+
+/** Read a label off a metric's first sample (e.g. jvm_info{version="21"}). */
+function promLabel(text, metric, label) {
+  const s = promSamples(text, metric);
+  if (!s.length) return null;
+  const m = s[0].labels.match(new RegExp(`${label}="([^"]*)"`));
+  return m ? m[1] : null;
+}
+
+/** Normalize Quarkus /q/metrics + /q/health into the same shape as the other tiers. */
+function quarkusMetrics(metricsText, health) {
+  const out = {
+    appUp: true,
+    metricsTier: "quarkus",
+    overview: {
+      applicationName: null,
+      springBootVersion: null,
+      javaVersion: promLabel(metricsText, "jvm_info", "version"),
+      activeProfiles: [],
+      startupTimeMillis: null,
+    },
+    memory: null,
+    health: health ? { status: health.status } : null,
+    threads: null,
+  };
+  if (metricsText) {
+    const heapUsed = promSum(metricsText, "jvm_memory_used_bytes", 'area="heap"');
+    const heapMax = promSum(metricsText, "jvm_memory_max_bytes", 'area="heap"');
+    const nonHeapUsed = promSum(metricsText, "jvm_memory_used_bytes", 'area="nonheap"');
+    const threadsLive = promValue(metricsText, "jvm_threads_live_threads");
+    const threadsDaemon = promValue(metricsText, "jvm_threads_daemon_threads");
+    const uptime = promValue(metricsText, "process_uptime_seconds");
+    const usedPercent = heapUsed && heapMax ? Math.round((heapUsed / heapMax) * 100) : null;
+    out.overview.startupTimeMillis = uptime != null ? Math.round(uptime * 1000) : null;
+    out.memory = {
+      heap: { usedBytes: heapUsed || null, maxBytes: heapMax || null, usedPercent },
+      nonHeap: { usedBytes: nonHeapUsed || null },
+    };
+    out.threads = threadsLive != null ? { totalThreads: threadsLive, daemonThreads: threadsDaemon ?? 0 } : null;
+  }
+  return out;
+}
+
 async function refreshMetrics() {
   if (!app.appPort) return null;
   const base = `http://127.0.0.1:${app.appPort}`;
@@ -2250,7 +2430,14 @@ async function refreshMetrics() {
     return finishMetrics();
   }
 
-  // Tier 3 — process only: the port is open but no diagnostics endpoint answered.
+  // Tier 3 — Quarkus: SmallRye Health + Micrometer/Prometheus under /q/*.
+  const [qHealth, qMetrics] = await Promise.all([fetchJson(base, "/q/health"), fetchText(base, "/q/metrics")]);
+  if (qHealth || qMetrics) {
+    lastMetrics = quarkusMetrics(qMetrics, qHealth);
+    return finishMetrics();
+  }
+
+  // Tier 4 — process only: the port is open but no diagnostics endpoint answered.
   lastMetrics = { appUp: true, metricsTier: "process" };
   return finishMetrics();
 }
@@ -2302,7 +2489,14 @@ function errorLines(op, max = 60) {
 }
 
 // Map a fix kind to the lane whose console/command/exit code is relevant.
-const FIX_OP = { compile: "build", package: "package", test: "test", "run-java": "run", "run-spring": "run" };
+const FIX_OP = {
+  compile: "build",
+  package: "package",
+  test: "test",
+  "run-java": "run",
+  "run-spring": "run",
+  "run-quarkus": "run",
+};
 
 function buildFixPrompt(kind, extra = {}) {
   const op = FIX_OP[kind] || "build";
@@ -2347,6 +2541,15 @@ function buildFixPrompt(kind, extra = {}) {
     case "run-spring":
       return [
         "The Spring Boot application failed to start. Diagnose the startup failure (bean wiring, missing/invalid configuration, failed auto-configuration, port already in use, datasource, etc.) and fix it.",
+        where,
+        "Recent output:",
+        codeBlock(tail("run", 90)),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    case "run-quarkus":
+      return [
+        "The Quarkus application failed to start in dev mode (quarkus:dev / quarkusDev). Diagnose the startup failure (CDI bean wiring, missing/invalid configuration in application.properties, failed extension/build-step initialization, port already in use, datasource, etc.) and fix it.",
         where,
         "Recent output:",
         codeBlock(tail("run", 90)),
@@ -2866,7 +3069,7 @@ function makeCanvas() {
     id: "java-app",
     displayName: "Coffilot",
     description:
-      "Build, test, package and run a Maven or Gradle Java/Spring Boot app, watch live JVM metrics, run advisor scans, and push fixes back to the agent. Degrades gracefully by capability (plain Java → Spring Boot → Actuator → BootUI).",
+      "Build, test, package and run a Maven or Gradle Java/Spring Boot/Quarkus app, watch live JVM metrics, run advisor scans, and push fixes back to the agent. Degrades gracefully by capability (plain Java → Spring Boot / Quarkus → Actuator / Quarkus metrics → BootUI).",
     inputSchema: { type: "object", properties: {} },
     actions: [
       {
@@ -2945,14 +3148,15 @@ function makeCanvas() {
       {
         name: "start_app",
         description:
-          "Launch the app (returns immediately; output streams to the canvas). Spring Boot modules run via spring-boot:run (Maven) or bootRun (Gradle); otherwise the module is built and run with java -jar. Use the 'dev' profile so BootUI activates and live metrics become available.",
+          "Launch the app (returns immediately; output streams to the canvas). Spring Boot modules run via spring-boot:run (Maven) / bootRun (Gradle); Quarkus modules via quarkus:dev (Maven) / quarkusDev (Gradle) with built-in live reload; otherwise the module is built and run with java -jar. Spring Boot's 'dev' profile activates BootUI for the richest live metrics.",
         inputSchema: {
           type: "object",
           properties: {
             module: { type: "string", description: "Module to run (Maven -pl / Gradle subproject, e.g. 'web')." },
             profiles: {
               type: "string",
-              description: "Spring profiles to activate (default 'dev'); ignored for non-Spring runs.",
+              description:
+                "Config profile(s) to activate (default 'dev'): Spring profiles via spring-boot.run.profiles, or the Quarkus profile via quarkus.profile. Ignored for plain-Java runs.",
             },
             mavenProfiles: {
               type: "string",
@@ -2960,7 +3164,7 @@ function makeCanvas() {
             },
             mode: {
               type: "string",
-              enum: ["spring", "java"],
+              enum: ["spring", "quarkus", "java"],
               description: "Force the run strategy; defaults to auto-detect from the module.",
             },
           },
@@ -2997,20 +3201,20 @@ function makeCanvas() {
       {
         name: "get_metrics",
         description:
-          "Return live JVM metrics from the running app. Uses BootUI (/bootui/api) when present, else Spring Boot Actuator (/actuator), else process-only. appUp=false if it is not running.",
+          "Return live JVM metrics from the running app. Uses BootUI (/bootui/api) when present, else Spring Boot Actuator (/actuator), else Quarkus Micrometer/health (/q/*), else process-only. appUp=false if it is not running.",
         inputSchema: { type: "object", properties: {} },
         handler: async () => (await refreshMetrics()) || lastMetrics,
       },
       {
         name: "fix_issue",
         description:
-          "Send a context-rich request into this chat asking to fix the current problem. Kind: compile (build failed), package (package failed), test (failing tests), run-java/run-spring (startup failure), or mcp (advisor scan findings).",
+          "Send a context-rich request into this chat asking to fix the current problem. Kind: compile (build failed), package (package failed), test (failing tests), run-java/run-spring/run-quarkus (startup failure), or mcp (advisor scan findings).",
         inputSchema: {
           type: "object",
           properties: {
             kind: {
               type: "string",
-              enum: ["compile", "package", "test", "run-java", "run-spring", "mcp"],
+              enum: ["compile", "package", "test", "run-java", "run-spring", "run-quarkus", "mcp"],
               description: "Which failure to fix.",
             },
             tool: { type: "string", description: "For kind=mcp: the scan tool name." },
