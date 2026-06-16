@@ -35,10 +35,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const session = await joinSession({ canvases: [makeCanvas()] });
 
-// Resolve the Maven project root. session.workspacePath points at the session
-// artifacts folder, not the repo, so we walk up from this extension's own
-// location (it lives at <repo>/.github/extensions/coffilot) until we find
-// the directory that owns the Maven wrapper, then fall back gracefully.
+// Resolve the Maven project root. session.workspacePath is the session-artifacts
+// folder (checkpoints/, plan.md, files/), never the repo, so it must not be used
+// as the project root. We look in two places: the extension's own location (for a
+// project-embedded install at <repo>/.github/extensions/coffilot) and the CLI's
+// working directory (for a user/global install, where the CLI launches us with
+// cwd set to the project the user opened).
 const workspacePath = findProjectRoot();
 const mvnw = path.join(workspacePath, process.platform === "win32" ? "mvnw.cmd" : "mvnw");
 
@@ -184,19 +186,25 @@ function freePort() {
 
 function findProjectRoot() {
   const wrapper = process.platform === "win32" ? "mvnw.cmd" : "mvnw";
-  let dir = __dirname;
-  for (let i = 0; i < 8; i++) {
-    if (existsSync(path.join(dir, wrapper)) || existsSync(path.join(dir, "pom.xml"))) {
-      return dir;
+  const owns = (dir) => existsSync(path.join(dir, wrapper)) || existsSync(path.join(dir, "pom.xml"));
+  // Walk up from `start` (max 8 hops) to the first directory that owns the Maven
+  // wrapper or a pom.xml; null if none is found.
+  const walkUp = (start) => {
+    let dir = start;
+    for (let i = 0; i < 8; i++) {
+      if (owns(dir)) return dir;
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
     }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  if (session.workspacePath && existsSync(path.join(session.workspacePath, wrapper))) {
-    return session.workspacePath;
-  }
-  return session.workspacePath || process.cwd();
+    return null;
+  };
+  // 1) Project-embedded install (.github/extensions/coffilot): walk up from here.
+  // 2) User/global install (e.g. symlinked into ~/.copilot/extensions): the CLI
+  //    launches the extension with cwd set to the project, so walk up from there.
+  //    session.workspacePath is the session-artifacts folder, never the Maven
+  //    project, so it is deliberately not consulted.
+  return walkUp(__dirname) || walkUp(process.cwd()) || process.cwd();
 }
 
 // ---------------------------------------------------------------------------
