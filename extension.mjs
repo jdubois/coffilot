@@ -18,9 +18,10 @@
 //   * Live JVM metrics are read from a running app: when the app exposes BootUI
 //     (https://github.com/jdubois/boot-ui) it serves sanitized record DTOs at
 //     /bootui/api/overview, /live-memory, /health, /threads, which this canvas
-//     proxies and renders; otherwise it falls back to Spring Boot Actuator, then to
-//     Quarkus Micrometer/health (/q/*), then to coarse process metrics. BootUI also
-//     unlocks the MCP advisor-scan panel.
+//     proxies and renders; otherwise it falls back to Spring Boot Actuator (reading
+//     the JSON /metrics endpoint or the Prometheus scrape, under /actuator or
+//     /management), then to Quarkus Micrometer/health (/q/*), then to coarse process
+//     metrics. BootUI also unlocks the MCP advisor-scan panel.
 
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
@@ -1216,6 +1217,7 @@ const app = {
   appPort: null,
   appUp: false,
   appReachedUp: false, // app served a metrics endpoint at least once this run
+  actuatorPrefix: null, // discovered Actuator base path this run (/actuator or /management)
   module: null, // module selected for the current run (for live reload)
   mavenProfiles: null, // Maven profiles used for the current run (for live reload)
 };
@@ -1882,6 +1884,7 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
   app.appPort = null;
   app.appUp = false;
   app.appReachedUp = false;
+  app.actuatorPrefix = null;
   csrfToken = null;
   lastMetrics = { appUp: false };
 
@@ -2583,44 +2586,138 @@ async function fetchText(base, p) {
   }
 }
 
+// Actuator can live under different base paths depending on the app's config
+// (Spring Boot defaults to /actuator; JHipster relocates it to /management).
+const ACTUATOR_PREFIXES = ["/actuator", "/management"];
+
 /** Pull a single Micrometer actuator metric's VALUE measurement (or null). */
-async function actuatorMetric(base, name, tag) {
+async function actuatorMetric(base, prefix, name, tag) {
   const q = tag ? `?tag=${encodeURIComponent(tag)}` : "";
-  const json = await fetchJson(base, `/actuator/metrics/${name}${q}`);
+  const json = await fetchJson(base, `${prefix}/metrics/${name}${q}`);
   if (!json || !Array.isArray(json.measurements)) return null;
   const v = json.measurements.find((m) => m.statistic === "VALUE") || json.measurements[0];
   return v ? v.value : null;
 }
 
-/** Normalize Actuator endpoints into the same shape the BootUI tier produces. */
-async function actuatorMetrics(base, health) {
+/** Read JVM gauges from the JSON /metrics/{name} endpoint (when it is exposed). */
+async function jvmMetricsFromJson(base, prefix) {
   const [heapUsed, heapMax, nonHeapUsed, threadsLive, threadsDaemon, uptime] = await Promise.all([
-    actuatorMetric(base, "jvm.memory.used", "area:heap"),
-    actuatorMetric(base, "jvm.memory.max", "area:heap"),
-    actuatorMetric(base, "jvm.memory.used", "area:nonheap"),
-    actuatorMetric(base, "jvm.threads.live"),
-    actuatorMetric(base, "jvm.threads.daemon"),
-    actuatorMetric(base, "process.uptime"),
+    actuatorMetric(base, prefix, "jvm.memory.used", "area:heap"),
+    actuatorMetric(base, prefix, "jvm.memory.max", "area:heap"),
+    actuatorMetric(base, prefix, "jvm.memory.used", "area:nonheap"),
+    actuatorMetric(base, prefix, "jvm.threads.live"),
+    actuatorMetric(base, prefix, "jvm.threads.daemon"),
+    actuatorMetric(base, prefix, "process.uptime"),
   ]);
-  const info = await fetchJson(base, "/actuator/info");
-  const usedPercent = heapUsed && heapMax ? Math.round((heapUsed / heapMax) * 100) : null;
+  return { heapUsed, heapMax, nonHeapUsed, threadsLive, threadsDaemon, uptime };
+}
+
+/** Parse a Prometheus/OpenMetrics scrape into name -> [{ labels, value }]. */
+function parsePrometheus(text) {
+  const samples = new Map();
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line[0] === "#") continue;
+    // name{labels} value [timestamp] — label values may contain spaces, so match
+    // the name + optional {...} block, then take the first token of the rest.
+    const m = line.match(/^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{.*\})?\s+(.+)$/);
+    if (!m) continue;
+    const value = Number(m[3].trim().split(/\s+/)[0]);
+    if (!Number.isFinite(value)) continue;
+    const labels = {};
+    if (m[2]) {
+      const re = /([a-zA-Z0-9_]+)="((?:[^"\\]|\\.)*)"/g;
+      let lm;
+      while ((lm = re.exec(m[2]))) labels[lm[1]] = lm[2];
+    }
+    let arr = samples.get(m[1]);
+    if (!arr) samples.set(m[1], (arr = []));
+    arr.push({ labels, value });
+  }
+  return samples;
+}
+
+/** Sum non-negative samples of a metric, optionally filtered by area label. */
+function promSum(samples, name, area) {
+  const arr = samples.get(name);
+  if (!arr) return null;
+  let sum = 0;
+  let found = false;
+  for (const s of arr) {
+    if (area && s.labels.area !== area) continue;
+    if (s.value < 0) continue; // -1 == unbounded (e.g. max for some pools)
+    sum += s.value;
+    found = true;
+  }
+  return found ? sum : null;
+}
+
+function promSingle(samples, name) {
+  const arr = samples.get(name);
+  return arr && arr.length ? arr[0].value : null;
+}
+
+/** Read a label off a metric's first sample (e.g. jvm_info{version="21"}). */
+function promFirstLabel(samples, name, label) {
+  const arr = samples.get(name);
+  return arr && arr.length ? (arr[0].labels[label] ?? null) : null;
+}
+
+/** Read JVM gauges from a Prometheus scrape (when the JSON endpoint is closed). */
+async function jvmMetricsFromPrometheus(base, prefix) {
+  const text = await fetchText(base, `${prefix}/prometheus`);
+  if (!text) return null;
+  const s = parsePrometheus(text);
   return {
-    appUp: true,
-    metricsTier: "actuator",
-    overview: {
-      applicationName: (info && (info.app?.name || info.build?.name)) || null,
-      springBootVersion: null,
-      javaVersion: null,
-      activeProfiles: [],
-      startupTimeMillis: uptime != null ? Math.round(uptime * 1000) : null,
-    },
-    memory: {
-      heap: { usedBytes: heapUsed, maxBytes: heapMax, usedPercent },
-      nonHeap: { usedBytes: nonHeapUsed },
-    },
-    health: health ? { status: health.status } : null,
-    threads: threadsLive != null ? { totalThreads: threadsLive, daemonThreads: threadsDaemon ?? 0 } : null,
+    heapUsed: promSum(s, "jvm_memory_used_bytes", "heap"),
+    heapMax: promSum(s, "jvm_memory_max_bytes", "heap"),
+    nonHeapUsed: promSum(s, "jvm_memory_used_bytes", "nonheap"),
+    threadsLive: promSingle(s, "jvm_threads_live_threads"),
+    threadsDaemon: promSingle(s, "jvm_threads_daemon_threads"),
+    uptime: promSingle(s, "process_uptime_seconds"),
   };
+}
+
+/**
+ * Tier 2 — Actuator. Discover the base path (/actuator or /management), then read
+ * JVM metrics from the JSON /metrics endpoint, falling back to the Prometheus
+ * scrape (which apps such as JHipster expose instead of the raw metrics endpoint).
+ * Returns the normalized shape the BootUI tier produces, or null if no Actuator.
+ */
+async function actuatorMetrics(base) {
+  const prefixes = app.actuatorPrefix ? [app.actuatorPrefix] : ACTUATOR_PREFIXES;
+  for (const prefix of prefixes) {
+    const health = await fetchJson(base, `${prefix}/health`);
+    if (!health) continue;
+    app.actuatorPrefix = prefix; // cache the working base path for this run
+
+    let jvm = await jvmMetricsFromJson(base, prefix);
+    if (jvm.heapUsed == null && jvm.threadsLive == null) {
+      jvm = (await jvmMetricsFromPrometheus(base, prefix)) || jvm;
+    }
+
+    const info = await fetchJson(base, `${prefix}/info`);
+    const usedPercent = jvm.heapUsed != null && jvm.heapMax ? Math.round((jvm.heapUsed / jvm.heapMax) * 100) : null;
+    return {
+      appUp: true,
+      metricsTier: "actuator",
+      overview: {
+        applicationName: (info && (info.app?.name || info.build?.name)) || null,
+        springBootVersion: null,
+        javaVersion: null,
+        activeProfiles: [],
+        startupTimeMillis: jvm.uptime != null ? Math.round(jvm.uptime * 1000) : null,
+      },
+      memory: {
+        heap: { usedBytes: jvm.heapUsed, maxBytes: jvm.heapMax, usedPercent },
+        nonHeap: { usedBytes: jvm.nonHeapUsed },
+      },
+      health: health ? { status: health.status } : null,
+      threads:
+        jvm.threadsLive != null ? { totalThreads: jvm.threadsLive, daemonThreads: jvm.threadsDaemon ?? 0 } : null,
+    };
+  }
+  return null;
 }
 
 // --- Quarkus metrics tier --------------------------------------------------
@@ -2630,46 +2727,16 @@ async function actuatorMetrics(base, health) {
 // Micrometer output, so we normalize them into the same shape as the BootUI /
 // Actuator tiers.
 
-/** Parse Prometheus exposition lines for one metric into {labels, value} samples. */
-function promSamples(text, metric) {
-  const out = [];
-  if (!text) return out;
-  const re = new RegExp(`^${metric.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\{[^}]*\\})?\\s+([-+0-9.eE]+)`, "gm");
-  let m;
-  while ((m = re.exec(text))) out.push({ labels: m[1] || "", value: Number(m[2]) });
-  return out;
-}
-
-/** Sum the (non-negative) samples of a metric, optionally filtered by a label substring. */
-function promSum(text, metric, labelFilter) {
-  return promSamples(text, metric)
-    .filter((s) => (labelFilter ? s.labels.includes(labelFilter) : true))
-    .reduce((acc, s) => (Number.isFinite(s.value) && s.value >= 0 ? acc + s.value : acc), 0);
-}
-
-/** First sample value of a metric (for single-series gauges), or null. */
-function promValue(text, metric) {
-  const s = promSamples(text, metric);
-  return s.length && Number.isFinite(s[0].value) ? s[0].value : null;
-}
-
-/** Read a label off a metric's first sample (e.g. jvm_info{version="21"}). */
-function promLabel(text, metric, label) {
-  const s = promSamples(text, metric);
-  if (!s.length) return null;
-  const m = s[0].labels.match(new RegExp(`${label}="([^"]*)"`));
-  return m ? m[1] : null;
-}
-
 /** Normalize Quarkus /q/metrics + /q/health into the same shape as the other tiers. */
 function quarkusMetrics(metricsText, health) {
+  const s = metricsText ? parsePrometheus(metricsText) : null;
   const out = {
     appUp: true,
     metricsTier: "quarkus",
     overview: {
       applicationName: null,
       springBootVersion: null,
-      javaVersion: promLabel(metricsText, "jvm_info", "version"),
+      javaVersion: s ? promFirstLabel(s, "jvm_info", "version") : null,
       activeProfiles: [],
       startupTimeMillis: null,
     },
@@ -2677,13 +2744,13 @@ function quarkusMetrics(metricsText, health) {
     health: health ? { status: health.status } : null,
     threads: null,
   };
-  if (metricsText) {
-    const heapUsed = promSum(metricsText, "jvm_memory_used_bytes", 'area="heap"');
-    const heapMax = promSum(metricsText, "jvm_memory_max_bytes", 'area="heap"');
-    const nonHeapUsed = promSum(metricsText, "jvm_memory_used_bytes", 'area="nonheap"');
-    const threadsLive = promValue(metricsText, "jvm_threads_live_threads");
-    const threadsDaemon = promValue(metricsText, "jvm_threads_daemon_threads");
-    const uptime = promValue(metricsText, "process_uptime_seconds");
+  if (s) {
+    const heapUsed = promSum(s, "jvm_memory_used_bytes", "heap");
+    const heapMax = promSum(s, "jvm_memory_max_bytes", "heap");
+    const nonHeapUsed = promSum(s, "jvm_memory_used_bytes", "nonheap");
+    const threadsLive = promSingle(s, "jvm_threads_live_threads");
+    const threadsDaemon = promSingle(s, "jvm_threads_daemon_threads");
+    const uptime = promSingle(s, "process_uptime_seconds");
     const usedPercent = heapUsed && heapMax ? Math.round((heapUsed / heapMax) * 100) : null;
     out.overview.startupTimeMillis = uptime != null ? Math.round(uptime * 1000) : null;
     out.memory = {
@@ -2712,10 +2779,11 @@ async function refreshMetrics() {
     return finishMetrics();
   }
 
-  // Tier 2 — Actuator: normalize /actuator/* into the same shape.
-  const health = await fetchJson(base, "/actuator/health");
-  if (health) {
-    lastMetrics = await actuatorMetrics(base, health);
+  // Tier 2 — Actuator: discover /actuator or /management and normalize JVM metrics
+  // (JSON /metrics endpoint, falling back to the Prometheus scrape).
+  const actuator = await actuatorMetrics(base);
+  if (actuator) {
+    lastMetrics = actuator;
     return finishMetrics();
   }
 
@@ -3495,7 +3563,7 @@ function makeCanvas() {
       {
         name: "get_metrics",
         description:
-          "Return live JVM metrics from the running app. Uses BootUI (/bootui/api) when present, else Spring Boot Actuator (/actuator), else Quarkus Micrometer/health (/q/*), else process-only. appUp=false if it is not running.",
+          "Return live JVM metrics from the running app. Uses BootUI (/bootui/api) when present, else Spring Boot Actuator (auto-detecting /actuator or /management, via the JSON /metrics endpoint or the Prometheus scrape), else Quarkus Micrometer/health (/q/*), else process-only. appUp=false if it is not running.",
         inputSchema: { type: "object", properties: {} },
         handler: async () => (await refreshMetrics()) || lastMetrics,
       },
