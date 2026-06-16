@@ -32,7 +32,9 @@ Shipped in the extension today:
 - Build group (Build/Test/Package) running independently of the long-lived Run lane.
 - Module scan for runnable apps (Maven reactor / Gradle subprojects), Spring Boot
   detection, and Spring + Maven profile discovery (Maven only).
-- Plain-Java fallback (build + `java -jar`) when a module is not a Spring Boot app.
+- Generic non-Spring runner: the Gradle `application` plugin's `run` task, else an
+  executable jar via `java -jar`, else the module's configured main class via
+  `java -cp` (Maven resolves the runtime classpath with `dependency:build-classpath`).
 - Optional warm builds via the Maven Daemon (`mvnd`) or the Gradle daemon,
   cross-platform detected.
 - Live JVM metrics tiered BootUI → Actuator → process, with a source badge.

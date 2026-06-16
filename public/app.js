@@ -873,11 +873,13 @@ function applyCaps(c) {
   caps = c || {};
   const toolLabel = caps.toolLabel || (caps.gradle ? "Gradle" : caps.maven ? "Maven" : null);
   const springRun = caps.gradle ? "bootRun" : "spring-boot:run";
-  // Pure-Java modules can still Run (build + java -jar); Spring-specific
-  // settings rows are toggled per selected module in updateDevSetup().
-  btnRun.title = caps.springBoot
-    ? `Run the selected module with ${springRun}.`
-    : "Build the selected module and launch it with java -jar.";
+  // Pure-Java modules can still Run (the generic runner builds, then launches via
+  // the Gradle application plugin / an executable jar / the configured main class);
+  // Spring-specific settings rows are toggled per selected module in updateDevSetup().
+  const genericRun = caps.gradle
+    ? "Build the selected module and launch it (Gradle application run, executable jar, or its main class)."
+    : "Build the selected module and launch it (executable jar via java -jar, or its main class via java -cp).";
+  btnRun.title = caps.springBoot ? `Run the selected module with ${springRun}.` : genericRun;
   const pill = (label, on, title) =>
     `<span class="cap ${on ? "on" : "off"}" title="${esc(title)}">${esc(label)}</span>`;
   let html = "";
@@ -895,7 +897,7 @@ function applyCaps(c) {
   html += pill(
     "Spring Boot",
     !!caps.springBoot,
-    caps.springBoot ? `${springRun} available.` : "No Spring Boot module detected; Run uses java -jar.",
+    caps.springBoot ? `${springRun} available.` : "No Spring Boot module detected; Run uses the generic launcher.",
   );
   html += pill("Actuator", !!caps.actuator, "Spring Boot Actuator metrics (static hint; confirmed at runtime).");
   html += pill("BootUI", !!caps.bootui, "BootUI rich metrics + MCP advisor scans.");
