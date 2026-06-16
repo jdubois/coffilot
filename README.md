@@ -39,6 +39,10 @@ wins; when neither is found the console says so and stays disabled until one is 
   (`dev` / `test` / `prod` plus any `%<profile>.` keys) — and, for Maven, the reactor's
   **Maven profiles**, offering each as an editable dropdown. (Gradle has no Maven-profile
   concept, so that control is hidden.)
+- **Refresh** &mdash; the refresh button in the toolbar's top-right corner re-runs the
+  project discovery done at launch (build tool, modules, Maven/Spring/Quarkus profiles
+  and detected technologies), so changes to the build files show up without reloading
+  the extension.
 - **Live JVM metrics** &mdash; once the app is up, the panel shows heap / non-heap,
   threads, health, profiles and startup info, sourced from the richest endpoint
   available (BootUI → Actuator → Quarkus Micrometer/health → process).
