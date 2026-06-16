@@ -1,7 +1,7 @@
 # Coffilot integration-test projects
 
-Five **independent** projects used to exercise Coffilot against every capability
-tier it supports. Four are Maven and one is Gradle, so both build tools get real
+Six **independent** projects used to exercise Coffilot against every capability
+tier it supports. Five are Maven and one is Gradle, so both build tools get real
 coverage. Each folder is a self-contained project with its own wrapper (`./mvnw`
 or `./gradlew`) — none of them depend on each other or on this repo's Node tooling.
 
@@ -15,12 +15,19 @@ rung of that ladder:
 | [`spring-mvc`](spring-mvc) | Spring Boot MVC app (`web`), from start.spring.io | **Spring Boot** — Run lane + process-level JVM metrics |
 | [`spring-mvc-actuator-devtools`](spring-mvc-actuator-devtools) | Same app + Actuator + DevTools | **Actuator** — richer live metrics via `/actuator` |
 | [`spring-mvc-bootui`](spring-mvc-bootui) | Same app with BootUI in a `dev` Maven profile | **BootUI** — richest metrics + advisor scan |
+| [`quarkus-rest`](quarkus-rest) | Quarkus REST app with SmallRye Health + Micrometer/Prometheus | **Quarkus** — Run via `quarkus:dev` + live metrics from `/q/metrics` & `/q/health` |
 
 The three Spring projects were generated with
 [start.spring.io](https://start.spring.io) (Maven, Java 17, Spring Boot 4.1) and
 each expose a trivial `GET /` endpoint plus two tests (`contextLoads` and a
 `@WebMvcTest` on the controller), so the graphical test view and Run lane have
 something real to show.
+
+`quarkus-rest` is the Quarkus counterpart, generated with
+[code.quarkus.io](https://code.quarkus.io) (Maven, Java 17, Quarkus 3.36) and likewise
+exposing a trivial `GET /` plus two tests (a `@QuarkusTest` that boots the app and a
+plain unit test). It adds SmallRye Health and the Micrometer/Prometheus registry so its
+`/q/health` and `/q/metrics` endpoints feed Coffilot's Quarkus metrics tier.
 
 ## Running them by hand
 
@@ -49,6 +56,16 @@ cd gradle-hello-world
 ./gradlew test                      # run the tests
 ./gradlew build -x test             # build the jar (skipping tests)
 java -jar build/libs/gradle-hello-world.jar   # prints "Hello, World!"
+```
+
+`quarkus-rest` runs in Quarkus dev mode (live reload), the path Coffilot's Run lane
+uses for Quarkus modules:
+
+```bash
+cd quarkus-rest
+./mvnw test          # run the tests (boots the app under @QuarkusTest)
+./mvnw package       # build the runner jar
+./mvnw quarkus:dev   # start it on http://localhost:8080/ (try /q/health, /q/metrics)
 ```
 
 ### BootUI tier
@@ -84,3 +101,4 @@ Then open a Copilot session on that project, reload extensions, and open the
 - `spring-mvc` for the Run lane and process-level metrics.
 - `spring-mvc-actuator-devtools` for the Actuator metrics tier.
 - `spring-mvc-bootui` (run with `-Pdev`) for the full BootUI metrics + advisor scan.
+- `quarkus-rest` for the Quarkus Run lane (`quarkus:dev`) and the Quarkus metrics tier.
