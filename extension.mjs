@@ -124,11 +124,14 @@ async function recheckBuildTool() {
 // Maven, the launched app JVM.
 const NATIVE_ACCESS_FLAG = "--enable-native-access=ALL-UNNAMED";
 
-// Maven 3.9+ embeds JLine for its console. When spawned without a TTY (as this
-// canvas always does), JLine can't open a system terminal and logs a noisy
-// "Unable to create a system terminal, creating a dumb terminal" warning at the
-// top of every build. Telling JLine to use a dumb terminal up front makes it do
-// so silently, without changing any build behaviour. Maven-only (Gradle uses
+// Maven 3.9+ (and the mvnd native client) embed JLine for their console. When
+// spawned without a TTY (as this canvas always does), JLine can't open a system
+// terminal and logs a noisy "Unable to create a system terminal, creating a dumb
+// terminal" warning at the top of every build. Telling JLine to use a dumb
+// terminal up front makes it do so silently, without changing any build
+// behaviour. The JVM-based runners (./mvnw, mvn) pick it up from MAVEN_OPTS, but
+// the mvnd *native* client ignores MAVEN_OPTS entirely, so it must also be passed
+// as a CLI argument (see withJLineDumbFlag). Maven-only (Gradle uses
 // --console=plain instead).
 const JLINE_DUMB_FLAG = "-Dorg.jline.terminal.dumb=true";
 
@@ -147,6 +150,17 @@ function toolEnv(extra) {
     env.MAVEN_OPTS = existing + NATIVE_ACCESS_FLAG + " " + JLINE_DUMB_FLAG;
   }
   return env;
+}
+
+// Prepend the JLine dumb-terminal flag as a real CLI argument for Maven spawns.
+// The mvnd native client ignores MAVEN_OPTS, so this is the only way to silence
+// its no-TTY warning; ./mvnw and mvn also honour it here (in addition to
+// MAVEN_OPTS). Skipped for Gradle and for direct `java` launches, neither of
+// which emit the warning.
+function withJLineDumbFlag(args, bin) {
+  if (buildTool !== "maven") return args;
+  if (/(^|[\\/])java(\.exe)?$/i.test(bin || "")) return args;
+  return [JLINE_DUMB_FLAG, ...args];
 }
 
 /** Decide the build tool for a project root: Maven preferred, else Gradle, else null. */
@@ -1313,7 +1327,7 @@ function triggerRecompile() {
   let out = "";
   let child;
   try {
-    child = spawn(ctx.bin, args, { cwd: workspacePath, env: toolEnv(), shell: isWindows });
+    child = spawn(ctx.bin, withJLineDumbFlag(args, ctx.bin), { cwd: workspacePath, env: toolEnv(), shell: isWindows });
   } catch (e) {
     pushConsole(`[live-reload] recompile failed to start: ${e.message}`, "stderr", "run");
     return finishRecompile();
@@ -1523,7 +1537,7 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
     broadcast("status", statusSnapshot());
     session.log(`[coffilot] ${lane.command}`, { level: "info", ephemeral: true });
 
-    const child = spawn(toolBin, args, {
+    const child = spawn(toolBin, withJLineDumbFlag(args, toolBin), {
       cwd: workspacePath,
       env: env || toolEnv(),
       // mvnw.cmd / mvnd.cmd / gradlew.bat are batch scripts; modern Node refuses
