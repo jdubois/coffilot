@@ -1535,7 +1535,15 @@
       }
 
       function populateModules(modules) {
-        if (!Array.isArray(modules) || !modules.length) return;
+        // A non-array means the env probe is unavailable (e.g. a failed fetch);
+        // leave whatever is currently shown rather than wiping it.
+        if (!Array.isArray(modules)) return;
+        // An empty array means the probe ran but found no Maven project: surface
+        // that instead of leaving the dropdown stuck on "Scanning modules…".
+        if (!modules.length) {
+          moduleSelect.innerHTML = '<option value="" disabled selected>No Maven modules found</option>';
+          return;
+        }
         const prev = moduleSelect.value;
         const runnable = modules.filter((m) => m.runnable);
         const libs = modules.filter((m) => !m.runnable);
