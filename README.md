@@ -1,6 +1,6 @@
 # Coffilot
 
-[![CI](https://github.com/jdubois/coffilot/actions/workflows/ci.yml/badge.svg)](https://github.com/jdubois/coffilot/actions/workflows/ci.yml)
+[![Build](https://github.com/jdubois/coffilot/actions/workflows/ci.yml/badge.svg)](https://github.com/jdubois/coffilot/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **Coffilot** is a [GitHub Copilot **canvas extension**](https://docs.github.com/en/copilot/how-tos/github-copilot-app/working-with-canvas-extensions)
@@ -58,8 +58,8 @@ small badge (`BootUI` / `Actuator` / `process`) indicating which source is live.
 
 - The [GitHub Copilot app](https://docs.github.com/en/copilot) or Copilot CLI with
   canvas-extension support.
-- A target project built with **Maven** (the committed `./mvnw` wrapper is used; no
-  system Maven required) on **Java 17+**.
+- A target project built with **Maven** (the committed `./mvnw` wrapper is used when
+  present, otherwise a system `mvn` on `PATH`) on **Java 17+**.
 - Optional: [`mvnd`](https://github.com/apache/maven-mvnd) for warm builds, and
   [BootUI](https://github.com/jdubois/boot-ui) on the target app for the richest
   metrics and advisor scans.
@@ -121,8 +121,9 @@ and `run_scan` actions.
 
 Coffilot is a Node process (the extension) that:
 
-- shells out to `./mvnw` (or `mvnd`) for Build / Test / Package / Run and streams
-  the output into the canvas over Server-Sent Events;
+- shells out to `./mvnw` (the Maven wrapper, or a system `mvn` when no wrapper is
+  present — or `mvnd`) for Build / Test / Package / Run and streams the output into
+  the canvas over Server-Sent Events;
 - parses the Surefire XML reports into a graphical test view;
 - once an app is up, polls it for live metrics from the richest source available,
   proxying [BootUI](https://github.com/jdubois/boot-ui)'s sanitized `/bootui/api/**`

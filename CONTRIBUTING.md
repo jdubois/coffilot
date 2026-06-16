@@ -32,6 +32,8 @@ extension.mjs            The extension: SDK wiring, canvas + actions, loopback H
 public/index.html        The iframe UI (toolbar, Build/Test/Package/Run tabs, live
                          console, graphical test results, metrics + MCP panels),
                          styled with the canvas theme tokens.
+public/favicon.svg       The canvas icon the host shows for the extension (the host
+                         probes the extension directory for public/favicon.svg).
 copilot-extension.json   Manifest ({ "name": "coffilot", "version": 1 }) used by the
                          share / install flow.
 ```
