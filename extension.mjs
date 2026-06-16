@@ -2178,6 +2178,7 @@ async function loadIndex() {
 const STATIC_ASSETS = {
   "/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
   "/app.js": { file: "app.js", type: "text/javascript; charset=utf-8" },
+  "/favicon.svg": { file: "favicon.svg", type: "image/svg+xml; charset=utf-8" },
 };
 const staticCache = new Map();
 async function loadStatic(name) {
