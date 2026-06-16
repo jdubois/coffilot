@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Lint & syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check Prettier formatting
+        run: npm run format:check
+
+      - name: Syntax-check the extension
+        run: npm run check
+
+      - name: Validate the extension manifest
+        run: |
+          node -e "const m = require('./copilot-extension.json'); if (m.name !== 'coffilot' || m.version !== 1) { throw new Error('bad manifest ' + JSON.stringify(m)); }"

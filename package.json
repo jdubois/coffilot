@@ -1,0 +1,32 @@
+{
+  "name": "coffilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A GitHub Copilot canvas extension to build, test, package, run and fix Maven Java / Spring Boot apps from the Copilot app side panel.",
+  "license": "Apache-2.0",
+  "author": "Julien Dubois",
+  "homepage": "https://github.com/jdubois/coffilot#readme",
+  "bugs": {
+    "url": "https://github.com/jdubois/coffilot/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jdubois/coffilot.git"
+  },
+  "keywords": [
+    "github-copilot",
+    "copilot-extension",
+    "canvas",
+    "java",
+    "maven",
+    "spring-boot"
+  ],
+  "scripts": {
+    "check": "node --check extension.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "^3.8.4"
+  }
+}

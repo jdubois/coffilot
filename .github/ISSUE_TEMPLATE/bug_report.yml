@@ -1,0 +1,56 @@
+name: Bug report
+description: Report a problem with the Coffilot canvas extension
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug! Please do **not** include any
+        secrets from your build output.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: When I clicked Run, …
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce it?
+      placeholder: |
+        1. Open the Coffilot canvas on …
+        2. Click …
+        3. See …
+    validations:
+      required: true
+  - type: input
+    id: project
+    attributes:
+      label: Target project
+      description: What kind of Maven project were you driving (Spring Boot? BootUI? plain Java)?
+      placeholder: Spring Boot 3.3 multi-module, no BootUI
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Java version, Maven/mvnd, Copilot app/CLI version.
+      placeholder: |
+        - OS: macOS 14
+        - Java: 21
+        - Maven: ./mvnw 3.9.x (mvnd: no)
+        - Copilot: …
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Extension log or console output (redact secrets).
+      render: shell
+    validations:
+      required: false
