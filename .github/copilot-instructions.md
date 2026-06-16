@@ -9,9 +9,9 @@ before changing visible behavior.
 ## What this repo is
 
 - A single Node process: `extension.mjs` (entry, **must** keep this name), serving
-  `public/index.html` from a loopback HTTP server, plus the `copilot-extension.json`
-  manifest. There is **no build step** and no framework — plain ESM + an HTML/CSS/JS
-  iframe.
+  `public/index.html` (which links `public/styles.css` + `public/app.js`) from a
+  loopback HTTP server, plus the `copilot-extension.json` manifest. There is **no
+  build step** and no framework — plain ESM + an HTML/CSS/JS iframe.
 - `@github/copilot-sdk` is resolved by the Copilot CLI at runtime; do **not** add it
   to `package.json` or vendor `node_modules` for it. The only dev dependency is
   Prettier.
@@ -33,8 +33,9 @@ before changing visible behavior.
   scans into the live conversation** — never `curl` them casually while testing.
   Safe-to-inspect endpoints include `/api/state`, `/api/settings`, `/api/build`,
   `/api/test`, `/api/package`, `/api/run`, `/api/stop`, and `/events`.
-- After editing `extension.mjs` or `public/index.html`, **reload extensions and
-  re-open the canvas** (the iframe port/token rotate on reload).
+- After editing `extension.mjs`, `public/index.html`, `public/styles.css`, or
+  `public/app.js`, **reload extensions and re-open the canvas** (the iframe
+  port/token rotate on reload).
 - The whole repo is Prettier-formatted — run `npm run format` after edits instead of
   hand-formatting.
 
@@ -52,9 +53,11 @@ optional metrics + advisor-scan tier, not the project's identity.
   (`spawn` of `./mvnw`/`mvnd` with `--enable-native-access=ALL-UNNAMED` via
   `MAVEN_OPTS`), the Surefire report parser, the metrics/MCP proxy (tiered
   BootUI → Actuator → process), and the fix-prompt builder.
-- `public/index.html`: the iframe UI (Build/Test/Package/Run + Live JVM + Settings
-  tabs, live console, graphical test view, MCP panel), styled with the canvas theme
-  tokens (`var(--background-color-default, …)` etc.).
+- `public/index.html`: the iframe UI markup (Build/Test/Package/Run + Live JVM +
+  Settings tabs, live console, graphical test view, MCP panel). Styles live in
+  `public/styles.css` (canvas theme tokens, e.g. `var(--background-color-default, …)`)
+  and client logic in `public/app.js`; both are served unauthenticated since they
+  hold no secrets, while `/api/*` and `/events` stay token-gated.
 - The Maven project root is resolved by walking up from the extension folder to the
   directory that owns `mvnw`, so Coffilot works regardless of where it is installed.
 

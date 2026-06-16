@@ -1,0 +1,1011 @@
+const params = new URLSearchParams(location.search);
+const instance = params.get("instance");
+const token = params.get("token");
+const qs = `instance=${encodeURIComponent(instance)}&token=${encodeURIComponent(token)}`;
+
+const buildConsoleEl = document.getElementById("build-console");
+const packageConsoleEl = document.getElementById("package-console");
+const testConsoleEl = document.getElementById("test-console");
+const runConsoleEl = document.getElementById("run-console");
+const consoles = { build: buildConsoleEl, package: packageConsoleEl, test: testConsoleEl, run: runConsoleEl };
+// Which main tab is active, used as the fallback target for op-less lines.
+let activeTab = "build";
+// Last full status snapshot ({ build, test, package, run, reload }). The
+// header reflects the active tab's lane; tab switches re-render from this
+// stored snapshot without waiting for the next status event.
+let statusSnap = null;
+function consoleFor(op) {
+  return consoles[op] || consoles[activeTab] || buildConsoleEl;
+}
+const phaseEl = document.getElementById("phase");
+const cmdEl = document.getElementById("cmd");
+const cmdCopied = document.getElementById("cmd-copied");
+const exitEl = document.getElementById("exit");
+const metricsEl = document.getElementById("metrics");
+const testsEl = document.getElementById("tests");
+const tabBadge = document.getElementById("tab-tests-badge");
+const warmToggle = document.getElementById("warm-toggle");
+const warmInput = document.getElementById("in-warm");
+const warmLabel = document.getElementById("warm-label");
+const warmInfo = document.getElementById("warm-info");
+const moduleSelect = document.getElementById("in-module");
+const springInput = document.getElementById("in-profiles");
+const springMenu = document.getElementById("spring-menu");
+const mavenMenu = document.getElementById("maven-menu");
+const mvnProfilesInput = document.getElementById("in-mvn-profiles");
+const warmBanner = document.getElementById("warm-banner");
+const warmMsg = document.getElementById("warm-msg");
+const warmCmd = document.getElementById("warm-cmd");
+const warmCopied = document.getElementById("warm-copied");
+const warmDocs = document.getElementById("warm-docs");
+const btnAddBootui = document.getElementById("btn-add-bootui");
+const btnAddDevtools = document.getElementById("btn-add-devtools");
+const reloadPill = document.getElementById("reload-pill");
+const setSpring = document.getElementById("set-spring");
+const setDevtools = document.getElementById("set-devtools");
+const devtoolsToggle = document.getElementById("devtools-toggle");
+const devtoolsInput = document.getElementById("in-devtools");
+const setRandomport = document.getElementById("set-randomport");
+const randomportInput = document.getElementById("in-randomport");
+const openBrowserInput = document.getElementById("in-openbrowser");
+const btnOpenBrowser = document.getElementById("btn-open-browser");
+const btnFix = document.getElementById("btn-fix");
+const btnStopMaven = document.getElementById("btn-stop-maven");
+const btnStopRun = document.getElementById("btn-stop-run");
+const btnRun = document.getElementById("btn-run");
+// Running spinners on each trigger button and tab. The Test tab keeps its
+// badge/progress feedback too; the spinner shows only while the run is busy.
+const btnSpin = {
+  build: document.querySelector("#btn-build .btn-spin"),
+  test: document.querySelector("#btn-test .btn-spin"),
+  package: document.querySelector("#btn-package .btn-spin"),
+  run: document.querySelector("#btn-run .btn-spin"),
+};
+const tabSpin = {
+  build: document.querySelector('.tab[data-tab="build"] .tab-spin'),
+  test: document.querySelector('.tab[data-tab="test"] .tab-spin'),
+  package: document.querySelector('.tab[data-tab="package"] .tab-spin'),
+  run: document.querySelector('.tab[data-tab="run"] .tab-spin'),
+};
+// Build/Test/Package share one serialized Maven lane, so while one runs the
+// others are greyed out until it's stopped.
+const mvnButtons = {
+  build: document.getElementById("btn-build"),
+  test: document.getElementById("btn-test"),
+  package: document.getElementById("btn-package"),
+};
+const capsEl = document.getElementById("caps");
+const metricsSrc = document.getElementById("metrics-src");
+const metricsHint = document.getElementById("metrics-hint");
+const mcpToggle = document.getElementById("mcp-toggle");
+const mcpToggleLabel = document.getElementById("mcp-toggle-label");
+const mcpState = document.getElementById("mcp-state");
+const mcpScansEl = document.getElementById("mcp-scans");
+const mcpResultEl = document.getElementById("mcp-result");
+const mcpRegisterBtn = document.getElementById("mcp-register");
+let caps = {};
+
+if (warmCmd) {
+  warmCmd.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(warmCmd.textContent.trim());
+      warmCopied.hidden = false;
+      setTimeout(() => (warmCopied.hidden = true), 1500);
+    } catch {
+      // Clipboard may be unavailable in the sandbox; selecting is the fallback.
+      const r = document.createRange();
+      r.selectNodeContents(warmCmd);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+  };
+}
+
+// Click the status command to copy the full (untruncated) command.
+cmdEl.addEventListener("click", async () => {
+  const text = cmdEl.dataset.copy;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const r = document.createRange();
+    r.selectNodeContents(cmdEl);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
+  cmdCopied.hidden = false;
+  clearTimeout(cmdEl._copyTimer);
+  cmdEl._copyTimer = setTimeout(() => (cmdCopied.hidden = true), 1500);
+});
+
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Main tabs (Build / Test / Package / Run)
+function showTab(name) {
+  if (!consoles[name]) return;
+  activeTab = name;
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+  document.getElementById("build-console").classList.toggle("active", name === "build");
+  document.getElementById("package-console").classList.toggle("active", name === "package");
+  document.getElementById("test-pane").classList.toggle("active", name === "test");
+  document.getElementById("run-pane").classList.toggle("active", name === "run");
+  // The header (phase/command/exit/fix) follows the active tab, so
+  // re-render it for the newly shown lane from the last status snapshot.
+  if (statusSnap) renderLaneHeader(statusSnap[name] || {});
+}
+document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => showTab(t.dataset.tab)));
+
+// Test tab: Graphical / Console sub-toggle (graphical is the default).
+function showTestView(view) {
+  document.querySelectorAll(".subtab").forEach((t) => t.classList.toggle("active", t.dataset.tview === view));
+  document.getElementById("tests").classList.toggle("active", view === "graphical");
+  document.getElementById("test-console").classList.toggle("active", view === "console");
+}
+document.querySelectorAll(".subtab").forEach((t) => (t.onclick = () => showTestView(t.dataset.tview)));
+
+// Aside sub-tabs (Live JVM Metrics / Settings)
+function showAsideTab(name) {
+  document.querySelectorAll(".atab").forEach((t) => t.classList.toggle("active", t.dataset.atab === name));
+  document.getElementById("atab-metrics").classList.toggle("active", name === "metrics");
+  document.getElementById("atab-settings").classList.toggle("active", name === "settings");
+}
+document.querySelectorAll(".atab").forEach((t) => (t.onclick = () => showAsideTab(t.dataset.atab)));
+
+// Floating tooltip controller for [data-tip] elements (the settings info
+// icons). Native title tooltips don't render reliably in the canvas
+// webview, so we draw our own body-anchored bubble on hover/focus.
+const tipPop = document.createElement("div");
+tipPop.className = "tip-pop";
+document.body.appendChild(tipPop);
+let tipTarget = null;
+function placeTip(el) {
+  const text = el.getAttribute("data-tip");
+  if (!text) return;
+  tipTarget = el;
+  tipPop.textContent = text;
+  const r = el.getBoundingClientRect();
+  const pop = tipPop.getBoundingClientRect();
+  let left = r.left + r.width / 2 - pop.width / 2;
+  left = Math.max(6, Math.min(left, window.innerWidth - pop.width - 6));
+  let top = r.bottom + 6;
+  if (top + pop.height > window.innerHeight - 6) top = r.top - pop.height - 6;
+  tipPop.style.left = left + "px";
+  tipPop.style.top = top + "px";
+  tipPop.classList.add("show");
+}
+function hideTip() {
+  tipTarget = null;
+  tipPop.classList.remove("show");
+}
+document.addEventListener("mouseover", (e) => {
+  const el = e.target.closest && e.target.closest("[data-tip]");
+  if (el && el !== tipTarget) placeTip(el);
+});
+document.addEventListener("mouseout", (e) => {
+  const el = e.target.closest && e.target.closest("[data-tip]");
+  if (el && (!e.relatedTarget || !el.contains(e.relatedTarget))) hideTip();
+});
+document.addEventListener("focusin", (e) => {
+  const el = e.target.closest && e.target.closest("[data-tip]");
+  if (el) placeTip(el);
+});
+document.addEventListener("focusout", hideTip);
+
+function appendLine(line, stream, op) {
+  const el = consoleFor(op);
+  const span = document.createElement("span");
+  if (stream === "stderr") span.className = "err";
+  span.textContent = line + "\n";
+  el.appendChild(span);
+  while (el.childNodes.length > 2000) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+}
+
+// Last status snapshot ({ build, test, package, run, reload }).
+// (declared above, near activeTab, so showTab can read it)
+
+function renderStatus(s) {
+  if (!s) return;
+  statusSnap = s;
+  // Live reload pill is global, not per-tab.
+  const reload = s.reload;
+  if (reload && reload.active) {
+    reloadPill.hidden = false;
+    reloadPill.textContent = reload.busy ? "recompiling\u2026" : "live reload";
+    reloadPill.className = "pill " + (reload.busy ? "running" : "idle");
+  } else {
+    reloadPill.hidden = true;
+  }
+  // Run-tab "Open in browser" button always tracks the run lane.
+  const run = s.run || {};
+  btnOpenBrowser.disabled = !run.appPort;
+  btnOpenBrowser.title = run.appPort
+    ? `Open http://127.0.0.1:${run.appPort} in your browser`
+    : "The app isn't running yet";
+  // The two grouped Stop buttons are global, not tied to the active tab:
+  // the Maven Stop covers build/test/package; the Run Stop covers run.
+  const mvnBusy = (s.build && s.build.busy) || (s.test && s.test.busy) || (s.package && s.package.busy);
+  btnStopMaven.disabled = !mvnBusy;
+  btnStopMaven.title = mvnBusy ? "Stop the running build, test or package" : "No Maven build is running";
+  btnStopRun.disabled = !(run && run.busy);
+  btnStopRun.title = run && run.busy ? "Stop the running app" : "The app isn't running";
+  // Per-lane running spinners on the trigger buttons and tabs (global, so
+  // they reflect activity regardless of which tab is showing).
+  for (const op of ["build", "test", "package", "run"]) {
+    const busy = !!(s[op] && s[op].busy);
+    if (btnSpin[op]) btnSpin[op].hidden = !busy;
+    if (tabSpin[op]) tabSpin[op].hidden = !busy;
+  }
+  // While a Maven op runs the lane is serialized, so grey out the other
+  // Build/Test/Package buttons (the running one stays active with its spinner).
+  const busyMvnOp = ["build", "test", "package"].find((op) => s[op] && s[op].busy);
+  for (const op of ["build", "test", "package"]) {
+    const btn = mvnButtons[op];
+    if (!btn) continue;
+    btn.disabled = !!busyMvnOp && op !== busyMvnOp;
+    btn.title = btn.disabled ? `Stop the running ${busyMvnOp} first` : "";
+  }
+  // Header (phase / command / exit / fix) follows the active tab.
+  renderLaneHeader(s[activeTab] || {});
+}
+
+// Render the per-lane header bits for one op (build | test | package | run).
+function renderLaneHeader(l) {
+  const phase = l.phase || "idle";
+  phaseEl.textContent = phase;
+  phaseEl.className = "pill " + phase;
+  cmdEl.textContent = l.command || "No command run yet.";
+  // Long commands are truncated with an ellipsis; keep the full text for
+  // the hover tooltip and click-to-copy.
+  if (l.command) {
+    cmdEl.dataset.tip = l.command;
+    cmdEl.dataset.copy = l.command;
+    cmdEl.classList.add("clickable");
+  } else {
+    delete cmdEl.dataset.tip;
+    delete cmdEl.dataset.copy;
+    cmdEl.classList.remove("clickable");
+  }
+  if (l.exitCode === null || l.exitCode === undefined) {
+    exitEl.textContent = "";
+  } else {
+    exitEl.textContent = l.exitCode === 0 ? "\u2713 exit 0" : "\u2717 exit " + l.exitCode;
+    exitEl.style.color = l.exitCode === 0 ? "var(--true-color-green, #1a7f37)" : "var(--true-color-red, #cf222e)";
+  }
+  // Contextual "Fix with Copilot" button, driven by the backend's fixInfo().
+  if (l.fix && l.fix.kind) {
+    btnFix.hidden = false;
+    btnFix.disabled = false;
+    btnFix.dataset.kind = l.fix.kind;
+    btnFix.textContent = l.fix.label || "Fix with Copilot";
+  } else {
+    btnFix.hidden = true;
+    btnFix.dataset.kind = "";
+  }
+}
+
+function mb(bytes) {
+  return bytes == null ? "?" : Math.round(bytes / 1048576) + " MB";
+}
+function row(k, v) {
+  return `<div class="metric"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+}
+
+function renderMetrics(m) {
+  if (!m || !m.appUp) {
+    metricsSrc.hidden = true;
+    renderMcp(null);
+    metricsEl.innerHTML =
+      '<p class="muted">App not running. Click <strong>Run</strong> to start it (dev profile activates BootUI).</p>';
+    metricsHint.innerHTML =
+      "Run a Spring Boot module with the <code>dev</code> profile for rich BootUI metrics, or any app exposing Actuator for a subset.";
+    return;
+  }
+  const tier = m.metricsTier || "process";
+  metricsSrc.hidden = false;
+  metricsSrc.className = "src " + tier;
+  metricsSrc.textContent = tier === "bootui" ? "BootUI" : tier === "actuator" ? "Actuator" : "process";
+
+  if (tier === "process") {
+    metricsEl.innerHTML =
+      '<p class="muted">App is running, but no <code>/bootui/api</code> or <code>/actuator</code> endpoint answered, so live JVM metrics aren\u2019t available.</p>';
+    metricsHint.innerHTML =
+      "Add <code>spring-boot-starter-actuator</code> (or BootUI) to surface heap, threads and health here.";
+    renderMcp(null);
+    return;
+  }
+
+  const o = m.overview || {};
+  const heap = (m.memory && m.memory.heap) || {};
+  const nonHeap = (m.memory && m.memory.nonHeap) || {};
+  const pct = heap.usedPercent != null ? heap.usedPercent : 0;
+  let html = "";
+  if (o.applicationName) html += row("App", esc(o.applicationName));
+  if (o.springBootVersion) html += row("Spring Boot", esc(o.springBootVersion));
+  if (o.javaVersion) html += row("Java", esc(o.javaVersion));
+  if (o.activeProfiles && o.activeProfiles.length) html += row("Profiles", esc(o.activeProfiles.join(", ")));
+  if (o.startupTimeMillis != null) html += row("Uptime", (o.startupTimeMillis / 1000).toFixed(2) + " s");
+  if (m.health) html += row("Health", esc(m.health.status) || "\u2014");
+  if (m.threads) html += row("Threads", `${m.threads.totalThreads} (${m.threads.daemonThreads} daemon)`);
+  if (heap.usedBytes != null || heap.maxBytes != null) {
+    html += `<h2 style="margin-top:0.75rem">Heap</h2>`;
+    html += `<div class="bar"><div style="width:${Math.min(100, pct)}%"></div></div>`;
+    html += row("Heap used", `${mb(heap.usedBytes)} / ${mb(heap.maxBytes)} (${pct}%)`);
+  }
+  if (nonHeap.usedBytes != null) html += row("Non-heap used", mb(nonHeap.usedBytes));
+  metricsEl.innerHTML = html || '<p class="muted">No metrics reported.</p>';
+
+  if (tier === "bootui") {
+    metricsHint.innerHTML =
+      "Rich metrics read from the running app\u2019s <code>/bootui/api/**</code> endpoints \u2014 reused directly from BootUI.";
+    renderMcp(m.mcp);
+  } else {
+    metricsHint.innerHTML =
+      "Metrics normalized from Spring Boot <code>/actuator/**</code>. Add BootUI for advisor scans and richer detail.";
+    renderMcp(null);
+  }
+}
+
+// ---- BootUI MCP server panel ------------------------------------------
+let mcpScansLoaded = false;
+
+// Offer "Register with Copilot" only while the MCP server is enabled (and
+// therefore reachable). Reset the button's label/enabled state only on the
+// hidden→visible transition so a recent "Asked Copilot ✓" survives the
+// frequent metrics re-renders.
+function showMcpRegister(show) {
+  if (!show) {
+    mcpRegisterBtn.hidden = true;
+    return;
+  }
+  if (mcpRegisterBtn.hidden) {
+    mcpRegisterBtn.hidden = false;
+    mcpRegisterBtn.disabled = false;
+    mcpRegisterBtn.textContent = "Register with Copilot";
+  }
+}
+
+// The MCP server lives inside the running app, so the toggle is only
+// actionable while a BootUI app (dev profile) exposes its endpoint. The
+// row stays visible in Settings either way; when unavailable we grey out
+// the switch and explain why instead of hiding it.
+function setMcpUnavailable() {
+  mcpScansLoaded = false;
+  mcpToggle.checked = false;
+  mcpToggle.disabled = true;
+  mcpToggleLabel.classList.add("disabled");
+  mcpState.textContent = "";
+  showMcpRegister(false);
+  mcpScansEl.innerHTML =
+    '<span class="muted" style="font-size:12px">Start a BootUI app (dev profile) with <strong>Run</strong> to manage its MCP server and advisor scans.</span>';
+  mcpResultEl.innerHTML = "";
+}
+
+function renderMcp(mcp) {
+  if (!mcp || !mcp.available) {
+    setMcpUnavailable();
+    return;
+  }
+  mcpToggle.disabled = false;
+  mcpToggleLabel.classList.remove("disabled");
+  const enabled = mcp.enabled === true;
+  mcpToggle.checked = enabled;
+  mcpState.textContent = "";
+  showMcpRegister(enabled);
+  if (!enabled) {
+    mcpScansLoaded = false;
+    mcpScansEl.innerHTML = '<span class="muted" style="font-size:12px">Enable the server to run advisor scans.</span>';
+    return;
+  }
+  if (!mcpScansLoaded) loadMcpScans();
+}
+
+async function getJson(path) {
+  try {
+    const r = await fetch(`${path}?${qs}`);
+    return await r.json();
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+async function loadMcpScans() {
+  const st = await getJson("/api/mcp/status");
+  if (!st || !st.available) {
+    setMcpUnavailable();
+    return;
+  }
+  mcpToggle.disabled = false;
+  mcpToggleLabel.classList.remove("disabled");
+  const enabled = st.enabled === true;
+  mcpToggle.checked = enabled;
+  mcpState.textContent = "";
+  showMcpRegister(enabled);
+  const scans = (st && st.scans) || [];
+  if (!enabled) {
+    mcpScansLoaded = false;
+    mcpScansEl.innerHTML = '<span class="muted" style="font-size:12px">Enable the server to run advisor scans.</span>';
+    return;
+  }
+  mcpScansLoaded = true;
+  if (!scans.length) {
+    mcpScansEl.innerHTML = '<span class="muted" style="font-size:12px">No advisor scans advertised.</span>';
+    return;
+  }
+  mcpScansEl.innerHTML = scans
+    .map((s) => {
+      const label = esc(s.name.replace(/_scan$/, "").replace(/_/g, " "));
+      return `<button class="tiny" data-scan="${esc(s.name)}" title="${esc(s.description || s.name)}">${label}</button>`;
+    })
+    .join("");
+  mcpScansEl.querySelectorAll("button[data-scan]").forEach((b) => (b.onclick = () => runScan(b.dataset.scan)));
+}
+
+async function runScan(tool) {
+  mcpResultEl.innerHTML = `<span class="muted">Running ${esc(tool)}\u2026</span>`;
+  const r = await postJson("/api/mcp/scan", { tool });
+  if (!r || r.ok === false) {
+    mcpResultEl.innerHTML = `<span style="color:var(--true-color-red,#cf222e)">Scan failed: ${esc((r && r.error) || "unknown error")}</span>`;
+    return;
+  }
+  lastScan = { tool, result: r.result };
+  const text = typeof r.result === "string" ? r.result : JSON.stringify(r.result, null, 2);
+  mcpResultEl.innerHTML =
+    `<div style="display:flex;align-items:center;gap:0.5rem;justify-content:space-between">` +
+    `<strong>${esc(tool)}</strong>` +
+    `<button class="fix tiny" id="mcp-send">Fix findings with Copilot</button></div>` +
+    `<pre>${esc(text)}</pre>`;
+  const send = document.getElementById("mcp-send");
+  if (send)
+    send.onclick = async () => {
+      send.disabled = true;
+      send.textContent = "Sent to Copilot \u2713";
+      await post("/api/fix", { kind: "mcp", tool: lastScan.tool, result: lastScan.result });
+    };
+}
+let lastScan = null;
+
+function statusDot(st) {
+  return `<span class="dot ${st}"></span>`;
+}
+
+function renderTestProgress(p) {
+  if (!p) return;
+  const sum = p.summary || { tests: 0, passed: 0, failures: 0, errors: 0, skipped: 0, timeSec: 0 };
+  const failed = sum.failures + sum.errors;
+  // Live tab badge reflects the running tally.
+  tabBadge.hidden = false;
+  tabBadge.textContent = failed > 0 ? failed : sum.tests;
+  tabBadge.className = "badge " + (failed > 0 ? "bad" : "good");
+
+  let html = "";
+  // Progress bar: determinate when we know the previous run's total,
+  // otherwise an indeterminate sweep while the run is in flight.
+  if (p.running) {
+    const done = sum.tests;
+    const est = p.estimateTotal || 0;
+    if (est > 0) {
+      const pct = Math.min(100, Math.round((done / est) * 100));
+      const col = failed > 0 ? "var(--true-color-red, #cf222e)" : "var(--true-color-blue, #0969da)";
+      html += `<div class="tprogress"><div class="tprogress-fill" style="width:${pct}%;background:${col}"></div></div>`;
+    } else {
+      html += '<div class="tprogress indeterminate"><div class="tprogress-fill"></div></div>';
+    }
+  }
+  html += '<div class="chips">';
+  if (p.running) html += '<span class="chip running"><span class="spinner"></span>running\u2026</span>';
+  html += `<span class="chip total"><span class="n">${sum.tests}</span> tests</span>`;
+  html += `<span class="chip passed"><span class="n">${sum.passed}</span> passed</span>`;
+  if (failed > 0) html += `<span class="chip failed"><span class="n">${failed}</span> failed</span>`;
+  if (sum.skipped > 0) html += `<span class="chip skipped"><span class="n">${sum.skipped}</span> skipped</span>`;
+  html += "</div>";
+
+  const suites = p.suites || [];
+  if (!suites.length) {
+    html += '<p class="empty"><span class="spinner"></span> Discovering tests\u2026</p>';
+    testsEl.innerHTML = html;
+    return;
+  }
+  for (const s of suites) {
+    const running = s.status === "running";
+    const dot = running
+      ? '<span class="spinner"></span>'
+      : statusDot(s.status === "fail" ? "failed" : s.status === "skipped" ? "skipped" : "passed");
+    html += `<div class="suite-row${running ? " is-running" : ""}">${dot}`;
+    html += `<span class="sname">${esc(s.name)}</span>`;
+    if (running) {
+      html += '<span class="scount">running\u2026</span>';
+    } else {
+      const bad = s.failures + s.errors;
+      const label = bad > 0 ? `${bad} failed / ${s.tests}` : `${s.tests} tests`;
+      html += `<span class="scount">${label} \u00b7 ${(s.timeSec || 0).toFixed(2)}s</span>`;
+    }
+    html += "</div>";
+  }
+  testsEl.innerHTML = html;
+}
+
+function renderTests(report, opts) {
+  opts = opts || {};
+  if (report === null && opts.running) {
+    testsEl.innerHTML = '<p class="empty">Running tests\u2026</p>';
+    tabBadge.hidden = true;
+    return;
+  }
+  if (!report) {
+    testsEl.innerHTML = '<p class="empty">No test run yet. Click <strong>Test</strong> to run the suite.</p>';
+    tabBadge.hidden = true;
+    return;
+  }
+  const s = report.summary;
+  const failed = s.failures + s.errors;
+  // Tab badge
+  tabBadge.hidden = false;
+  tabBadge.textContent = failed > 0 ? failed : s.tests;
+  tabBadge.className = "badge " + (failed > 0 ? "bad" : "good");
+
+  let html = '<div class="chips">';
+  html += `<span class="chip total"><span class="n">${s.tests}</span> tests</span>`;
+  html += `<span class="chip passed"><span class="n">${s.passed}</span> passed</span>`;
+  if (failed > 0) html += `<span class="chip failed"><span class="n">${failed}</span> failed</span>`;
+  if (s.skipped > 0) html += `<span class="chip skipped"><span class="n">${s.skipped}</span> skipped</span>`;
+  html += `<span class="chip time">${s.timeSec.toFixed(2)}s</span>`;
+  if (opts.runnerLabel) html += `<span class="chip runner">${esc(opts.runnerLabel)}</span>`;
+  html += "</div>";
+
+  if (!report.suites.length) {
+    html += '<p class="empty">No surefire reports found for this run.</p>';
+    testsEl.innerHTML = html;
+    return;
+  }
+
+  for (const suite of report.suites) {
+    const bad = suite.failures + suite.errors;
+    const open = bad > 0 ? " open" : "";
+    html += `<details class="suite"${open}>`;
+    html += `<summary>${statusDot(bad > 0 ? "failed" : "passed")}<span class="sname">${esc(suite.name)}</span>`;
+    html += `<span class="scount">${suite.cases.length} tests \u00b7 ${suite.timeSec.toFixed(2)}s</span></summary>`;
+    for (const c of suite.cases) {
+      const isFail = c.status === "failed" || c.status === "error";
+      if (isFail) {
+        html += `<details class="case-fail"><summary>${statusDot(c.status)}`;
+        html += `<span class="msg">${esc(c.name)}${c.message ? " \u2014 " + esc(c.message) : ""}</span>`;
+        html += `<span class="ctime">${c.timeSec.toFixed(3)}s</span></summary>`;
+        if (c.detail) html += `<pre>${esc(c.detail)}</pre>`;
+        html += `</details>`;
+      } else {
+        html += `<div class="case">${statusDot(c.status)}<span class="cname">${esc(c.name)}</span>`;
+        html += `<span class="ctime">${c.timeSec.toFixed(3)}s</span></div>`;
+      }
+    }
+    html += `</details>`;
+  }
+  testsEl.innerHTML = html;
+}
+
+function populateModules(modules) {
+  // A non-array means the env probe is unavailable (e.g. a failed fetch);
+  // leave whatever is currently shown rather than wiping it.
+  if (!Array.isArray(modules)) return;
+  // An empty array means the probe ran but found no Maven project: surface
+  // that instead of leaving the dropdown stuck on "Scanning modules…".
+  if (!modules.length) {
+    moduleSelect.innerHTML = '<option value="" disabled selected>No Maven modules found</option>';
+    return;
+  }
+  const prev = moduleSelect.value;
+  const runnable = modules.filter((m) => m.runnable);
+  const libs = modules.filter((m) => !m.runnable);
+  const optgroup = (label, items) => {
+    if (!items.length) return "";
+    const opts = items.map((m) => `<option value="${esc(m.name)}">${esc(m.artifactId || m.name)}</option>`).join("");
+    return `<optgroup label="${esc(label)}">${opts}</optgroup>`;
+  };
+  moduleSelect.innerHTML = optgroup("Runnable apps", runnable) + optgroup("Libraries", libs);
+  // Restore a prior choice, else default to the first runnable app.
+  const names = modules.map((m) => m.name);
+  if (names.includes(prev)) moduleSelect.value = prev;
+  else if (runnable.length) moduleSelect.value = runnable[0].name;
+}
+
+// Modules backing the picker; used to decide which dev-setup proposals to offer.
+let moduleList = [];
+
+// Per selected module (one reactor can mix capabilities), decide which
+// settings rows/proposals to surface:
+// - Spring Boot -> show Spring profiles, DevTools, random-port rows.
+// - Spring Boot but no BootUI starter -> offer to add BootUI.
+// - Spring Boot but no DevTools -> offer to add DevTools and disable the
+//   "Enable Spring Boot DevTools" toggle until the dependency is present.
+function updateDevSetup() {
+  const mod = moduleList.find((m) => m.name === moduleSelect.value);
+  const spring = !!(mod && mod.springBoot);
+  setSpring.hidden = !spring;
+  setDevtools.hidden = !spring;
+  setRandomport.hidden = !spring;
+
+  const showBootui = spring && !mod.bootui;
+  btnAddBootui.hidden = !showBootui;
+  if (showBootui) {
+    btnAddBootui.disabled = false;
+    btnAddBootui.textContent = "Add BootUI to dev profile";
+  }
+
+  const hasDevtools = spring && !!mod.devtools;
+  const showDevtools = spring && !mod.devtools;
+  btnAddDevtools.hidden = !showDevtools;
+  if (showDevtools) {
+    btnAddDevtools.disabled = false;
+    btnAddDevtools.textContent = "Add DevTools to dev profile";
+  }
+  // The DevTools toggle only makes sense once the dependency is on the
+  // classpath; grey it out and explain via the info tooltip otherwise.
+  devtoolsToggle.classList.toggle("disabled", !hasDevtools);
+  devtoolsInput.disabled = !hasDevtools;
+  document.getElementById("devtools-info").dataset.tip = hasDevtools
+    ? "Watch the running module's sources and recompile on save so DevTools restarts the app in place."
+    : "Add Spring Boot DevTools to the dev profile first (button below) to enable live reload.";
+}
+
+// Suggestion lists backing the custom comboboxes (kept editable).
+let springItems = ["dev"];
+let mavenItems = [];
+
+// A lightweight combobox: editable input + an in-document suggestion menu,
+// with substring filtering, hover/keyboard selection, and outside-click
+// dismissal. Avoids the native <datalist> popup, which renders at the wrong
+// position (far left, outside the panel) inside the canvas iframe.
+function setupCombo(input, menu, getItems) {
+  let active = -1;
+  const visibleOpts = () => [...menu.querySelectorAll(".opt")];
+  function paintActive() {
+    const opts = visibleOpts();
+    opts.forEach((o, i) => o.classList.toggle("active", i === active));
+    if (active >= 0 && opts[active]) opts[active].scrollIntoView({ block: "nearest" });
+  }
+  function open(useFilter) {
+    const all = getItems() || [];
+    const q = useFilter ? input.value.trim().toLowerCase() : "";
+    const list = q ? all.filter((v) => v.toLowerCase().includes(q)) : all;
+    active = -1;
+    if (!all.length) {
+      menu.hidden = true;
+      return;
+    }
+    menu.innerHTML = list.length
+      ? list.map((v) => `<div class="opt" data-val="${esc(v)}">${esc(v)}</div>`).join("")
+      : '<div class="empty-opt">No matching profile (free text allowed)</div>';
+    menu.querySelectorAll(".opt").forEach((el) => {
+      el.onmousedown = (e) => {
+        e.preventDefault();
+        input.value = el.dataset.val;
+        hide();
+        input.dispatchEvent(new Event("change"));
+      };
+    });
+    menu.hidden = false;
+  }
+  function hide() {
+    menu.hidden = true;
+    active = -1;
+  }
+  // Focus shows every option (easy switching); typing filters by substring.
+  input.addEventListener("focus", () => open(false));
+  input.addEventListener("input", () => open(true));
+  input.addEventListener("keydown", (e) => {
+    if (menu.hidden) {
+      if (e.key === "ArrowDown") open(false);
+      return;
+    }
+    const opts = visibleOpts();
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      active = Math.min(active + 1, opts.length - 1);
+      paintActive();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      active = Math.max(active - 1, 0);
+      paintActive();
+    } else if (e.key === "Enter") {
+      if (active >= 0 && opts[active]) {
+        e.preventDefault();
+        input.value = opts[active].dataset.val;
+        hide();
+        input.dispatchEvent(new Event("change"));
+        return;
+      }
+      hide();
+    } else if (e.key === "Escape") {
+      hide();
+    }
+  });
+  // Delay so a menu click (mousedown sets the value) isn't cancelled by blur.
+  input.addEventListener("blur", () => setTimeout(hide, 150));
+}
+
+// Reflect persisted settings onto the toggle switches + Spring profiles
+// combo. Skip the combo while it's focused so we don't clobber typing.
+function applySettingsState(s) {
+  if (!s) return;
+  warmInput.checked = !warmInput.disabled && s.warm === true;
+  devtoolsInput.checked = s.devtools === true;
+  randomportInput.checked = s.randomPort === true;
+  openBrowserInput.checked = s.openBrowser === true;
+  if (document.activeElement !== springInput && typeof s.springProfiles === "string") {
+    springInput.value = s.springProfiles;
+  }
+}
+
+function applyEnv(env) {
+  moduleList = (env && env.modules) || [];
+  populateModules(env && env.modules);
+  applyCaps(env && env.capabilities);
+  updateDevSetup();
+  // "dev" is always offered for Spring (it's the default and activates BootUI).
+  const spring = (env && env.springProfiles) || [];
+  springItems = spring.includes("dev") ? spring : ["dev", ...spring];
+  mavenItems = (env && env.mavenProfiles) || [];
+  const ok = env && env.mvndAvailable;
+  warmInput.disabled = !ok;
+  warmToggle.classList.toggle("disabled", !ok);
+  warmBanner.hidden = ok;
+  if (ok) {
+    warmInfo.dataset.tip =
+      "Use the Maven Daemon (mvnd) to keep a warm JVM pool between builds/tests for faster repeat runs.";
+    warmLabel.textContent = "Keep JVM warm (mvnd)";
+  } else {
+    warmInfo.dataset.tip = "Install the Maven Daemon (mvnd) to enable the warm-JVM option.";
+    warmLabel.textContent = "Keep JVM warm";
+    // Platform-specific install guidance (rendered in the settings banner).
+    const install = (env && env.install) || {};
+    const os = install.os ? ` on ${install.os}` : "";
+    if (install.cmd) {
+      warmMsg.innerHTML =
+        `The Maven Daemon (<strong>mvnd</strong>) isn't installed${os}, so ` +
+        `<strong>Keep&nbsp;JVM&nbsp;warm</strong> is disabled. Install it to enable faster repeat builds/tests:`;
+      warmCmd.textContent = install.cmd;
+      warmCmd.hidden = false;
+    } else {
+      warmMsg.innerHTML =
+        `The Maven Daemon (<strong>mvnd</strong>) isn't installed${os}, so ` +
+        `<strong>Keep&nbsp;JVM&nbsp;warm</strong> is disabled. Download it and add its <code>bin</code> folder to your PATH:`;
+      warmCmd.hidden = true;
+    }
+    warmDocs.href = install.url || "https://github.com/apache/maven-mvnd";
+  }
+  applySettingsState(env && env.settings);
+}
+
+async function post(path, body) {
+  try {
+    await fetch(`${path}?${qs}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+  } catch (e) {
+    appendLine("[canvas] request failed: " + e.message, "stderr");
+  }
+}
+
+async function postJson(path, body) {
+  try {
+    const r = await fetch(`${path}?${qs}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+    return await r.json();
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// Show/hide capability-gated controls and render a capability summary.
+function applyCaps(c) {
+  caps = c || {};
+  // Pure-Java modules can still Run (package + java -jar); Spring-specific
+  // settings rows are toggled per selected module in updateDevSetup().
+  btnRun.title = caps.springBoot
+    ? "Run the selected module with spring-boot:run."
+    : "Package the selected module and launch it with java -jar.";
+  const pill = (label, on, title) =>
+    `<span class="cap ${on ? "on" : "off"}" title="${esc(title)}">${esc(label)}</span>`;
+  let html = "";
+  html += pill("Java" + (caps.java ? " " + caps.java : ""), true, "Java + Maven build and test are always available.");
+  html += pill("Maven", caps.maven !== false, "Maven build/test.");
+  html += pill(
+    "Spring Boot",
+    !!caps.springBoot,
+    caps.springBoot ? "spring-boot:run available." : "No Spring Boot module detected; Run uses java -jar.",
+  );
+  html += pill("Actuator", !!caps.actuator, "Spring Boot Actuator metrics (static hint; confirmed at runtime).");
+  html += pill("BootUI", !!caps.bootui, "BootUI rich metrics + MCP advisor scans.");
+  capsEl.innerHTML = html;
+}
+
+const warm = () => warmInput.checked === true;
+const mvnProfiles = () => mvnProfilesInput.value.trim();
+
+setupCombo(springInput, springMenu, () => springItems);
+setupCombo(mvnProfilesInput, mavenMenu, () => mavenItems);
+
+document.getElementById("btn-build").onclick = () => {
+  showTab("build");
+  post("/api/build", { warm: warm(), mavenProfiles: mvnProfiles() });
+};
+document.getElementById("btn-test").onclick = () => {
+  showTab("test");
+  post("/api/test", { warm: warm(), mavenProfiles: mvnProfiles() });
+};
+document.getElementById("btn-package").onclick = () => {
+  showTab("package");
+  post("/api/package", { warm: warm(), mavenProfiles: mvnProfiles() });
+};
+document.getElementById("btn-run").onclick = () => {
+  showTab("run");
+  post("/api/run", {
+    module: document.getElementById("in-module").value.trim(),
+    profiles: document.getElementById("in-profiles").value.trim(),
+    mavenProfiles: mvnProfiles(),
+  });
+};
+// Two grouped Stop buttons: the Maven Stop kills the shared build/test/
+// package lane; the Run Stop kills the independent app. They are global,
+// so you can stop a build without killing the running app, or vice versa.
+btnStopMaven.onclick = () => post("/api/stop", { op: "maven" });
+btnStopRun.onclick = () => post("/api/stop", { op: "run" });
+
+// Run tab: force-open the running app in a browser.
+btnOpenBrowser.onclick = () => post("/api/open-app", {});
+
+// Re-evaluate dev-setup proposals/toggles when the user switches modules.
+moduleSelect.addEventListener("change", () => {
+  updateDevSetup();
+});
+btnAddBootui.onclick = async () => {
+  btnAddBootui.disabled = true;
+  btnAddBootui.textContent = "Asked Copilot \u2713";
+  await post("/api/fix", { kind: "install-bootui", module: moduleSelect.value });
+};
+btnAddDevtools.onclick = async () => {
+  btnAddDevtools.disabled = true;
+  btnAddDevtools.textContent = "Asked Copilot \u2713";
+  await post("/api/fix", { kind: "install-devtools", module: moduleSelect.value });
+};
+
+// Persist every setting (auto-saved on change). The backend reacts to
+// devtools (live reload) changes.
+function saveSettings() {
+  post("/api/settings", {
+    warm: warmInput.checked,
+    springProfiles: springInput.value.trim(),
+    devtools: devtoolsInput.checked,
+    randomPort: randomportInput.checked,
+    openBrowser: openBrowserInput.checked,
+  });
+}
+warmInput.addEventListener("change", saveSettings);
+devtoolsInput.addEventListener("change", saveSettings);
+randomportInput.addEventListener("change", saveSettings);
+openBrowserInput.addEventListener("change", saveSettings);
+springInput.addEventListener("change", saveSettings);
+
+btnFix.onclick = async () => {
+  const kind = btnFix.dataset.kind;
+  if (!kind) return;
+  btnFix.disabled = true;
+  btnFix.textContent = "Asked Copilot \u2713";
+  await post("/api/fix", { kind });
+};
+
+mcpToggle.onclick = async () => {
+  const enabled = mcpToggle.checked;
+  mcpState.textContent = enabled ? "enabling\u2026" : "disabling\u2026";
+  mcpScansLoaded = false;
+  await post("/api/mcp/toggle", { enabled });
+  // Reflect the server's actual state and (re)load advisor scans.
+  loadMcpScans();
+};
+
+mcpRegisterBtn.onclick = async () => {
+  mcpRegisterBtn.disabled = true;
+  mcpRegisterBtn.textContent = "Asked Copilot \u2713";
+  await post("/api/fix", { kind: "register-mcp" });
+};
+
+let lastRunnerLabel = null;
+// Per-lane auto-switch: follow a lane to its tab the moment it enters its
+// active phase (build→building, test→testing, run→running). Because each
+// lane is tracked independently, a build finishing won't yank you off the
+// Run tab, and starting a test while the app runs jumps to the Test tab.
+const laneActivePhase = { build: "building", test: "testing", package: "packaging", run: "running" };
+const laneWasActive = { build: false, test: false, package: false, run: false };
+function followLaneActivity(s) {
+  if (!s) return;
+  for (const op of ["build", "test", "package", "run"]) {
+    const lane = s[op];
+    if (!lane) continue;
+    const active = lane.phase === laneActivePhase[op];
+    if (active && !laneWasActive[op]) {
+      showTab(op);
+      if (op === "test") renderTests(null, { running: true });
+    }
+    laneWasActive[op] = active;
+  }
+}
+
+const es = new EventSource(`/events?${qs}`);
+es.addEventListener("console", (e) => {
+  const d = JSON.parse(e.data);
+  appendLine(d.line, d.stream, d.op);
+});
+es.addEventListener("status", (e) => {
+  const s = JSON.parse(e.data);
+  renderStatus(s);
+  if (s && s.test) lastRunnerLabel = s.test.runnerLabel;
+  followLaneActivity(s);
+});
+es.addEventListener("metrics", (e) => renderMetrics(JSON.parse(e.data)));
+es.addEventListener("test-progress", (e) => {
+  renderTestProgress(JSON.parse(e.data));
+});
+es.addEventListener("tests", (e) => {
+  const report = JSON.parse(e.data);
+  renderTests(report, { runnerLabel: lastRunnerLabel });
+});
+es.addEventListener("reset", (e) => {
+  // Clear only the console for the op that's (re)starting; the others keep
+  // their last output.
+  let op = "build";
+  try {
+    op = (JSON.parse(e.data) || {}).op || "build";
+  } catch {}
+  const el = consoles[op];
+  if (el) el.innerHTML = "";
+});
+
+fetch(`/api/state?${qs}`)
+  .then((r) => r.json())
+  .then((s) => {
+    renderStatus(s.status);
+    renderMetrics(s.metrics);
+    applyEnv(s.env);
+    if (s.status && s.status.test) lastRunnerLabel = s.status.test.runnerLabel;
+    renderTests(s.tests, { runnerLabel: lastRunnerLabel });
+    for (const l of s.console || []) appendLine(l.line, l.stream, l.op);
+    // Open the tab matching whatever the backend was last doing.
+    followLaneActivity(s.status);
+  })
+  .catch(() => {});
+
+// Env (mvnd availability, modules, profiles, capabilities) is only sampled
+// at page load, so installing mvnd while the canvas is open would otherwise
+// leave the "not installed" banner stale. Re-sample whenever the canvas
+// regains focus / visibility so the toggle and banner self-heal.
+function refreshEnv() {
+  fetch(`/api/env?${qs}`)
+    .then((r) => r.json())
+    .then(applyEnv)
+    .catch(() => {});
+}
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refreshEnv();
+});
+window.addEventListener("focus", refreshEnv);
+
+// The iframe can't open a browser via target="_blank"; route external
+// http(s) links through the backend opener instead.
+document.addEventListener("click", (e) => {
+  const a = e.target.closest && e.target.closest('a[href^="http"]');
+  if (!a) return;
+  e.preventDefault();
+  post("/api/open-url", { url: a.href });
+});
