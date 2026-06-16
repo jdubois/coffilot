@@ -1,6 +1,6 @@
 # Coffilot
 
-[![CI](https://github.com/jdubois/coffilot/actions/workflows/ci.yml/badge.svg)](https://github.com/jdubois/coffilot/actions/workflows/ci.yml)
+[![Build](https://github.com/jdubois/coffilot/actions/workflows/ci.yml/badge.svg)](https://github.com/jdubois/coffilot/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **Coffilot** is a [GitHub Copilot **canvas extension**](https://docs.github.com/en/copilot/how-tos/github-copilot-app/working-with-canvas-extensions)
