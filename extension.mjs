@@ -106,6 +106,73 @@ function detectMvnd() {
   return mvndInfo;
 }
 
+// When a project ships a pom.xml but no Maven wrapper, fall back to a system
+// `mvn` discovered on PATH (and common install locations) so Coffilot still
+// works. The wrapper is always preferred when present because it pins the Maven
+// version; `mvn` is the graceful fallback.
+let mvnInfo = null;
+function detectMvn() {
+  if (mvnInfo) return mvnInfo;
+  // Windows resolves `mvn` to a batch script (mvn.cmd / mvn.bat) or a shim exe.
+  const exeNames = isWindows ? ["mvn.cmd", "mvn.bat", "mvn.exe", "mvn"] : ["mvn"];
+  const candidates = [];
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue;
+    for (const exe of exeNames) candidates.push(path.join(dir, exe));
+  }
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  if (isWindows) {
+    if (home) {
+      candidates.push(
+        path.join(home, "scoop", "shims", "mvn.cmd"),
+        path.join(home, "scoop", "shims", "mvn.exe"),
+        path.join(home, ".sdkman", "candidates", "maven", "current", "bin", "mvn.cmd"),
+      );
+    }
+    if (process.env.ProgramData) {
+      candidates.push(path.join(process.env.ProgramData, "chocolatey", "bin", "mvn.exe"));
+    }
+  } else {
+    candidates.push(
+      "/opt/homebrew/bin/mvn",
+      "/usr/local/bin/mvn",
+      "/usr/bin/mvn",
+      "/home/linuxbrew/.linuxbrew/bin/mvn",
+    );
+    if (home) candidates.push(path.join(home, ".sdkman/candidates/maven/current/bin/mvn"));
+  }
+  for (const c of candidates) {
+    try {
+      if (existsSync(c)) {
+        mvnInfo = { available: true, path: c };
+        return mvnInfo;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  mvnInfo = { available: false, path: null };
+  return mvnInfo;
+}
+
+// The base (non-daemon) Maven command for a run: the project's wrapper when it
+// exists, else a system `mvn` from PATH. mvnd layers on top of this for warm
+// builds. Cached because neither the wrapper's presence nor PATH change at
+// runtime.
+let baseRunnerInfo = null;
+function baseRunner() {
+  if (baseRunnerInfo) return baseRunnerInfo;
+  if (existsSync(mvnw)) {
+    baseRunnerInfo = { bin: mvnw, label: "./mvnw" };
+  } else {
+    const m = detectMvn();
+    // Fall back to system `mvn`; if that's missing too, keep pointing at the
+    // wrapper path so the spawn fails with a clear ENOENT in the lane console.
+    baseRunnerInfo = m.available ? { bin: m.path, label: "mvn" } : { bin: mvnw, label: "./mvnw" };
+  }
+  return baseRunnerInfo;
+}
+
 /** Platform-appropriate guidance for installing mvnd, shown when it's missing. */
 function mvndInstallHint() {
   const url = "https://github.com/apache/maven-mvnd#how-to-install-mvnd";
@@ -166,7 +233,8 @@ function resolveRunner(warm) {
     const m = detectMvnd();
     if (m.available) return { bin: m.path, label: "mvnd", warm: true };
   }
-  return { bin: mvnw, label: "./mvnw", warm: false };
+  const b = baseRunner();
+  return { bin: b.bin, label: b.label, warm: false };
 }
 
 /** Reserve a free loopback TCP port (for "Use a random HTTP port"). */
@@ -390,7 +458,7 @@ function detectJavaVersion() {
 function capabilitiesSnapshot() {
   const mods = listModules();
   return {
-    maven: true,
+    maven: existsSync(mvnw) || detectMvn().available,
     java: detectJavaVersion(),
     springBoot: mods.some((m) => m.springBoot),
     runnable: mods.some((m) => m.runnable),
@@ -474,7 +542,7 @@ function newLane(op) {
     op,
     phase: "idle", // idle | building | testing | running | stopped | failed
     command: "",
-    runnerLabel: "./mvnw",
+    runnerLabel: baseRunner().label,
     warm: false,
     exitCode: null,
     child: null, // the process this op currently owns (null when not running)
@@ -827,8 +895,9 @@ function pushConsole(line, stream, op = "build") {
  */
 function spawnMaven(op, args, phase, { onLine, bin, label } = {}) {
   const lane = lanes[op];
-  const mavenBin = bin || mvnw;
-  const mavenLabel = label || "./mvnw";
+  const base = baseRunner();
+  const mavenBin = bin || base.bin;
+  const mavenLabel = label || base.label;
   return new Promise((resolve) => {
     lane.phase = phase;
     lane.runnerLabel = mavenLabel;
@@ -1111,7 +1180,7 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
   app.mavenProfiles = mavenProfiles || null;
 
   if (resolved === "spring") {
-    // The app is long-lived, so it always runs via ./mvnw (mvnd is for builds).
+    // The app is long-lived, so it always runs via the wrapper/mvn (mvnd is for builds).
     const args = ["-ntp"];
     if (module) args.push("-pl", module);
     if (mavenProfiles && mavenProfiles.trim()) args.push("-P", mavenProfiles.trim());
@@ -1139,7 +1208,7 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
       const r = resolveRunner(true);
       startLiveReload({ module: module || "", mavenProfiles, bin: r.bin, label: r.label });
     }
-    return { ok: true, started: true, mode: "spring", command: `./mvnw ${args.join(" ")}` };
+    return { ok: true, started: true, mode: "spring", command: `${baseRunner().label} ${args.join(" ")}` };
   }
 
   // Pure-Java: package the module, then launch its jar with `java -jar`.
