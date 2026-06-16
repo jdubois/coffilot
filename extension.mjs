@@ -61,19 +61,51 @@ const GRADLE_MARKERS = [
 // __dirname points into the coffilot repo for a user/global install; and the host
 // launches us with cwd=<COPILOT_HOME>, not the project. We fall back to __dirname
 // (project-embedded install at <repo>/.github/extensions/coffilot) and cwd.
-const sessionPrimaryDir = await getSessionPrimaryDir();
-const workspacePath = findProjectRoot(sessionPrimaryDir);
+// These five are `let`, not `const`, because the "Check again" control
+// (recheckBuildTool / POST /api/recheck) re-resolves them at runtime: detection
+// runs once at startup, and if the session's primary working directory isn't
+// available yet the project root / build tool would otherwise stay wrong until an
+// extension reload.
+let workspacePath = findProjectRoot(await getSessionPrimaryDir());
 
 // Auto-detect the build tool from the project. Maven wins when both are present,
 // per Coffilot's "prefer Maven" rule; null means neither was found (degraded UI).
-const buildTool = detectBuildTool(workspacePath); // "maven" | "gradle" | null
-const TOOL_LABEL = buildTool === "gradle" ? "Gradle" : buildTool === "maven" ? "Maven" : null;
+let buildTool = detectBuildTool(workspacePath); // "maven" | "gradle" | null
+let TOOL_LABEL = buildTool === "gradle" ? "Gradle" : buildTool === "maven" ? "Maven" : null;
 
 // The committed wrapper for the active tool, preferred over a system binary
 // because it pins the tool version. Gradle ships gradlew / gradlew.bat; Maven
 // ships mvnw / mvnw.cmd.
-const wrapperName = buildTool === "gradle" ? (isWindows ? "gradlew.bat" : "gradlew") : isWindows ? "mvnw.cmd" : "mvnw";
-const wrapperPath = path.join(workspacePath, wrapperName);
+let wrapperName = wrapperFileNameFor(buildTool);
+let wrapperPath = path.join(workspacePath, wrapperName);
+
+/** The wrapper file name for a build tool, accounting for the platform. */
+function wrapperFileNameFor(tool) {
+  return tool === "gradle" ? (isWindows ? "gradlew.bat" : "gradlew") : isWindows ? "mvnw.cmd" : "mvnw";
+}
+
+// Re-resolve the project root and build tool at runtime (driven by the canvas's
+// "Check again" control). Startup detection is a single shot, so a project that
+// wasn't visible then — or a user/global install whose primary working directory
+// the host reported late — would otherwise be stuck in the degraded "no Maven or
+// Gradle" state until an extension reload. This re-queries the session's primary
+// directory, re-walks for a build marker, and refreshes every workspace-derived
+// cache so the UI can recover without a reload. Returns the new env snapshot.
+async function recheckBuildTool() {
+  workspacePath = findProjectRoot(await getSessionPrimaryDir());
+  buildTool = detectBuildTool(workspacePath);
+  TOOL_LABEL = buildTool === "gradle" ? "Gradle" : buildTool === "maven" ? "Maven" : null;
+  wrapperName = wrapperFileNameFor(buildTool);
+  wrapperPath = path.join(workspacePath, wrapperName);
+  // Drop caches that were computed against the old root / tool so they recompute.
+  baseRunnerInfo = null;
+  projectModules = null;
+  javaVersion = undefined;
+  mavenProfiles = null;
+  springProfiles = null;
+  session.log(`[coffilot] re-checked build tool: ${TOOL_LABEL || "none"} at ${workspacePath}`, { level: "info" });
+  return envSnapshot();
+}
 
 // Silence the JDK native-access warnings (JEP 472) that Jansi (Maven's native
 // console) and FFM-using app dependencies emit at startup. The flag exists
@@ -2810,6 +2842,11 @@ const server = createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/settings") {
     const body = await readBody(req);
     sendJson(res, 200, applySettings(body));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/recheck") {
+    sendJson(res, 200, await recheckBuildTool());
     return;
   }
 

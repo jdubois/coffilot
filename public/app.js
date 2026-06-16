@@ -36,6 +36,7 @@ const mvnProfilesInput = document.getElementById("in-mvn-profiles");
 const mvnProfilesLabel = document.getElementById("lbl-mvn-profiles");
 const mvnProfilesCombo = document.getElementById("mvn-profiles-combo");
 const noToolBanner = document.getElementById("no-tool-banner");
+const btnRecheck = document.getElementById("btn-recheck");
 const warmBanner = document.getElementById("warm-banner");
 const warmMsg = document.getElementById("warm-msg");
 const warmCmd = document.getElementById("warm-cmd");
@@ -1167,6 +1168,25 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refreshEnv();
 });
 window.addEventListener("focus", refreshEnv);
+
+// "Check again": re-run project-root + build-tool detection on the backend, then
+// re-apply the env. Lets a project that wasn't visible at startup recover without
+// reloading the extension (applyEnv hides this banner once a tool is found).
+if (btnRecheck) {
+  btnRecheck.addEventListener("click", async () => {
+    btnRecheck.disabled = true;
+    btnRecheck.textContent = "Checking…";
+    const env = await postJson("/api/recheck");
+    applyEnv(env);
+    btnRecheck.disabled = false;
+    btnRecheck.textContent = "Check again";
+    if (env && env.buildTool) {
+      appendLine(`[canvas] detected ${env.toolLabel || env.buildTool} project.`, "stdout");
+    } else {
+      appendLine("[canvas] still no Maven or Gradle project detected.", "stderr");
+    }
+  });
+}
 
 // The iframe can't open a browser via target="_blank"; route external
 // http(s) links through the backend opener instead.
