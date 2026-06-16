@@ -46,9 +46,12 @@
     </header>
 
     <div id="no-tool-banner" hidden>
-      ⚠️ No Maven or Gradle project detected. Coffilot needs a <code>pom.xml</code>/<code>mvnw</code> or a
-      <code>build.gradle</code>/<code>gradlew</code> in the project to build, test, package or run. The actions are
-      disabled until one is present.
+      <span id="no-tool-msg"
+        >⚠️ No Maven or Gradle project detected. Coffilot needs a <code>pom.xml</code>/<code>mvnw</code> or a
+        <code>build.gradle</code>/<code>gradlew</code> in the project to build, test, package or run. The actions are
+        disabled until one is present.</span
+      >
+      <button id="btn-recheck" class="fix tiny">Check again</button>
     </div>
 
     <div id="status">

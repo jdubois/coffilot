@@ -37,6 +37,7 @@ const mvnProfilesInput = document.getElementById("in-mvn-profiles");
 const mvnProfilesLabel = document.getElementById("lbl-mvn-profiles");
 const mvnProfilesCombo = document.getElementById("mvn-profiles-combo");
 const noToolBanner = document.getElementById("no-tool-banner");
+const btnRecheck = document.getElementById("btn-recheck");
 const warmBanner = document.getElementById("warm-banner");
 const warmMsg = document.getElementById("warm-msg");
 const warmCmd = document.getElementById("warm-cmd");
@@ -895,13 +896,17 @@ function applyCaps(c) {
   const toolLabel = caps.toolLabel || (caps.gradle ? "Gradle" : caps.maven ? "Maven" : null);
   const springRun = caps.gradle ? "bootRun" : "spring-boot:run";
   const quarkusRun = caps.gradle ? "quarkusDev" : "quarkus:dev";
-  // Pure-Java modules can still Run (build + java -jar); framework-specific
-  // settings rows are toggled per selected module in updateDevSetup().
+  // Pure-Java modules can still Run (the generic runner builds, then launches via
+  // the Gradle application plugin / an executable jar / the configured main class);
+  // framework-specific settings rows are toggled per selected module in updateDevSetup().
+  const genericRun = caps.gradle
+    ? "Build the selected module and launch it (Gradle application run, executable jar, or its main class)."
+    : "Build the selected module and launch it (executable jar via java -jar, or its main class via java -cp).";
   btnRun.title = caps.springBoot
     ? `Run the selected module with ${springRun}.`
     : caps.quarkus
       ? `Run the selected module with ${quarkusRun}.`
-      : "Build the selected module and launch it with java -jar.";
+      : genericRun;
   const pill = (label, on, title) =>
     `<span class="cap ${on ? "on" : "off"}" title="${esc(title)}">${esc(label)}</span>`;
   let html = "";
@@ -919,7 +924,7 @@ function applyCaps(c) {
   html += pill(
     "Spring Boot",
     !!caps.springBoot,
-    caps.springBoot ? `${springRun} available.` : "No Spring Boot module detected; Run uses java -jar.",
+    caps.springBoot ? `${springRun} available.` : "No Spring Boot module detected; Run uses the generic launcher.",
   );
   html += pill(
     "Quarkus",
@@ -1199,6 +1204,25 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refreshEnv();
 });
 window.addEventListener("focus", refreshEnv);
+
+// "Check again": re-run project-root + build-tool detection on the backend, then
+// re-apply the env. Lets a project that wasn't visible at startup recover without
+// reloading the extension (applyEnv hides this banner once a tool is found).
+if (btnRecheck) {
+  btnRecheck.addEventListener("click", async () => {
+    btnRecheck.disabled = true;
+    btnRecheck.textContent = "Checking…";
+    const env = await postJson("/api/recheck");
+    applyEnv(env);
+    btnRecheck.disabled = false;
+    btnRecheck.textContent = "Check again";
+    if (env && env.buildTool) {
+      appendLine(`[canvas] detected ${env.toolLabel || env.buildTool} project.`, "stdout");
+    } else {
+      appendLine("[canvas] still no Maven or Gradle project detected.", "stderr");
+    }
+  });
+}
 
 // The iframe can't open a browser via target="_blank"; route external
 // http(s) links through the backend opener instead.

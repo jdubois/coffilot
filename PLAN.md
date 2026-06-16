@@ -33,8 +33,10 @@ Shipped in the extension today:
 - Module scan for runnable apps (Maven reactor / Gradle subprojects), Spring Boot
   and Quarkus detection, and run-profile discovery (Spring `application-<profile>.*`
   files and Maven profiles for Maven; Quarkus `dev`/`test`/`prod` + `%<profile>.` keys).
-- Plain-Java fallback (build + `java -jar`) when a module is neither a Spring Boot
-  nor a Quarkus app.
+- Generic runner when a module is neither a Spring Boot nor a Quarkus app: the Gradle
+  `application` plugin's `run` task, else an executable jar via `java -jar`, else the
+  module's configured main class via `java -cp` (Maven resolves the runtime classpath
+  with `dependency:build-classpath`).
 - Optional warm builds via the Maven Daemon (`mvnd`) or the Gradle daemon,
   cross-platform detected.
 - Live JVM metrics tiered BootUI → Actuator → Quarkus Micrometer/health → process,
