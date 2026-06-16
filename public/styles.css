@@ -1,0 +1,968 @@
+:root {
+  color-scheme: light dark;
+}
+* {
+  box-sizing: border-box;
+}
+/* The hidden attribute must always win, even over author display rules
+         like .banner/.switch-row { display: flex } below. */
+[hidden] {
+  display: none !important;
+}
+body {
+  margin: 0;
+  background: var(--background-color-default, #ffffff);
+  color: var(--text-color-default, #1f2328);
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  font-size: var(--text-body-medium, 14px);
+  line-height: var(--leading-body-medium, 20px);
+}
+header {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color-default, #d0d7de);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+h1 {
+  font-size: var(--text-title-medium, 16px);
+  font-weight: var(--font-weight-semibold, 600);
+  margin: 0 0.5rem 0 0;
+}
+.btn-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text-color-default, #1f2328) 4%, transparent);
+}
+button {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  background: var(--background-color-default, #ffffff);
+  color: var(--text-color-default, #1f2328);
+  border-radius: 6px;
+  padding: 0.3rem 0.7rem;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease;
+}
+button:hover {
+  background: color-mix(in srgb, var(--text-color-default, #1f2328) 8%, var(--background-color-default, #ffffff));
+  border-color: var(--text-color-muted, #8c959f);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+button:disabled:hover {
+  background: var(--background-color-default, #ffffff);
+  border-color: var(--border-color-default, #d0d7de);
+}
+button.primary {
+  border-color: var(--true-color-green, #1a7f37);
+  color: var(--color-white, #fff);
+  background: var(--true-color-green, #1a7f37);
+}
+button.primary:hover {
+  background: color-mix(in srgb, #000 14%, var(--true-color-green, #1a7f37));
+  border-color: color-mix(in srgb, #000 14%, var(--true-color-green, #1a7f37));
+}
+button.danger {
+  border-color: var(--true-color-red, #cf222e);
+  color: var(--color-white, #fff);
+  background: var(--true-color-red, #cf222e);
+}
+button.danger:hover {
+  background: color-mix(in srgb, #000 14%, var(--true-color-red, #cf222e));
+  border-color: color-mix(in srgb, #000 14%, var(--true-color-red, #cf222e));
+}
+button.fix {
+  border-color: var(--true-color-orange, #bc4c00);
+  color: var(--color-white, #fff);
+  background: var(--true-color-orange, #bc4c00);
+  font-weight: 600;
+}
+button.fix:hover {
+  background: color-mix(in srgb, #000 14%, var(--true-color-orange, #bc4c00));
+  border-color: color-mix(in srgb, #000 14%, var(--true-color-orange, #bc4c00));
+}
+button.tiny {
+  padding: 0.15rem 0.5rem;
+  font-size: 12px;
+}
+input,
+select {
+  font: inherit;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  background: var(--background-color-default, #fff);
+  color: var(--text-color-default, #1f2328);
+  border-radius: 6px;
+  padding: 0.25rem 0.5rem;
+}
+select {
+  cursor: pointer;
+  max-width: 220px;
+}
+.inputs {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+.inputs label {
+  color: var(--text-color-muted, #656d76);
+  font-size: 12px;
+}
+
+/* Custom combobox (replaces native <datalist>, whose popup mis-positions
+         inside the canvas iframe). Renders the suggestion list in-document. */
+.combo {
+  position: relative;
+  display: inline-block;
+}
+.combo-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 1000;
+  min-width: 100%;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 0.2rem;
+  background: var(--background-color-default, #ffffff);
+  border: 1px solid var(--border-color-default, #d0d7de);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+}
+.combo-menu .opt {
+  padding: 0.22rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.combo-menu .opt:hover,
+.combo-menu .opt.active {
+  background: color-mix(in srgb, var(--text-color-default, #1f2328) 10%, transparent);
+}
+.combo-menu .empty-opt {
+  padding: 0.22rem 0.5rem;
+  font-size: 12px;
+  color: var(--text-color-muted, #656d76);
+}
+#status {
+  padding: 0.4rem 1rem;
+  border-bottom: 1px solid var(--border-color-default, #d0d7de);
+  font-size: 13px;
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+.pill {
+  border-radius: 999px;
+  padding: 0.05rem 0.55rem;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border-color-default, #d0d7de);
+}
+.pill.idle {
+  color: var(--text-color-muted, #656d76);
+}
+.pill.building,
+.pill.testing,
+.pill.packaging {
+  color: var(--true-color-blue, #0969da);
+  border-color: var(--true-color-blue, #0969da);
+}
+.pill.running {
+  color: var(--true-color-green, #1a7f37);
+  border-color: var(--true-color-green, #1a7f37);
+}
+.pill.stopped,
+.pill.failed {
+  color: var(--true-color-red, #cf222e);
+  border-color: var(--true-color-red, #cf222e);
+}
+#cmd {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 46ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#cmd.clickable {
+  cursor: pointer;
+}
+#cmd.clickable:hover {
+  color: var(--text-color-default, #1f2328);
+  text-decoration: underline;
+}
+#cmd-copied {
+  color: var(--true-color-green, #1a7f37);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+#workspace {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 0;
+  height: calc(100vh - 130px);
+}
+@media (max-width: 760px) {
+  #workspace {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+}
+#left {
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+}
+@media (max-width: 760px) {
+  #left {
+    height: auto;
+    overflow: visible;
+  }
+}
+/* Left column panes (Build / Test / Run) swap in place; the aside stays put. */
+.lpane {
+  display: none;
+  height: 100%;
+  overflow: auto;
+  min-height: 0;
+}
+.lpane.active {
+  display: block;
+}
+/* Panes with a fixed top bar (Test sub-toggle, Run controls) stack the bar
+         above a single scrolling content area. */
+.lpane.col {
+  overflow: hidden;
+}
+.lpane.col.active {
+  display: flex;
+  flex-direction: column;
+}
+@media (max-width: 760px) {
+  .lpane {
+    height: auto;
+  }
+  .lpane.col.active {
+    height: auto;
+  }
+}
+/* Shared console (build/test/run) styling. */
+.term {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  overflow: auto;
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, "Liberation Mono", monospace);
+  font-size: var(--text-code-block, 12px);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.term .err {
+  color: var(--true-color-red, #cf222e);
+}
+#run-console {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+@media (max-width: 760px) {
+  #run-console {
+    flex: none;
+  }
+}
+
+/* Test tab: Graphical / Console sub-toggle */
+.subtabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-color-default, #d0d7de);
+  flex: 0 0 auto;
+}
+.subtab {
+  padding: 0.15rem 0.6rem;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-color-muted, #656d76);
+}
+.subtab.active {
+  color: var(--text-color-default, #1f2328);
+  border-color: var(--true-color-blue, #0969da);
+}
+.subpane-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+.tsub {
+  display: none;
+  height: 100%;
+  overflow: auto;
+  min-height: 0;
+}
+.tsub.active {
+  display: block;
+}
+@media (max-width: 760px) {
+  .subpane-wrap {
+    min-height: 50vh;
+  }
+}
+
+/* Run tab: browser controls bar */
+.run-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-color-default, #d0d7de);
+  flex: 0 0 auto;
+}
+aside {
+  border-left: 1px solid var(--border-color-default, #d0d7de);
+  padding: 0.75rem 1rem;
+  overflow: auto;
+}
+aside h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-color-muted, #656d76);
+  margin: 0 0 0.5rem;
+}
+.metric {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+  border-bottom: 1px dashed var(--border-color-muted, #d8dee4);
+}
+.metric .k {
+  color: var(--text-color-muted, #656d76);
+}
+.metric .v {
+  font-weight: 600;
+  text-align: right;
+}
+.bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--background-color-muted, #eaeef2);
+  overflow: hidden;
+  margin: 0.35rem 0 0.75rem;
+}
+.bar > div {
+  height: 100%;
+  background: var(--true-color-blue, #0969da);
+}
+.muted {
+  color: var(--text-color-muted, #656d76);
+}
+.hint {
+  font-size: 12px;
+  color: var(--text-color-muted, #656d76);
+  margin-top: 0.5rem;
+}
+
+/* Capability summary + metrics-source badge */
+#caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-left: 0.25rem;
+}
+.cap {
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  color: var(--text-color-muted, #656d76);
+}
+.cap.on {
+  color: var(--true-color-green, #1a7f37);
+  border-color: var(--true-color-green, #1a7f37);
+}
+.cap.off {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+.src {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  margin-left: 0.4rem;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  color: var(--text-color-muted, #656d76);
+}
+.src.bootui {
+  color: var(--true-color-green, #1a7f37);
+  border-color: var(--true-color-green, #1a7f37);
+}
+.src.actuator {
+  color: var(--true-color-blue, #0969da);
+  border-color: var(--true-color-blue, #0969da);
+}
+.src.process {
+  color: var(--text-color-muted, #656d76);
+}
+
+/* BootUI MCP server panel */
+#mcp {
+  margin-top: 1rem;
+  border-top: 1px solid var(--border-color-default, #d0d7de);
+  padding-top: 0.75rem;
+}
+#mcp.mcp-settings {
+  border-top: 1px solid var(--border-color-default, #d0d7de);
+  margin-top: 0.4rem;
+  padding-top: 0.9rem;
+}
+#mcp .mcp-state {
+  color: var(--text-color-muted, #656d76);
+  font-style: italic;
+  font-size: 12px;
+}
+#mcp .mcp-state:empty {
+  display: none;
+}
+#mcp .scans {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.6rem 0 0;
+}
+#mcp .scans button {
+  padding: 0.2rem 0.55rem;
+  font-size: 12px;
+}
+#mcp-result {
+  margin-top: 0.6rem;
+  font-size: 12px;
+}
+#mcp-result pre {
+  margin: 0.35rem 0 0;
+  padding: 0.5rem 0.6rem;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--background-color-muted, #f6f8fa);
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Install hint banner (shown only when mvnd is missing) */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 1rem;
+  font-size: 12px;
+  color: var(--text-color-muted, #656d76);
+  background: color-mix(in srgb, var(--true-color-blue, #0969da) 8%, var(--background-color-default, #fff));
+  border-bottom: 1px solid var(--border-color-default, #d0d7de);
+}
+.banner code {
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+  font-size: 11.5px;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  background: var(--background-color-default, #fff);
+  color: var(--text-color-default, #1f2328);
+  cursor: pointer;
+}
+.banner code:hover {
+  border-color: var(--text-color-muted, #8c959f);
+}
+.banner .copied {
+  color: var(--true-color-green, #1a7f37);
+}
+.banner a {
+  color: var(--true-color-blue, #0969da);
+  text-decoration: none;
+}
+.banner a:hover {
+  text-decoration: underline;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.4rem 1rem 0;
+  border-bottom: 1px solid var(--border-color-default, #d0d7de);
+}
+.tab {
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: none;
+  color: var(--text-color-muted, #656d76);
+  border-radius: 6px 6px 0 0;
+  padding: 0.35rem 0.8rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.tab svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+.tab.active {
+  color: var(--text-color-default, #1f2328);
+  border-color: var(--border-color-default, #d0d7de);
+  background: var(--background-color-default, #fff);
+  margin-bottom: -1px;
+}
+.tab:hover {
+  background: color-mix(in srgb, var(--text-color-default, #1f2328) 7%, transparent);
+  border-color: transparent;
+  color: var(--text-color-default, #1f2328);
+}
+.tab.active:hover {
+  background: var(--background-color-default, #fff);
+  border-color: var(--border-color-default, #d0d7de);
+}
+.tab .badge {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 5px;
+  margin-left: 0.35rem;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  background: var(--background-color-muted, #eaeef2);
+  color: var(--text-color-muted, #656d76);
+}
+.tab .badge.bad {
+  background: var(--true-color-red, #cf222e);
+  color: var(--color-white, #fff);
+}
+.tab .badge.good {
+  background: var(--true-color-green, #1a7f37);
+  color: var(--color-white, #fff);
+}
+
+.pane {
+  display: none;
+}
+.pane.active {
+  display: grid;
+}
+
+/* Graphical test view (a sub-pane of the Test tab). */
+#tests {
+  padding: 0.75rem 1rem;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+.chip {
+  border-radius: 6px;
+  padding: 0.15rem 0.6rem;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border-color-default, #d0d7de);
+}
+.chip .n {
+  font-size: 15px;
+}
+.chip.total {
+  color: var(--text-color-default, #1f2328);
+}
+.chip.passed {
+  color: var(--true-color-green, #1a7f37);
+  border-color: var(--true-color-green, #1a7f37);
+}
+.chip.failed {
+  color: var(--true-color-red, #cf222e);
+  border-color: var(--true-color-red, #cf222e);
+}
+.chip.skipped {
+  color: var(--text-color-muted, #656d76);
+}
+.chip.time {
+  color: var(--true-color-blue, #0969da);
+}
+.chip.runner {
+  color: var(--text-color-muted, #656d76);
+}
+.chip.running {
+  color: var(--true-color-blue, #0969da);
+  border-color: var(--true-color-blue, #0969da);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.suite {
+  border: 1px solid var(--border-color-default, #d0d7de);
+  border-radius: 8px;
+  margin-bottom: 0.6rem;
+  overflow: hidden;
+}
+.suite > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--background-color-muted, #f6f8fa);
+  font-weight: 600;
+}
+.suite > summary::-webkit-details-marker {
+  display: none;
+}
+.suite .sname {
+  flex: 1;
+  word-break: break-all;
+}
+.suite .scount {
+  font-size: 12px;
+  color: var(--text-color-muted, #656d76);
+  font-weight: 400;
+}
+.case {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.75rem;
+  border-top: 1px dashed var(--border-color-muted, #d8dee4);
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+  font-size: 12px;
+}
+.case .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+.dot.passed {
+  background: var(--true-color-green, #1a7f37);
+}
+.dot.failed,
+.dot.error {
+  background: var(--true-color-red, #cf222e);
+}
+.dot.skipped {
+  background: var(--text-color-muted, #8c959f);
+}
+.case .cname {
+  flex: 1;
+  word-break: break-all;
+}
+.case .ctime {
+  color: var(--text-color-muted, #656d76);
+}
+.case-fail {
+  border-top: 1px dashed var(--border-color-muted, #d8dee4);
+}
+.case-fail > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.3rem 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+  font-size: 12px;
+}
+.case-fail > summary::-webkit-details-marker {
+  display: none;
+}
+.case-fail .msg {
+  color: var(--true-color-red, #cf222e);
+  flex: 1;
+  word-break: break-word;
+}
+.case-fail pre {
+  margin: 0;
+  padding: 0.5rem 0.75rem 0.6rem 1.5rem;
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-color-default, #1f2328);
+  background: var(--background-color-muted, #f6f8fa);
+}
+.empty {
+  color: var(--text-color-muted, #656d76);
+  padding: 2rem 0;
+  text-align: center;
+}
+/* Live test progress (class-by-class, while the run is in flight). */
+.suite-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  border-radius: 8px;
+  margin-bottom: 0.4rem;
+  font-weight: 600;
+}
+.suite-row.is-running {
+  border-color: var(--true-color-blue, #0969da);
+}
+.suite-row .sname {
+  flex: 1;
+  word-break: break-all;
+}
+.suite-row .scount {
+  font-size: 12px;
+  color: var(--text-color-muted, #656d76);
+  font-weight: 400;
+}
+.spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--border-color-default, #d0d7de);
+  border-top-color: var(--true-color-blue, #0969da);
+  animation: cof-spin 0.7s linear infinite;
+  flex: none;
+  display: inline-block;
+}
+.chip.running .spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 2px;
+}
+@keyframes cof-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* Running spinners shown on the trigger buttons and tabs. currentColor
+         keeps them legible on both default and colored (primary) buttons. */
+.btn-spin,
+.tab-spin {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  animation: cof-spin 0.7s linear infinite;
+  flex: none;
+  display: inline-block;
+}
+.btn-spin {
+  margin-right: 0.4rem;
+  vertical-align: -1px;
+}
+.tab-spin {
+  margin-left: 0.1rem;
+}
+.tprogress {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--background-color-muted, #eaeef2);
+  overflow: hidden;
+  margin-bottom: 0.6rem;
+}
+.tprogress-fill {
+  height: 100%;
+  background: var(--true-color-blue, #0969da);
+  border-radius: 3px;
+  transition: width 0.25s ease;
+}
+.tprogress.indeterminate .tprogress-fill {
+  width: 40% !important;
+  animation: cof-indet 1.1s ease-in-out infinite;
+}
+@keyframes cof-indet {
+  0% {
+    margin-left: -40%;
+  }
+  100% {
+    margin-left: 100%;
+  }
+}
+
+/* Toggle switch (settings) */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+}
+.switch > input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.switch .track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--border-color-default, #d0d7de);
+  transition: background 0.15s ease;
+}
+.switch .thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-white, #fff);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  transition: transform 0.15s ease;
+}
+.switch > input:checked + .track {
+  background: var(--true-color-green, #1a7f37);
+}
+.switch > input:checked + .track .thumb {
+  transform: translateX(14px);
+}
+.switch > input:focus-visible + .track {
+  outline: 2px solid var(--color-focus-outline, #0969da);
+  outline-offset: 1px;
+}
+.switch.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Info icon carrying a hover tooltip */
+.info {
+  cursor: help;
+  color: var(--text-color-muted, #656d76);
+  font-size: 13px;
+  line-height: 1;
+}
+.info:hover {
+  color: var(--text-color-default, #1f2328);
+}
+.info:focus-visible {
+  outline: 2px solid var(--color-focus-outline, #0969da);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Custom tooltip: native title tooltips don't render reliably inside the
+         canvas webview, so we position our own floating bubble (body-anchored,
+         fixed) to avoid both that and clipping by the aside's overflow. */
+.tip-pop {
+  position: fixed;
+  z-index: 9999;
+  top: 0;
+  left: 0;
+  max-width: 240px;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  border-radius: 6px;
+  background: var(--background-color-default, #ffffff);
+  color: var(--text-color-default, #1f2328);
+  font-size: 12px;
+  line-height: 1.35;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.08s ease;
+}
+.tip-pop.show {
+  opacity: 1;
+}
+
+/* Aside (right column) sub-tabs: Live JVM Metrics / Settings */
+.aside-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin: 0 0 0.75rem;
+  border-bottom: 1px solid var(--border-color-default, #d0d7de);
+}
+.atab {
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--text-color-muted, #656d76);
+  padding: 0.25rem 0.4rem;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.atab svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+.atab:hover {
+  background: none;
+  border-color: transparent;
+  color: var(--text-color-default, #1f2328);
+}
+.atab.active {
+  color: var(--text-color-default, #1f2328);
+  border-bottom-color: var(--true-color-blue, #0969da);
+}
+.apane {
+  display: none;
+}
+.apane.active {
+  display: block;
+}
+
+/* Settings rows */
+.set-row {
+  margin: 0 0 0.9rem;
+}
+.set-row > label.cap-label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-color-muted, #656d76);
+  margin-bottom: 0.25rem;
+}
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.set-proposals {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.45rem;
+}
+.setting-banner {
+  border: 1px solid var(--border-color-default, #d0d7de);
+  border-radius: 6px;
+  flex-wrap: wrap;
+  margin: 0.4rem 0 0;
+  padding: 0.45rem 0.6rem;
+}

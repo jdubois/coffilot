@@ -1887,6 +1887,21 @@ async function loadIndex() {
   return indexHtml;
 }
 
+// Static iframe assets that carry no secrets and are therefore served without the
+// instance/token gate: the iframe loads them as subresources, which the browser
+// requests without the query string the token check relies on.
+const STATIC_ASSETS = {
+  "/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
+  "/app.js": { file: "app.js", type: "text/javascript; charset=utf-8" },
+};
+const staticCache = new Map();
+async function loadStatic(name) {
+  if (!staticCache.has(name)) {
+    staticCache.set(name, await readFile(path.join(__dirname, "public", name), "utf8"));
+  }
+  return staticCache.get(name);
+}
+
 function valid(url) {
   const instanceId = url.searchParams.get("instance");
   const token = url.searchParams.get("token");
@@ -1915,6 +1930,14 @@ function sendJson(res, code, data) {
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  if (req.method === "GET" && STATIC_ASSETS[url.pathname]) {
+    const asset = STATIC_ASSETS[url.pathname];
+    res.writeHead(200, { "Content-Type": asset.type });
+    res.end(await loadStatic(asset.file));
+    return;
+  }
+
   const instanceId = valid(url);
   if (!instanceId) {
     res.writeHead(403);
