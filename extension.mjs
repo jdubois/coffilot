@@ -2611,6 +2611,25 @@ async function fetchText(base, p) {
   }
 }
 
+/**
+ * Confirm the app is actually answering HTTP before we treat it as "up". The
+ * app port is first discovered by scraping a startup log line, which can be
+ * printed a beat before the server is ready to accept requests; without this
+ * probe the process-only tier flips appUp=true (firing the "open browser when
+ * the app starts" action) while the app is still starting. Any HTTP response —
+ * even a 404 — proves the server is live; a connection error or timeout means
+ * it is not serving yet.
+ */
+async function appAnswersHttp(base) {
+  try {
+    const res = await fetch(base + "/", { signal: AbortSignal.timeout(2000) });
+    res.body?.cancel().catch(() => {});
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Actuator can live under different base paths depending on the app's config
 // (Spring Boot defaults to /actuator; JHipster relocates it to /management).
 const ACTUATOR_PREFIXES = ["/actuator", "/management"];
@@ -2819,8 +2838,20 @@ async function refreshMetrics() {
     return finishMetrics();
   }
 
-  // Tier 4 — process only: the port is open but no diagnostics endpoint answered.
-  lastMetrics = { appUp: true, metricsTier: "process" };
+  // Tier 4 — process only: the port is known but no diagnostics endpoint
+  // answered. The port was scraped from a startup log line, which can be printed
+  // just before the server starts accepting requests, so confirm the app answers
+  // an HTTP request before reporting it up (and firing the "open browser when the
+  // app starts" action). Once it has served at least once this run, skip the probe
+  // to avoid flicker if a single request later times out.
+  if (app.appReachedUp || (await appAnswersHttp(base))) {
+    lastMetrics = { appUp: true, metricsTier: "process" };
+    return finishMetrics();
+  }
+
+  // Port detected from logs but the app is not answering HTTP yet: stay
+  // "starting" so the next poll retries and the browser opens only once it is up.
+  lastMetrics = { appUp: false, metricsTier: "process" };
   return finishMetrics();
 }
 
