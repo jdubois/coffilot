@@ -6328,21 +6328,11 @@ async function appPost(base, pathname, body) {
   return res;
 }
 
-// Scan tools (…_scan) advertised by the MCP status endpoint, which lists them even
-// while the server is disabled. Derived from a GET so no CSRF dance is needed.
-function scansFromTools(tools) {
-  return (Array.isArray(tools) ? tools : [])
-    .filter((t) => t && t.action && /_scan$/.test(t.name))
-    .map((t) => ({ name: t.name, description: t.description || "" }));
-}
-
 async function mcpStatus() {
   const base = appBase();
   if (!base) return { available: false };
   const raw = await fetchJson(base, "/bootui/api/mcp-server");
-  const status = normalizeMcp(raw) || { available: false };
-  if (status.available) status.scans = scansFromTools(status.tools);
-  return status;
+  return normalizeMcp(raw) || { available: false };
 }
 
 async function mcpToggle(enabled) {
@@ -6357,55 +6347,91 @@ async function mcpToggle(enabled) {
   }
 }
 
-let mcpRpcId = 0;
-async function mcpRpc(method, params) {
+// ---------------------------------------------------------------------------
+// BootUI advisor scans — driven straight from BootUI's REST API
+// ---------------------------------------------------------------------------
+// Each advisor exposes `POST /bootui/api/{id}/scan` returning a findings report —
+// the very controller the in-app MCP `_scan` tools delegate to. We call those REST
+// endpoints directly rather than round-tripping through the embedded MCP server, so
+// there's no JSON-RPC envelope to build/unwrap and no "enable the server first" step:
+// a scan is available whenever its backing advisor is present in the running app.
+// The legacy `_scan` tool names are kept as aliases so the agent action and the
+// "Fix with Copilot" prompt builder keep working unchanged.
+const ADVISOR_SCANS = [
+  {
+    id: "architecture",
+    tool: "architecture_scan",
+    label: "Architecture",
+    description: "Layering & dependency findings.",
+  },
+  { id: "spring", tool: "spring_scan", label: "Spring", description: "Spring configuration & bean findings." },
+  {
+    id: "hibernate",
+    tool: "hibernate_scan",
+    label: "Hibernate",
+    description: "JPA/Hibernate mapping & query findings.",
+  },
+  { id: "memory", tool: "memory_scan", label: "Memory", description: "Memory findings (triggers a class histogram)." },
+  { id: "security", tool: "security_scan", label: "Security", description: "Application security findings." },
+  { id: "pentesting", tool: "pentest_scan", label: "Pentesting", description: "Probing-based security findings." },
+  { id: "rest-api", tool: "rest_api_scan", label: "REST API", description: "REST controller/design findings." },
+  { id: "graalvm", tool: "graalvm_scan", label: "GraalVM", description: "GraalVM native-image readiness findings." },
+  { id: "crac", tool: "crac_scan", label: "CRaC", description: "CRaC checkpoint/restore readiness findings." },
+];
+
+/** Resolve a requested scan key (panel id or legacy `_scan` tool name) to its descriptor. */
+function resolveScan(key) {
+  if (!key) return null;
+  return ADVISOR_SCANS.find((s) => s.id === key || s.tool === key) || null;
+}
+
+// The scan POST that backs each advisor. GraalVM mirrors the MCP tool by skipping
+// the longer dependency scan (`includeDependencies=false`).
+function scanPath(scan) {
+  return scan.id === "graalvm" ? "/bootui/api/graalvm/scan?includeDependencies=false" : `/bootui/api/${scan.id}/scan`;
+}
+
+/**
+ * List the advisor scans the running app actually exposes. Reads `/bootui/api/panels`
+ * (BootUI's canonical capability source) and keeps our advisor scans whose panel is
+ * present, available and not read-only. Returns [] when the app is down or isn't a
+ * BootUI app.
+ */
+async function scansAvailable() {
   const base = appBase();
-  if (!base) return { error: { message: "App is not running." } };
+  if (!base) return [];
+  const report = await fetchJson(base, "/bootui/api/panels");
+  const panels = report && Array.isArray(report.panels) ? report.panels : null;
+  if (!panels) return [];
+  const byId = new Map(panels.map((p) => [p.id, p]));
+  return ADVISOR_SCANS.filter((s) => {
+    const p = byId.get(s.id);
+    return p && p.available === true && p.enabled !== false && p.readOnly !== true;
+  }).map((s) => ({ id: s.id, tool: s.tool, label: s.label, description: s.description }));
+}
+
+/**
+ * Run a single advisor scan over REST and return its findings report. The scan POST
+ * is state-changing, so it goes through the CSRF-aware helper (seeding the XSRF-TOKEN
+ * from a prior GET) for apps that put Spring Security in front of `/bootui/**`.
+ */
+async function runScanRest(key) {
+  const scan = resolveScan(key);
+  if (!scan) return { ok: false, error: `Unknown scan: ${key ?? "(none)"}` };
+  const base = appBase();
+  if (!base) return { ok: false, tool: scan.tool, error: "App is not running." };
   try {
-    // The MCP JSON-RPC transport is CSRF-exempt, but appPost adds the header
-    // harmlessly if a token is already cached.
-    const res = await appPost(base, "/bootui/api/mcp", {
-      jsonrpc: "2.0",
-      id: ++mcpRpcId,
-      method,
-      params: params || {},
-    });
-    return await res.json();
-  } catch (e) {
-    return { error: { message: e.message } };
-  }
-}
-
-// Unwrap an MCP tools/call result: the payload is in result.content[].text, and
-// scan tools return a JSON string there. Parse it so the UI/agent get structured data.
-function unwrapMcpResult(result) {
-  if (!result) return result;
-  const parts = Array.isArray(result.content) ? result.content : null;
-  if (parts) {
-    const text = parts
-      .filter((p) => p && (p.type === "text" || typeof p.text === "string"))
-      .map((p) => p.text)
-      .join("\n")
-      .trim();
-    if (text) {
-      try {
-        return JSON.parse(text);
-      } catch {
-        return text;
-      }
+    const res = await appPostCsrf(base, "/bootui/api/overview", scanPath(scan), {});
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      const detail = body ? `: ${body.slice(0, 300)}` : "";
+      return { ok: false, tool: scan.tool, error: `Scan failed (HTTP ${res.status})${detail}` };
     }
+    const result = await res.json().catch(() => null);
+    return { ok: true, tool: scan.tool, id: scan.id, label: scan.label, result };
+  } catch (e) {
+    return { ok: false, tool: scan.tool, error: e.message };
   }
-  return result;
-}
-
-async function mcpScan(tool) {
-  if (!tool) return { ok: false, error: "No scan tool specified." };
-  const r = await mcpRpc("tools/call", { name: tool, arguments: {} });
-  if (r && r.error) return { ok: false, error: r.error.message || String(r.error) };
-  const isError = r && r.result && r.result.isError === true;
-  const data = unwrapMcpResult(r && r.result);
-  if (isError) return { ok: false, tool, error: typeof data === "string" ? data : JSON.stringify(data) };
-  return { ok: true, tool, result: data };
 }
 
 // ---------------------------------------------------------------------------
@@ -7090,9 +7116,13 @@ async function handleRequest(req, res) {
     sendJson(res, 200, await mcpToggle(body.enabled));
     return;
   }
-  if (req.method === "POST" && url.pathname === "/api/mcp/scan") {
+  if (req.method === "GET" && url.pathname === "/api/scans") {
+    sendJson(res, 200, { scans: await scansAvailable() });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/scan") {
     const body = await readBody(req);
-    sendJson(res, 200, await mcpScan(body.tool));
+    sendJson(res, 200, await runScanRest(body.tool ?? body.id));
     return;
   }
 
@@ -7565,13 +7595,13 @@ function makeCanvas() {
       {
         name: "run_scan",
         description:
-          "Run a BootUI MCP advisor scan against the running app (requires BootUI present and its MCP server enabled). Tool names end with _scan, e.g. architecture_scan, security_scan, spring_scan.",
+          "Run a BootUI advisor scan against the running app over its REST API (requires a running BootUI app; no MCP server needed). Accepts a panel id (e.g. architecture, security, spring, rest-api, pentesting) or the legacy tool name ending in _scan (e.g. architecture_scan).",
         inputSchema: {
           type: "object",
-          properties: { tool: { type: "string", description: "Scan tool name (…_scan)." } },
+          properties: { tool: { type: "string", description: "Scan id (e.g. architecture) or legacy name (…_scan)." } },
           required: ["tool"],
         },
-        handler: async (ctx) => mcpScan(ctx.input?.tool),
+        handler: async (ctx) => runScanRest(ctx.input?.tool),
       },
       {
         name: "set_log_level",

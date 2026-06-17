@@ -922,21 +922,21 @@ aside h2 {
 #mcp .mcp-state:empty {
   display: none;
 }
-#mcp .scans {
+.scans {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
   margin: 0.6rem 0 0;
 }
-#mcp .scans button {
+.scans button {
   padding: 0.2rem 0.55rem;
   font-size: 12px;
 }
-#mcp-result {
+#scans-result {
   margin-top: 0.6rem;
   font-size: 12px;
 }
-#mcp-result pre {
+#scans-result pre {
   margin: 0.35rem 0 0;
   padding: 0.5rem 0.6rem;
   max-height: 220px;

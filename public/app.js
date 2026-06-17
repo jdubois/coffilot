@@ -180,9 +180,11 @@ const metricsHint = document.getElementById("metrics-hint");
 const mcpToggle = document.getElementById("mcp-toggle");
 const mcpToggleLabel = document.getElementById("mcp-toggle-label");
 const mcpState = document.getElementById("mcp-state");
-const mcpScansEl = document.getElementById("mcp-scans");
-const mcpResultEl = document.getElementById("mcp-result");
 const mcpRegisterBtn = document.getElementById("mcp-register");
+const scansSrc = document.getElementById("scans-src");
+const scansHint = document.getElementById("scans-hint");
+const scansListEl = document.getElementById("scans-list");
+const scansResultEl = document.getElementById("scans-result");
 let caps = {};
 // Whether a Maven/Gradle build tool is present. When false the canvas runs
 // in degraded mode: Build/Test/Package/Run stay disabled.
@@ -367,6 +369,7 @@ function showAsideTab(name) {
   document.querySelectorAll(".atab").forEach((t) => t.classList.toggle("active", t.dataset.atab === name));
   document.getElementById("atab-metrics").classList.toggle("active", name === "metrics");
   document.getElementById("atab-loggers").classList.toggle("active", name === "loggers");
+  document.getElementById("atab-scans").classList.toggle("active", name === "scans");
   document.getElementById("atab-settings").classList.toggle("active", name === "settings");
   syncLoggersPolling();
 }
@@ -1050,6 +1053,7 @@ function renderMetrics(m) {
     lastHeapPct = 0;
     metricsSrc.hidden = true;
     renderMcp(null);
+    renderScans(false);
     metricsEl.innerHTML = '<p class="muted">Application isn\u2019t running or doesn\u2019t expose metrics.</p>';
     metricsHint.innerHTML =
       'To get metrics, add <strong>Spring Boot Actuator</strong> or <strong>Quarkus Micrometer/health</strong>. For even richer metrics with Spring Boot, add <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a>.';
@@ -1068,6 +1072,7 @@ function renderMetrics(m) {
     metricsHint.innerHTML =
       "Add <code>spring-boot-starter-actuator</code> / BootUI (Spring) or <code>quarkus-micrometer-registry-prometheus</code> (Quarkus) to surface heap, threads and health here.";
     renderMcp(null);
+    renderScans(false);
     return;
   }
 
@@ -1105,19 +1110,24 @@ function renderMetrics(m) {
     metricsHint.innerHTML =
       "Rich metrics read from the running app\u2019s <code>/bootui/api/**</code> endpoints \u2014 reused directly from BootUI.";
     renderMcp(m.mcp);
+    renderScans(true);
   } else if (tier === "quarkus") {
     metricsHint.innerHTML =
       "Metrics read from Quarkus Micrometer (<code>/q/metrics</code>) and SmallRye Health (<code>/q/health</code>).";
     renderMcp(null);
+    renderScans(false);
   } else {
     metricsHint.innerHTML =
       "Metrics normalized from Spring Boot <code>/actuator/**</code>. Add BootUI for advisor scans and richer detail.";
     renderMcp(null);
+    renderScans(false);
   }
 }
 
-// ---- BootUI MCP server panel ------------------------------------------
-let mcpScansLoaded = false;
+// ---- BootUI MCP server panel (agent bridge only) ----------------------
+// Coffilot reads advisor scans over REST (see the Scans tab); this panel just
+// manages the in-app MCP server that exposes those scans to the Copilot CLI as
+// native tools, so the toggle/register controls are all that remain here.
 
 // Offer "Register with Copilot" only while the MCP server is enabled (and
 // therefore reachable). Reset the button's label/enabled state only on the
@@ -1142,15 +1152,11 @@ function showMcpRegister(show) {
 // hidden); the whole panel is hidden for non-Spring modules in
 // updateDevSetup(), since BootUI is a Spring-only tier.
 function setMcpUnavailable() {
-  mcpScansLoaded = false;
   mcpToggle.checked = false;
   mcpToggle.disabled = true;
   mcpToggleLabel.classList.add("disabled");
   mcpState.textContent = "";
   showMcpRegister(false);
-  mcpScansEl.innerHTML =
-    '<span class="muted" style="font-size:12px">Start a BootUI app (dev profile) with <strong>Run</strong> to manage its MCP server and advisor scans.</span>';
-  mcpResultEl.innerHTML = "";
 }
 
 function renderMcp(mcp) {
@@ -1164,12 +1170,6 @@ function renderMcp(mcp) {
   mcpToggle.checked = enabled;
   mcpState.textContent = "";
   showMcpRegister(enabled);
-  if (!enabled) {
-    mcpScansLoaded = false;
-    mcpScansEl.innerHTML = '<span class="muted" style="font-size:12px">Enable the server to run advisor scans.</span>';
-    return;
-  }
-  if (!mcpScansLoaded) loadMcpScans();
 }
 
 async function getJson(path) {
@@ -1181,53 +1181,61 @@ async function getJson(path) {
   }
 }
 
-async function loadMcpScans() {
-  const st = await getJson("/api/mcp/status");
-  if (!st || !st.available) {
-    setMcpUnavailable();
+// ---- BootUI advisor scans (Scans aside tab) ---------------------------
+// Read straight from BootUI's REST API: /api/scans lists the advisor scans the
+// running app exposes (sourced from /bootui/api/panels), and /api/scan runs one
+// (POST /bootui/api/{id}/scan). No MCP server round-trip and no enable step — the
+// scans show up whenever a BootUI app is up on the metrics "bootui" tier.
+let scansLoaded = false;
+
+function renderScans(available) {
+  if (!available) {
+    scansLoaded = false;
+    scansSrc.hidden = true;
+    scansHint.innerHTML =
+      'Start a <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a> app (dev profile) with <strong>Run</strong> to run its advisor scans against the live app.';
+    scansListEl.innerHTML = "";
+    scansResultEl.innerHTML = "";
     return;
   }
-  mcpToggle.disabled = false;
-  mcpToggleLabel.classList.remove("disabled");
-  const enabled = st.enabled === true;
-  mcpToggle.checked = enabled;
-  mcpState.textContent = "";
-  showMcpRegister(enabled);
-  const scans = (st && st.scans) || [];
-  if (!enabled) {
-    mcpScansLoaded = false;
-    mcpScansEl.innerHTML = '<span class="muted" style="font-size:12px">Enable the server to run advisor scans.</span>';
-    return;
-  }
-  mcpScansLoaded = true;
-  if (!scans.length) {
-    mcpScansEl.innerHTML = '<span class="muted" style="font-size:12px">No advisor scans advertised.</span>';
-    return;
-  }
-  mcpScansEl.innerHTML = scans
-    .map((s) => {
-      const label = esc(s.name.replace(/_scan$/, "").replace(/_/g, " "));
-      return `<button class="tiny" data-scan="${esc(s.name)}" title="${esc(s.description || s.name)}">${label}</button>`;
-    })
-    .join("");
-  mcpScansEl.querySelectorAll("button[data-scan]").forEach((b) => (b.onclick = () => runScan(b.dataset.scan)));
+  scansSrc.hidden = false;
+  if (!scansLoaded) loadScans();
 }
 
-async function runScan(tool) {
-  mcpResultEl.innerHTML = `<span class="muted">Running ${esc(tool)}\u2026</span>`;
-  const r = await postJson("/api/mcp/scan", { tool });
-  if (!r || r.ok === false) {
-    mcpResultEl.innerHTML = `<span style="color:var(--true-color-red,#cf222e)">Scan failed: ${esc((r && r.error) || "unknown error")}</span>`;
+async function loadScans() {
+  const st = await getJson("/api/scans");
+  const scans = (st && st.scans) || [];
+  scansLoaded = true;
+  if (!scans.length) {
+    scansHint.textContent = "No advisor scans are available on the running app.";
+    scansListEl.innerHTML = "";
     return;
   }
-  lastScan = { tool, result: r.result };
+  scansHint.textContent = "Run a BootUI advisor scan against the running app, then push its findings to Copilot.";
+  scansListEl.innerHTML = scans
+    .map(
+      (s) =>
+        `<button class="tiny" data-scan="${esc(s.id)}" title="${esc(s.description || s.label)}">${esc(s.label)}</button>`,
+    )
+    .join("");
+  scansListEl.querySelectorAll("button[data-scan]").forEach((b) => (b.onclick = () => runScan(b.dataset.scan)));
+}
+
+async function runScan(id) {
+  scansResultEl.innerHTML = `<span class="muted">Running ${esc(id)}\u2026</span>`;
+  const r = await postJson("/api/scan", { tool: id });
+  if (!r || r.ok === false) {
+    scansResultEl.innerHTML = `<span style="color:var(--true-color-red,#cf222e)">Scan failed: ${esc((r && r.error) || "unknown error")}</span>`;
+    return;
+  }
+  lastScan = { tool: r.tool || id, result: r.result };
   const text = typeof r.result === "string" ? r.result : JSON.stringify(r.result, null, 2);
-  mcpResultEl.innerHTML =
+  scansResultEl.innerHTML =
     `<div style="display:flex;align-items:center;gap:0.5rem;justify-content:space-between">` +
-    `<strong>${esc(tool)}</strong>` +
-    `<button class="fix fix-copilot tiny" id="mcp-send">Fix findings with Copilot</button></div>` +
+    `<strong>${esc(r.label || id)}</strong>` +
+    `<button class="fix fix-copilot tiny" id="scan-send">Fix findings with Copilot</button></div>` +
     `<pre>${esc(text)}</pre>`;
-  const send = document.getElementById("mcp-send");
+  const send = document.getElementById("scan-send");
   if (send)
     send.onclick = async () => {
       send.disabled = true;
@@ -2352,10 +2360,9 @@ btnFix.onclick = async () => {
 mcpToggle.onclick = async () => {
   const enabled = mcpToggle.checked;
   mcpState.textContent = enabled ? "enabling\u2026" : "disabling\u2026";
-  mcpScansLoaded = false;
-  await post("/api/mcp/toggle", { enabled });
-  // Reflect the server's actual state and (re)load advisor scans.
-  loadMcpScans();
+  const r = await postJson("/api/mcp/toggle", { enabled });
+  // Reflect the server's actual state from the toggle response.
+  renderMcp((r && r.status) || null);
 };
 
 mcpRegisterBtn.onclick = async () => {
