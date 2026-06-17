@@ -21,6 +21,8 @@ const {
   buildHistoryEntry,
   clampHistory,
   clampMetricsPollMs,
+  parseJfrStacks,
+  pickAppPidFromJvmList,
 } = await import("../extension.mjs");
 
 // ---------------------------------------------------------------------------
@@ -341,4 +343,64 @@ test("clampMetricsPollMs bounds the interval and defaults non-finite input", () 
   assert.equal(clampMetricsPollMs(1234.6), 1235); // rounded
   assert.equal(clampMetricsPollMs("abc"), 2500); // non-finite -> default
   assert.equal(clampMetricsPollMs(undefined), 2500);
+});
+
+// ---------------------------------------------------------------------------
+// JFR profiling fallback: stack parsing + app-PID selection
+// ---------------------------------------------------------------------------
+
+test("parseJfrStacks folds execution samples into collapsed root-first stacks", () => {
+  const text = [
+    "jdk.ExecutionSample {",
+    '  sampledThread = "main"',
+    '  state = "STATE_RUNNABLE"',
+    "  stackTrace = [",
+    "    com.example.Service.compute(int) line: 42",
+    "    com.example.Service.handle() line: 20",
+    "    com.example.App.main(java.lang.String[]) line: 10",
+    "  ]",
+    "}",
+    "jdk.ExecutionSample {",
+    "  stackTrace = [",
+    "    com.example.Service.compute(int) line: 42",
+    "    com.example.Service.handle() line: 20",
+    "    com.example.App.main(java.lang.String[]) line: 10",
+    "  ]",
+    "}",
+    "jdk.ExecutionSample {",
+    "  stackTrace = [",
+    "    java.lang.Thread.run() [optimized]",
+    "  ]",
+    "}",
+  ].join("\n");
+  const collapsed = parseJfrStacks(text);
+  const lines = collapsed.trim().split("\n").sort();
+  assert.deepEqual(lines, [
+    "com.example.App.main;com.example.Service.handle;com.example.Service.compute 2",
+    "java.lang.Thread.run 1",
+  ]);
+});
+
+test("parseJfrStacks tolerates empty / non-sample input", () => {
+  assert.equal(parseJfrStacks("").trim(), "");
+  assert.equal(parseJfrStacks(null).trim(), "");
+  assert.equal(parseJfrStacks("no events here\njust text").trim(), "");
+});
+
+test("pickAppPidFromJvmList skips wrappers, the tool, and self", () => {
+  const listing = [
+    "12345 org.codehaus.plexus.classworlds.launcher.Launcher clean test",
+    "12346 com.example.App",
+    "999 jdk.jcmd/sun.tools.jcmd.JCmd -l",
+  ].join("\n");
+  assert.equal(pickAppPidFromJvmList(listing, 4242), 12346);
+
+  const gradle = ["555 org.gradle.wrapper.GradleWrapperMain bootRun", "556 com.example.QuarkusApp"].join("\n");
+  assert.equal(pickAppPidFromJvmList(gradle, 4242), 556);
+
+  // Only the current process and a wrapper -> nothing to attach to.
+  assert.equal(pickAppPidFromJvmList("4242 com.example.App\n777 org.gradle.launcher.daemon.bootstrap.X", 4242), null);
+
+  // Entries with an unknown main class are skipped.
+  assert.equal(pickAppPidFromJvmList("100 Unknown\n101 com.example.App", 1), 101);
 });

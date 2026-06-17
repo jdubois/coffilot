@@ -55,10 +55,12 @@ Shipped in the extension today:
   control via Spring Boot Actuator `/loggers` (a Loggers side tab + the `set_log_level`
   action), so loggers can be changed live without a restart.
 - On-demand CPU / allocation / wall-clock / lock-contention flame graph of the
-  running app via async-profiler (`asprof`), rendered interactively (zoom, hover,
-  search) in the Run tab with a top-hotspots list; an "Automatically record at
-  startup" toggle (off by default) records on each app start. Detected and degraded
-  gracefully when the profiler is absent (and unavailable on Windows).
+  running app via async-profiler (`asprof`) when present, or the JDK-bundled JDK
+  Flight Recorder (`jcmd JFR.*`) as a cross-platform fallback (so flame graphs work
+  on Windows too), rendered interactively (zoom, hover, search) in the Run tab with
+  a top-hotspots list; an "Automatically record at startup" toggle (off by default)
+  records on each app start. Detected and degraded gracefully when neither engine is
+  available.
 - "Fix with Copilot" for compile, package, test, plain-Java, Spring Boot and Quarkus
   startup failures, for flame-graph hotspots, and for BootUI advisor-scan findings.
 - BootUI MCP server toggle + advisor scans when the running app exposes BootUI.
@@ -97,11 +99,14 @@ Shipped in the extension today:
   Frame-local variables also require classes compiled with debug info (`-g`, the
   default for Maven/Gradle). The Quarkus-on-Gradle `-Ddebug` forwarding is
   best-effort and unverified.
-- **The flame graph needs async-profiler installed** and resolves the app JVM via
-  `lsof` on the detected HTTP port (falling back to the run lane's child for
-  plain-`java` runs), so a port-less app started through a forked wrapper can't be
-  attached to. On macOS the `cpu` event maps to `itimer` (no perf_events), and the
-  whole feature is unavailable on Windows (async-profiler has no Windows build).
+- **The flame graph prefers async-profiler** (richer events) when installed, and
+  otherwise falls back to JDK Flight Recorder via `jcmd` (bundled with every JDK,
+  including on Windows). It resolves the app JVM via `lsof` on the detected HTTP port
+  (falling back to the run lane's child for plain-`java` runs, and to `jcmd -l`/`jps`
+  when `lsof` is unavailable, e.g. on Windows), so a port-less app started through a
+  forked wrapper can still usually be attached to. On macOS the async-profiler `cpu`
+  event maps to `itimer` (no perf_events). Flame graphs are only unavailable when
+  neither async-profiler nor a JDK `jcmd` can be found.
 
 ## Roadmap
 

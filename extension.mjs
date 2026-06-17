@@ -413,14 +413,70 @@ function profilerInstall() {
 /** Profiler capability the UI uses to enable/disable the flame-graph controls. */
 function profilerSnapshot() {
   const a = detectAsprof();
+  const j = detectJfr();
+  const engine = a.available ? "async-profiler" : j.available ? "jfr" : null;
   return {
-    available: a.available,
-    supported: !isWindows, // async-profiler has no Windows build
+    available: a.available || j.available,
+    // Profiling is supported on every platform that can record by some engine.
+    // async-profiler has no Windows build, but JFR (JDK-bundled) covers Windows.
+    supported: !isWindows || j.available,
+    engine,
+    jfr: { available: j.available },
     // The default events the picker offers; "cpu" is mapped to itimer on macOS
-    // by the backend (no perf_events there).
+    // by the backend (no perf_events there). JFR records execution (CPU) samples
+    // regardless of the selected event.
     events: ["cpu", "alloc", "wall", "lock"],
     install: profilerInstall(),
   };
+}
+
+// JDK-bundled profiling fallback (Java Flight Recorder).
+//
+// async-profiler is richer but has no Windows build and needs a separate install.
+// `jcmd`/`jfr` ship with every modern JDK, so when async-profiler is missing we
+// fall back to JFR: start a recording with `jcmd <pid> JFR.start`, then parse the
+// dumped `.jfr` with `jfr print` into the same flame tree + hotspots the UI and
+// the "Analyze hotspots with Copilot" action already consume.
+// ---------------------------------------------------------------------------
+
+/** Resolve a JDK tool (jcmd / jfr / jps) from JAVA_HOME/bin, else the bare name
+ *  on PATH (so it still works when only `java` is on PATH). */
+function jdkTool(name) {
+  const exe = isWindows ? `${name}.exe` : name;
+  const home = process.env.JAVA_HOME;
+  if (home) {
+    const p = path.join(home, "bin", exe);
+    try {
+      if (existsSync(p)) return p;
+    } catch {
+      /* ignore */
+    }
+  }
+  return name; // rely on PATH
+}
+
+let jfrInfo = null;
+function detectJfr() {
+  if (jfrInfo && jfrInfo.available) return jfrInfo;
+  const jcmd = jdkTool("jcmd");
+  const jfr = jdkTool("jfr");
+  try {
+    // `jcmd -h` exits 0 and is cheap; confirms the JDK diagnostic tool exists.
+    const res = spawnSync(jcmd, ["-h"], { encoding: "utf8", timeout: 5000 });
+    const ok = res.status === 0 || /Usage:|jcmd/i.test(`${res.stdout || ""}${res.stderr || ""}`);
+    jfrInfo = ok ? { available: true, jcmd, jfr } : { available: false, jcmd: null, jfr: null };
+  } catch {
+    jfrInfo = { available: false, jcmd: null, jfr: null };
+  }
+  return jfrInfo;
+}
+
+/** Which engine startProfile will use: async-profiler when present (richer),
+ *  else JFR, else none. */
+function profileEngine() {
+  if (detectAsprof().available) return "async-profiler";
+  if (detectJfr().available) return "jfr";
+  return null;
 }
 
 // When a project ships a pom.xml but no Maven wrapper, fall back to a system
@@ -4564,6 +4620,7 @@ function resolveProfileEvent(event) {
 let profile = {
   status: "idle", // idle | running | done | error
   event: null, // logical event (cpu | alloc | wall | lock)
+  engine: null, // async-profiler | jfr — which engine produced this run
   duration: 0,
   pid: null,
   startedAt: 0,
@@ -4576,10 +4633,12 @@ let profile = {
 let flameTree = null; // { n, v, c: [...] } built from the last collapsed run
 let profileChild = null; // the running `asprof -d` process
 let profileResolve = null; // resolves the in-flight run's promise (agent action)
+let jfrTimer = null; // pending parse timer for an in-flight JFR recording
+let jfrPid = null; // PID of the JVM the in-flight JFR recording targets
 
 function profilePublic() {
-  const { event, duration, status, pid, startedAt, finishedAt, error, total, hasGraph } = profile;
-  return { status, event, duration, pid, startedAt, finishedAt, error, total, hasGraph };
+  const { event, engine, duration, status, pid, startedAt, finishedAt, error, total, hasGraph } = profile;
+  return { status, event, engine, duration, pid, startedAt, finishedAt, error, total, hasGraph };
 }
 
 function broadcastProfile() {
@@ -4590,6 +4649,7 @@ function resetProfile() {
   profile = {
     status: "idle",
     event: null,
+    engine: null,
     duration: 0,
     pid: null,
     startedAt: 0,
@@ -4607,6 +4667,13 @@ function profileOutFile() {
   const { dir } = settingsPaths();
   const key = createHash("sha1").update(workspacePath).digest("hex").slice(0, 16);
   return path.join(dir, `flame-${key}.collapsed`);
+}
+
+/** The .jfr recording file the JFR engine dumps for this workspace. */
+function jfrOutFile() {
+  const { dir } = settingsPaths();
+  const key = createHash("sha1").update(workspacePath).digest("hex").slice(0, 16);
+  return path.join(dir, `flame-${key}.jfr`);
 }
 
 // Find the PID of the JVM actually serving the app. spring-boot:run / bootRun /
@@ -4638,6 +4705,64 @@ function resolveAppPid() {
   const fromPort = pidOnPort(app.appPort);
   if (fromPort) return fromPort;
   if (app.runMode === "java" && lanes.run.child && lanes.run.child.pid) return lanes.run.child.pid;
+  // Where lsof isn't available (notably Windows), fall back to the JDK's own JVM
+  // listing to find the forked app process.
+  const fromJvmList = pidViaJvmList();
+  if (fromJvmList) return fromJvmList;
+  return null;
+}
+
+// Build-tool / wrapper main classes that are never the app JVM we want to attach
+// to. Used to filter the `jcmd -l` / `jps -l` listing down to the app process.
+const NON_APP_MAINS = [
+  "jdk.jcmd",
+  "sun.tools",
+  "org.apache.maven",
+  "org.codehaus.plexus.classworlds.launcher.Launcher", // Maven launcher
+  "org.gradle.launcher",
+  "org.gradle.wrapper.GradleWrapperMain",
+  "GradleWrapperMain",
+  "GradleMain",
+];
+
+// Pick the most likely app PID from a `pid main-class args` listing produced by
+// `jcmd -l` (or `jps -l`). Pure so it can be unit-tested. Skips this process, the
+// listing tool itself, and known build-tool / wrapper launchers; prefers the
+// last remaining entry (the app is forked after the wrapper).
+export function pickAppPidFromJvmList(listing, selfPid) {
+  const candidates = [];
+  for (const raw of String(listing || "").split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const sp = line.indexOf(" ");
+    const pidStr = sp === -1 ? line : line.slice(0, sp);
+    const pid = Number(pidStr);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    if (selfPid && pid === selfPid) continue;
+    const main = sp === -1 ? "" : line.slice(sp + 1).trim();
+    if (!main || main === "Unknown") continue;
+    if (NON_APP_MAINS.some((skip) => main.startsWith(skip) || main.includes(skip))) continue;
+    candidates.push(pid);
+  }
+  return candidates.length ? candidates[candidates.length - 1] : null;
+}
+
+function pidViaJvmList() {
+  const j = detectJfr();
+  const tools = [];
+  if (j.available && j.jcmd) tools.push([j.jcmd, ["-l"]]);
+  tools.push([jdkTool("jps"), ["-l"]]);
+  for (const [bin, args] of tools) {
+    try {
+      const res = spawnSync(bin, args, { encoding: "utf8", timeout: 5000 });
+      if (res.stdout) {
+        const pid = pickAppPidFromJvmList(res.stdout, process.pid);
+        if (pid) return pid;
+      }
+    } catch {
+      /* tool missing — try the next */
+    }
+  }
   return null;
 }
 
@@ -4687,6 +4812,52 @@ function buildFlame(collapsed) {
   return { tree: toArray(root), total, top };
 }
 
+// Convert the text output of `jfr print --events jdk.ExecutionSample` into the
+// same "collapsed" stack format async-profiler emits (one `root;...;leaf count`
+// line per sample), so the existing buildFlame() can consume it. Each
+// ExecutionSample's stackTrace is listed leaf-first; collapsed wants root-first,
+// so we reverse it. Frame decorations (`line: N`, descriptors) are trimmed to a
+// stable `pkg.Class.method` label. Pure so it can be unit-tested.
+export function parseJfrStacks(text) {
+  const lines = String(text || "").split("\n");
+  const stacks = new Map(); // collapsed-key -> sample count
+  let frames = null; // current stackTrace frames (leaf-first)
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (line.startsWith("stackTrace")) {
+      frames = [];
+      continue;
+    }
+    if (frames === null) continue;
+    if (line === "]" || line === "}" || line === "") {
+      if (line === "]" && frames.length) {
+        const collapsed = frames.slice().reverse().join(";");
+        stacks.set(collapsed, (stacks.get(collapsed) || 0) + 1);
+      }
+      if (line === "]") frames = null;
+      continue;
+    }
+    const frame = jfrFrameLabel(line);
+    if (frame) frames.push(frame);
+  }
+  let out = "";
+  for (const [collapsed, count] of stacks) out += `${collapsed} ${count}\n`;
+  return out;
+}
+
+// Normalize one JFR stack frame line (e.g.
+// "com.example.Foo.bar(java.lang.String) line: 42" or
+// "java.lang.Thread.run() [optimized]") to a "pkg.Class.method" label, dropping
+// argument descriptors, line numbers, and compilation annotations.
+function jfrFrameLabel(line) {
+  let s = line.replace(/^-+\s*/, "").trim();
+  if (!s || s.startsWith("...")) return "";
+  const paren = s.indexOf("(");
+  if (paren !== -1) s = s.slice(0, paren);
+  else s = s.split(/\s+/)[0];
+  return s.trim();
+}
+
 function finishProfileFromFile(stderrTail) {
   const out = profileOutFile();
   let collapsed = "";
@@ -4711,24 +4882,74 @@ function finishProfileFromFile(stderrTail) {
   profile.finishedAt = Date.now();
 }
 
+// Build the flame tree + hotspots from the JFR recording by piping it through
+// `jfr print` and reusing the collapsed-stack parser. Mirrors
+// finishProfileFromFile but for the JFR engine.
+function finishProfileFromJfr(stderrTail) {
+  const j = detectJfr();
+  const out = jfrOutFile();
+  let collapsed = "";
+  try {
+    if (j.jfr && existsSync(out)) {
+      const res = spawnSync(j.jfr, ["print", "--events", "jdk.ExecutionSample", "--stack-depth", "64", out], {
+        encoding: "utf8",
+        timeout: 30000,
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      collapsed = parseJfrStacks(`${res.stdout || ""}`);
+    }
+  } catch {
+    /* jfr print failed or unreadable */
+  }
+  if (collapsed.trim()) {
+    const { tree, total, top } = buildFlame(collapsed);
+    flameTree = tree;
+    profile.total = total;
+    profile.top = top;
+    profile.hasGraph = true;
+    profile.status = "done";
+    profile.error = null;
+  } else {
+    profile.status = "error";
+    profile.hasGraph = false;
+    profile.error = stderrTail || "JFR produced no execution samples (the app may have been idle).";
+  }
+  profile.finishedAt = Date.now();
+}
+
+// Shared "run finished" console line for both engines.
+function logProfileCompletion() {
+  if (profile.status === "done") {
+    pushConsole(
+      `[coffilot] flame graph ready — ${profile.total} samples; open the Flame graph tab in Run.`,
+      "stdout",
+      "run",
+    );
+  } else {
+    pushConsole(`[coffilot] profiling failed: ${profile.error}`, "stderr", "run");
+  }
+}
+
 /**
- * Attach async-profiler to the running app for `duration` seconds and collect a
- * flame graph. Returns the immediate validation/ack synchronously plus a `done`
- * promise that resolves with the final summary once the run completes (used by
- * the profile_app agent action; the HTTP endpoint ignores it and relies on SSE).
+ * Record a flame graph from the running app for `duration` seconds, using
+ * async-profiler when present (richer events) and falling back to JFR (JDK
+ * bundled, all platforms) otherwise. Returns the immediate validation/ack
+ * synchronously plus a `done` promise that resolves with the final summary once
+ * the run completes (used by the profile_app agent action; the HTTP endpoint
+ * ignores it and relies on SSE).
  */
 function startProfile({ duration, event } = {}) {
   if (profile.status === "running") {
     return { ok: false, status: "running", error: "A profiling run is already in progress." };
   }
-  const ap = detectAsprof();
-  if (isWindows || !ap.available) {
+  const engine = profileEngine();
+  if (!engine) {
     return {
       ok: false,
       status: "unavailable",
       error: isWindows
-        ? "async-profiler has no Windows build, so flame graphs aren't available."
-        : "async-profiler (asprof) isn't installed. Install it to record flame graphs.",
+        ? "No profiler available: async-profiler has no Windows build, and the JDK's JFR tools (jcmd) weren't found on PATH or in JAVA_HOME."
+        : "No profiler available: install async-profiler, or a JDK that provides jcmd/jfr for the JFR fallback.",
     };
   }
   if (!runLaneBusy()) {
@@ -4744,6 +4965,25 @@ function startProfile({ duration, event } = {}) {
   }
   const { event: logical, token } = resolveProfileEvent(event);
   const dur = Math.min(120, Math.max(3, Math.round(Number(duration) || 30)));
+
+  resetProfile();
+  profile.status = "running";
+  profile.event = logical;
+  profile.engine = engine;
+  profile.duration = dur;
+  profile.pid = pid;
+  profile.startedAt = Date.now();
+  broadcastProfile();
+
+  const done = new Promise((resolve) => (profileResolve = resolve));
+  return engine === "async-profiler"
+    ? startProfileAsprof({ pid, dur, token, logical, done })
+    : startProfileJfr({ pid, dur, logical, done });
+}
+
+/** async-profiler engine: attach `asprof -d` and parse its collapsed output. */
+function startProfileAsprof({ pid, dur, token, logical, done }) {
+  const ap = detectAsprof();
   const out = profileOutFile();
   try {
     mkdirSync(path.dirname(out), { recursive: true });
@@ -4751,17 +4991,8 @@ function startProfile({ duration, event } = {}) {
   } catch {
     /* best effort */
   }
-
-  resetProfile();
-  profile.status = "running";
-  profile.event = logical;
-  profile.duration = dur;
-  profile.pid = pid;
-  profile.startedAt = Date.now();
-  broadcastProfile();
   pushConsole(`[coffilot] profiling pid ${pid} for ${dur}s (event=${token}) with async-profiler…`, "stdout", "run");
 
-  const done = new Promise((resolve) => (profileResolve = resolve));
   let stderr = "";
   try {
     profileChild = spawn(ap.path, ["-d", String(dur), "-e", token, "-o", "collapsed", "-f", out, String(pid)], {
@@ -4790,19 +5021,59 @@ function startProfile({ duration, event } = {}) {
     profileChild = null;
     const stderrTail = stderr.trim().split("\n").slice(-6).join("\n");
     finishProfileFromFile(stderrTail);
-    if (profile.status === "done") {
-      pushConsole(
-        `[coffilot] flame graph ready — ${profile.total} samples; open the Flame graph tab in Run.`,
-        "stdout",
-        "run",
-      );
-    } else {
-      pushConsole(`[coffilot] profiling failed: ${profile.error}`, "stderr", "run");
-    }
+    logProfileCompletion();
     broadcastProfile();
     if (profileResolve) profileResolve(profileSummary());
   });
-  return { ok: true, status: "running", event: logical, duration: dur, pid, done };
+  return { ok: true, status: "running", event: logical, engine: "async-profiler", duration: dur, pid, done };
+}
+
+/** JFR engine: start a fixed-duration recording via `jcmd JFR.start`; the JVM
+ *  dumps the .jfr when it ends, which we then parse with `jfr print`. */
+function startProfileJfr({ pid, dur, logical, done }) {
+  const j = detectJfr();
+  const out = jfrOutFile();
+  try {
+    mkdirSync(path.dirname(out), { recursive: true });
+    if (existsSync(out)) unlinkSync(out);
+  } catch {
+    /* best effort */
+  }
+  pushConsole(`[coffilot] profiling pid ${pid} for ${dur}s with Java Flight Recorder…`, "stdout", "run");
+
+  const args = [String(pid), "JFR.start", "name=coffilot", "settings=profile", `duration=${dur}s`, `filename=${out}`];
+  let startOut = "";
+  try {
+    const res = spawnSync(j.jcmd, args, { encoding: "utf8", timeout: 10000 });
+    startOut = `${res.stdout || ""}${res.stderr || ""}`;
+    if ((res.status != null && res.status !== 0) || /Exception|could not|No such|not found/i.test(startOut)) {
+      throw new Error(startOut.trim().split("\n").slice(-4).join("\n") || "JFR.start failed.");
+    }
+  } catch (e) {
+    profile.status = "error";
+    profile.error = e.message;
+    profile.finishedAt = Date.now();
+    pushConsole(`[coffilot] JFR.start failed: ${profile.error}`, "stderr", "run");
+    broadcastProfile();
+    if (profileResolve) profileResolve(profileSummary());
+    return { ok: false, status: "error", error: profile.error, done };
+  }
+
+  jfrPid = pid;
+  // Parse once the recording window has elapsed (plus a small buffer for the
+  // JVM to flush the dump to disk).
+  jfrTimer = setTimeout(
+    () => {
+      jfrTimer = null;
+      jfrPid = null;
+      finishProfileFromJfr();
+      logProfileCompletion();
+      broadcastProfile();
+      if (profileResolve) profileResolve(profileSummary());
+    },
+    dur * 1000 + 1500,
+  );
+  return { ok: true, status: "running", event: logical, engine: "jfr", duration: dur, pid, done };
 }
 
 // Fired by finishMetrics when "Automatically record at startup" is on and the app
@@ -4810,12 +5081,11 @@ function startProfile({ duration, event } = {}) {
 // clear reason to the Run console when it can't (so it never just "does nothing").
 function startAutoProfile() {
   if (profile.status === "running") return;
-  const ap = detectAsprof();
-  if (isWindows || !ap.available) {
+  if (!profileEngine()) {
     pushConsole(
       isWindows
-        ? "[coffilot] auto-record is on, but async-profiler has no Windows build — skipping the flame graph."
-        : "[coffilot] auto-record is on, but async-profiler (asprof) isn't installed — skipping the flame graph.",
+        ? "[coffilot] auto-record is on, but no profiler is available (async-profiler has no Windows build and the JDK's jcmd wasn't found) — skipping the flame graph."
+        : "[coffilot] auto-record is on, but no profiler is available (install async-profiler, or a JDK providing jcmd/jfr) — skipping the flame graph.",
       "stderr",
       "run",
     );
@@ -4829,6 +5099,30 @@ function startAutoProfile() {
 /** Stop an in-flight profiling run early, dumping whatever has been collected. */
 function stopProfile() {
   if (profile.status !== "running") return { ok: false, error: "No profiling run is in progress." };
+  // JFR engine: stop the recording (dumping partial results), then parse and
+  // resolve directly — there is no long-running child to wait on.
+  if (profile.engine === "jfr") {
+    if (jfrTimer) {
+      clearTimeout(jfrTimer);
+      jfrTimer = null;
+    }
+    const j = detectJfr();
+    const out = jfrOutFile();
+    const pid = jfrPid || profile.pid;
+    jfrPid = null;
+    if (j.jcmd && pid) {
+      try {
+        spawnSync(j.jcmd, [String(pid), "JFR.stop", "name=coffilot", `filename=${out}`], { timeout: 8000 });
+      } catch {
+        /* best effort — parse whatever was written */
+      }
+    }
+    finishProfileFromJfr();
+    logProfileCompletion();
+    broadcastProfile();
+    if (profileResolve) profileResolve(profileSummary());
+    return { ok: true, stopping: true };
+  }
   const ap = detectAsprof();
   const out = profileOutFile();
   if (ap.available && profile.pid) {

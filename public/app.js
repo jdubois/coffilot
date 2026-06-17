@@ -2324,7 +2324,8 @@ function applyProfilerEnv(p) {
   if (flameUnavailable) {
     if (!supported) {
       flameUnavailable.hidden = false;
-      flameMsg.textContent = "async-profiler has no Windows build, so flame graphs aren't available on this platform.";
+      flameMsg.textContent =
+        "Flame graphs aren't available: async-profiler has no Windows build, and the JDK's JFR tools (jcmd) weren't found. Install a JDK (or set JAVA_HOME) to enable the JFR fallback.";
       flameCmd.hidden = true;
       flameDocs.href = (p && p.install && p.install.url) || "https://github.com/async-profiler/async-profiler";
     } else if (!available) {
@@ -2332,8 +2333,10 @@ function applyProfilerEnv(p) {
       const inst = (p && p.install) || {};
       const os = inst.os ? ` on ${inst.os}` : "";
       flameMsg.innerHTML =
-        `<strong>async-profiler</strong> isn't installed${os}, so flame graphs are disabled. ` +
-        (inst.cmd ? "Install it to enable them:" : "Install it (and reopen the canvas) to enable them:");
+        `<strong>async-profiler</strong> isn't installed${os}, and no JDK <code>jcmd</code> was found for the JFR fallback, so flame graphs are disabled. ` +
+        (inst.cmd
+          ? "Install async-profiler to enable them:"
+          : "Install async-profiler or a JDK (and reopen the canvas) to enable them:");
       if (inst.cmd) {
         flameCmd.textContent = inst.cmd;
         flameCmd.hidden = false;
@@ -2359,10 +2362,12 @@ function renderProfileState(p) {
   if (profileSpin) profileSpin.hidden = !running;
   if (flameStatus) {
     if (running) {
-      flameStatus.textContent = `Sampling ${eventLabel(p.event)}${p.pid ? ` (pid ${p.pid})` : ""} for ${p.duration}s\u2026`;
+      const eng = p.engine === "jfr" ? " · JFR" : "";
+      flameStatus.textContent = `Sampling ${eventLabel(p.event)}${p.pid ? ` (pid ${p.pid})` : ""} for ${p.duration}s${eng}\u2026`;
       flameStatus.className = "muted";
     } else if (p.status === "done") {
-      flameStatus.textContent = `${fmtInt(p.total)} samples \u00b7 ${eventLabel(p.event)} \u00b7 ${p.duration}s`;
+      const eng = p.engine === "jfr" ? " \u00b7 JFR" : "";
+      flameStatus.textContent = `${fmtInt(p.total)} samples \u00b7 ${eventLabel(p.event)} \u00b7 ${p.duration}s${eng}`;
       flameStatus.className = "muted ok";
     } else if (p.status === "error") {
       flameStatus.textContent = p.error || "Profiling failed.";
