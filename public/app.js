@@ -1208,6 +1208,11 @@ es.addEventListener("tests", (e) => {
   const report = JSON.parse(e.data);
   renderTests(report, { runnerLabel: lastRunnerLabel });
 });
+es.addEventListener("env", (e) => {
+  // The backend resolves the project root in the background after startup; apply
+  // the refreshed env so the build tool, modules, and banners update live.
+  applyEnv(JSON.parse(e.data));
+});
 es.addEventListener("reset", (e) => {
   // Clear only the console for the op that's (re)starting; the others keep
   // their last output.
