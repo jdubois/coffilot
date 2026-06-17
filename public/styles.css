@@ -228,8 +228,10 @@ select {
   min-width: 84px;
   text-align: center;
 }
-.lane-action-end {
-  margin-left: auto;
+/* In the Test subtab bar, the Run tests button follows the right-aligned
+   Full build / Continuous testing toggles; give it a little breathing room. */
+.subtabs #btn-test {
+  margin-left: 0.4rem;
 }
 
 /* Module picker in Settings: a full-width, prominent context selector. */
@@ -416,6 +418,30 @@ select {
 .subtab.active {
   color: var(--text-color-default, #1f2328);
   border-color: var(--true-color-blue, #0969da);
+}
+/* Test-view toolbar toggles pushed to the right edge: "Full build" (affected
+   vs full suite) and "Continuous testing". */
+.test-toggles {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.test-toggles .switch {
+  font-size: 12px;
+  gap: 0.4rem;
+}
+/* Thin banner summarising the affected-test selection for the last run. */
+.test-selection {
+  flex: 0 0 auto;
+  padding: 0.35rem 0.75rem;
+  font-size: 12px;
+  color: var(--text-color-muted, #656d76);
+  border-bottom: 1px solid var(--border-color-muted, #d8dee4);
+  background: var(--background-color-muted, #f6f8fa);
+}
+.test-selection.warn {
+  color: var(--text-color-default, #1f2328);
 }
 .subpane-wrap {
   flex: 1 1 auto;
@@ -930,6 +956,9 @@ aside h2 {
   color: var(--text-color-muted, #656d76);
   padding: 2rem 0;
   text-align: center;
+}
+.empty.bad {
+  color: var(--true-color-red, #cf222e);
 }
 /* Live test progress (class-by-class, while the run is in flight). */
 .suite-row {

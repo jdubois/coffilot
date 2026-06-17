@@ -24,6 +24,11 @@ const exitEl = document.getElementById("exit");
 const metricsEl = document.getElementById("metrics");
 const testsEl = document.getElementById("tests");
 const tabBadge = document.getElementById("tab-tests-badge");
+const fullbuildToggle = document.getElementById("fullbuild-toggle");
+const fullbuildInput = document.getElementById("in-fullbuild");
+const continuousToggle = document.getElementById("continuous-toggle");
+const continuousInput = document.getElementById("in-continuous");
+const testSelectionEl = document.getElementById("test-selection");
 const warmToggle = document.getElementById("warm-toggle");
 const warmInput = document.getElementById("in-warm");
 const warmLabel = document.getElementById("warm-label");
@@ -129,6 +134,11 @@ let caps = {};
 // Whether a Maven/Gradle build tool is present. When false the canvas runs
 // in degraded mode: Build/Test/Package/Run stay disabled.
 let toolPresent = true;
+// Persisted "Full build" preference (env.settings.fullBuild), on by default.
+// Tracked here so renderStatus can show the toggle unchecked while continuous
+// testing overrides it, then restore the user's choice once continuous testing
+// is turned off.
+let fullBuildSetting = true;
 // Last JDTLS availability snapshot (env.jdtls), used for the toolchain pill.
 let jdtlsState = {};
 
@@ -603,6 +613,8 @@ function renderStatus(s) {
   } else {
     setLaneButton("run", { label: laneLabel.run, disabled: !!restarting.run });
   }
+  // Test-view toggles (Full build / Continuous testing) reflect server state.
+  reflectTestToggles();
   // Header (phase / command / exit / fix) follows the active tab; while the
   // active tab's lane is restarting, show a steady "restarting" phase instead of
   // the momentary failed/idle flicker (and no stale Fix button).
@@ -1062,6 +1074,21 @@ function renderTests(report, opts) {
     return;
   }
   const s = report.summary;
+  // A non-zero exit with no executed tests means the build failed before any test
+  // ran — almost always a compile error. Show that plainly instead of a misleading
+  // "0 tests / no reports" view, and point at the console + Fix button. (A Stop
+  // leaves buildExit null, so an interrupted run never shows as a build failure.)
+  if (report.buildExit != null && report.buildExit !== 0 && s.tests === 0) {
+    testsEl.innerHTML =
+      '<p class="empty bad">Build failed (exit ' +
+      report.buildExit +
+      ") before any tests ran \u2014 check the Maven console above for the error" +
+      ", or click <strong>Fix with Copilot</strong>.</p>";
+    tabBadge.hidden = false;
+    tabBadge.textContent = "!";
+    tabBadge.className = "badge bad";
+    return;
+  }
   const failed = s.failures + s.errors;
   // Tab badge
   tabBadge.hidden = false;
@@ -1105,6 +1132,54 @@ function renderTests(report, opts) {
     html += `</details>`;
   }
   testsEl.innerHTML = html;
+}
+
+// Affected-test selection banner. `sel` is the server's
+// computeAffectedTests() result (or an error/skip variant).
+function renderTestSelection(sel) {
+  if (!testSelectionEl) return;
+  if (!sel || !sel.ok) {
+    testSelectionEl.hidden = false;
+    testSelectionEl.className = "test-selection warn";
+    testSelectionEl.textContent = (sel && sel.message) || "Affected-test selection is unavailable.";
+    return;
+  }
+  if (!sel.sources || !sel.sources.length) {
+    testSelectionEl.hidden = false;
+    testSelectionEl.className = "test-selection warn";
+    testSelectionEl.textContent =
+      sel.changedFiles && sel.changedFiles.length
+        ? "No changed Java/Kotlin sources vs HEAD — nothing to test."
+        : "No uncommitted changes vs HEAD — nothing to test.";
+    return;
+  }
+  const n = (sel.tests || []).length;
+  const files = sel.sources.length;
+  let txt = `Affected: ${n} test class${n === 1 ? "" : "es"} affected by ${files} changed source${files === 1 ? "" : "s"} vs HEAD`;
+  if (sel.fallback) txt += " · name-based (run Build for dependency-accurate selection)";
+  testSelectionEl.hidden = false;
+  testSelectionEl.className = "test-selection" + (n ? "" : " warn");
+  testSelectionEl.textContent = txt;
+}
+
+function hideTestSelection() {
+  if (testSelectionEl) testSelectionEl.hidden = true;
+}
+
+// Sync the two Test-view toggles with server + settings state. Continuous
+// testing always uses affected selection, so while it's on the Full build
+// toggle is forced off and greyed out; turning it off restores the user's
+// persisted choice. Both are disabled when no build tool is present.
+function reflectTestToggles() {
+  if (!fullbuildToggle || !continuousToggle) return;
+  const cont = !!(statusSnap && statusSnap.continuous && statusSnap.continuous.enabled);
+  continuousInput.checked = cont;
+  continuousInput.disabled = !toolPresent;
+  continuousToggle.classList.toggle("disabled", !toolPresent);
+  const fbDisabled = !toolPresent || cont;
+  fullbuildInput.checked = cont ? false : fullBuildSetting;
+  fullbuildInput.disabled = fbDisabled;
+  fullbuildToggle.classList.toggle("disabled", fbDisabled);
 }
 
 function populateModules(modules) {
@@ -1269,6 +1344,8 @@ function applySettingsState(s) {
   devtoolsInput.checked = s.devtools === true;
   randomportInput.checked = s.randomPort === true;
   openBrowserInput.checked = s.openBrowser === true;
+  fullBuildSetting = s.fullBuild === true;
+  reflectTestToggles();
   if (autoProfileInput) autoProfileInput.checked = s.autoProfile === true;
   if (flameEvent && typeof s.autoProfileEvent === "string" && document.activeElement !== flameEvent) {
     flameEvent.value = s.autoProfileEvent;
@@ -1555,6 +1632,15 @@ function laneAction(op) {
   if (busyOp === op) return stopLane("maven", op); // this lane is running → stop it
   if (busyOp) return; // a sibling is running (the button is disabled anyway)
   showTab(op);
+  if (op === "test") {
+    // Continuous testing always uses affected selection; otherwise the Full build
+    // toggle decides between the affected subset (off) and the whole suite (on).
+    const continuousOn = !!(statusSnap && statusSnap.continuous && statusSnap.continuous.enabled);
+    const affected = continuousOn || !fullbuildInput.checked;
+    if (!affected) hideTestSelection();
+    triggerLane("test", "/api/test", { affected, warm: warm(), mavenProfiles: mvnProfiles() });
+    return;
+  }
   triggerLane(op, "/api/" + op, { warm: warm(), mavenProfiles: mvnProfiles() });
 }
 
@@ -1604,6 +1690,7 @@ function saveSettings() {
     devtools: devtoolsInput.checked,
     randomPort: randomportInput.checked,
     openBrowser: openBrowserInput.checked,
+    fullBuild: fullbuildInput.checked,
     autoProfile: autoProfileInput ? autoProfileInput.checked : false,
     autoProfileEvent: flameEvent ? flameEvent.value : "cpu",
     autoProfileDuration: flameDuration ? Number(flameDuration.value) : 30,
@@ -1617,6 +1704,27 @@ springInput.addEventListener("change", saveSettings);
 if (autoProfileInput) autoProfileInput.addEventListener("change", saveSettings);
 if (flameEvent) flameEvent.addEventListener("change", saveSettings);
 if (flameDuration) flameDuration.addEventListener("change", saveSettings);
+
+// "Full build" persists the affected-vs-full-suite preference for the Test button.
+fullbuildInput.addEventListener("change", () => {
+  fullBuildSetting = fullbuildInput.checked === true;
+  saveSettings();
+});
+// "Continuous testing" starts/stops the server-side watch loop. The endpoint
+// returns the authoritative continuous state; apply it immediately (don't wait
+// for the status SSE) so the Full build toggle re-enables and the Test button's
+// affected/full decision is correct the instant the loop stops.
+continuousInput.addEventListener("change", async () => {
+  if (continuousInput.disabled) return;
+  const res = await postJson("/api/test/continuous", {
+    enabled: continuousInput.checked,
+    mavenProfiles: mvnProfiles(),
+  });
+  if (res && res.continuous && statusSnap) {
+    statusSnap.continuous = res.continuous;
+    reflectTestToggles();
+  }
+});
 
 btnFix.onclick = async () => {
   const kind = btnFix.dataset.kind;
@@ -1681,6 +1789,9 @@ es.addEventListener("test-progress", (e) => {
 es.addEventListener("tests", (e) => {
   const report = JSON.parse(e.data);
   renderTests(report, { runnerLabel: lastRunnerLabel });
+});
+es.addEventListener("tests-selection", (e) => {
+  renderTestSelection(JSON.parse(e.data));
 });
 es.addEventListener("env", (e) => {
   // The backend resolves the project root in the background after startup; apply
