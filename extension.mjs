@@ -56,6 +56,28 @@ const isMac = process.platform === "darwin";
 
 const session = await joinSession({ canvases: [makeCanvas()] });
 
+// Safety net: a background failure — a metrics poll, a port probe, a child-process
+// event, or an SSE write to a canvas that went away — must never terminate the
+// process, because that takes down the loopback control server and every later
+// canvas request then fails with "Load failed". Log and keep serving instead.
+// Never console.log here: stdout is the JSON-RPC channel.
+process.on("uncaughtException", (err) => {
+  try {
+    session.log(`[coffilot] uncaught exception (kept the server alive): ${err?.stack || err}`, { level: "error" });
+  } catch {
+    /* logging must never re-throw out of the handler */
+  }
+});
+process.on("unhandledRejection", (reason) => {
+  try {
+    session.log(`[coffilot] unhandled rejection (kept the server alive): ${reason?.stack || reason}`, {
+      level: "error",
+    });
+  } catch {
+    /* ignore */
+  }
+});
+
 // Project marker files used to locate the root and decide the build tool. Defined
 // here (before the resolution below) so findProjectRoot/detectBuildTool can read
 // them without hitting a temporal-dead-zone error during early startup.
@@ -1835,7 +1857,21 @@ function instanceFor(instanceId) {
 function broadcast(event, data) {
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const clients of sseClients.values()) {
-    for (const res of clients) res.write(payload);
+    for (const res of clients) {
+      // A canvas reload (its iframe port/token rotate) or a closed panel can leave
+      // a dead response in the set before its "close" handler fires. Writing to it
+      // throws, so skip ended sockets and drop any that reject the write — a failed
+      // SSE push must never take down the loopback control server.
+      if (res.writableEnded || res.destroyed) {
+        clients.delete(res);
+        continue;
+      }
+      try {
+        res.write(payload);
+      } catch {
+        clients.delete(res);
+      }
+    }
   }
 }
 
@@ -5187,12 +5223,20 @@ const server = createServer(async (req, res) => {
     });
     if (!sseClients.has(instanceId)) sseClients.set(instanceId, new Set());
     sseClients.get(instanceId).add(res);
-    res.write(`event: status\ndata: ${JSON.stringify(statusSnapshot())}\n\n`);
-    res.write(`event: metrics\ndata: ${JSON.stringify(lastMetrics)}\n\n`);
-    res.write(`event: tests\ndata: ${JSON.stringify(lastTestReport)}\n\n`);
-    res.write(`event: debug\ndata: ${JSON.stringify(debugSnapshot())}\n\n`);
-    res.write(`event: profile\ndata: ${JSON.stringify(profilePublic())}\n\n`);
-    req.on("close", () => sseClients.get(instanceId)?.delete(res));
+    // Drop this client on close OR error: a broken SSE socket emits "error"
+    // asynchronously, which would otherwise crash the process (no listener).
+    const drop = () => sseClients.get(instanceId)?.delete(res);
+    res.on("error", drop);
+    req.on("close", drop);
+    try {
+      res.write(`event: status\ndata: ${JSON.stringify(statusSnapshot())}\n\n`);
+      res.write(`event: metrics\ndata: ${JSON.stringify(lastMetrics)}\n\n`);
+      res.write(`event: tests\ndata: ${JSON.stringify(lastTestReport)}\n\n`);
+      res.write(`event: debug\ndata: ${JSON.stringify(debugSnapshot())}\n\n`);
+      res.write(`event: profile\ndata: ${JSON.stringify(profilePublic())}\n\n`);
+    } catch {
+      drop();
+    }
     return;
   }
 
