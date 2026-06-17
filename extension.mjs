@@ -43,6 +43,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createCanvas, joinSession } from "@github/copilot-sdk/extension";
+import { DebugSession } from "./jdwp.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -54,6 +55,28 @@ const isWindows = process.platform === "win32";
 const isMac = process.platform === "darwin";
 
 const session = await joinSession({ canvases: [makeCanvas()] });
+
+// Safety net: a background failure — a metrics poll, a port probe, a child-process
+// event, or an SSE write to a canvas that went away — must never terminate the
+// process, because that takes down the loopback control server and every later
+// canvas request then fails with "Load failed". Log and keep serving instead.
+// Never console.log here: stdout is the JSON-RPC channel.
+process.on("uncaughtException", (err) => {
+  try {
+    session.log(`[coffilot] uncaught exception (kept the server alive): ${err?.stack || err}`, { level: "error" });
+  } catch {
+    /* logging must never re-throw out of the handler */
+  }
+});
+process.on("unhandledRejection", (reason) => {
+  try {
+    session.log(`[coffilot] unhandled rejection (kept the server alive): ${reason?.stack || reason}`, {
+      level: "error",
+    });
+  } catch {
+    /* ignore */
+  }
+});
 
 // Project marker files used to locate the root and decide the build tool. Defined
 // here (before the resolution below) so findProjectRoot/detectBuildTool can read
@@ -203,6 +226,20 @@ function withJLineDumbFlag(args, bin) {
   if (buildTool !== "maven") return args;
   if (/(^|[\\/])java(\.exe)?$/i.test(bin || "")) return args;
   return [JLINE_DUMB_FLAG, ...args];
+}
+
+/** Quote argv elements that contain whitespace for the Windows shell. spawnTool
+ * routes mvnw.cmd / gradlew.bat through cmd.exe (shell: true is required there —
+ * modern Node refuses to spawn .cmd/.bat directly), and the shell re-tokenizes the
+ * joined command line on spaces without quoting args for us. A single argv element
+ * that legitimately contains a space would therefore be split, e.g. the Spring Boot
+ * Maven debug string `-Dspring-boot.run.jvmArguments=<flag> <agent>` or a Gradle
+ * `--init-script <path>` whose temp dir has a space (C:\Users\John Doe\...). Wrap
+ * such args in double quotes. No-op on POSIX (shell: false preserves argv verbatim)
+ * and for already-quoted args. */
+function quoteWinShellArgs(args) {
+  if (!isWindows) return args;
+  return args.map((a) => (typeof a === "string" && /\s/.test(a) && !/^".*"$/.test(a) ? `"${a}"` : a));
 }
 
 /** Decide the build tool for a project root: Maven preferred, else Gradle, else null. */
@@ -1357,6 +1394,7 @@ const lanes = {
   test: newLane("test"),
   package: newLane("package"),
   run: newLane("run"),
+  debug: newLane("debug"),
 };
 
 // Run-lane application state (only meaningful while the app is up).
@@ -1381,6 +1419,15 @@ function mvnLaneBusy() {
 }
 function runLaneBusy() {
   return lanes.run.child !== null;
+}
+function debugLaneBusy() {
+  return lanes.debug.child !== null;
+}
+// The app slot (a single running JVM, tracked by the shared `app` state) is owned
+// by either the Run lane or the Debug lane — never both. Start paths guard on this
+// so Run and Debug stay mutually exclusive.
+function appBusy() {
+  return lanes.run.child !== null || lanes.debug.child !== null;
 }
 
 let testRunStartedAt = 0;
@@ -1432,6 +1479,17 @@ function watchTree(root, onChange) {
     } catch {
       return;
     }
+    // fs.watch emits "error" asynchronously (dir removed, EMFILE/ENOSPC, …); with
+    // no listener Node throws and crashes the process, so swallow it and drop this
+    // directory's watcher — the rest of the tree keeps working.
+    w.on("error", () => {
+      try {
+        w.close();
+      } catch {
+        /* ignore */
+      }
+      watched.delete(dir);
+    });
     watchers.push(w);
     watched.add(dir);
     let entries = [];
@@ -1810,7 +1868,21 @@ function instanceFor(instanceId) {
 function broadcast(event, data) {
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const clients of sseClients.values()) {
-    for (const res of clients) res.write(payload);
+    for (const res of clients) {
+      // A canvas reload (its iframe port/token rotate) or a closed panel can leave
+      // a dead response in the set before its "close" handler fires. Writing to it
+      // throws, so skip ended sockets and drop any that reject the write — a failed
+      // SSE push must never take down the loopback control server.
+      if (res.writableEnded || res.destroyed) {
+        clients.delete(res);
+        continue;
+      }
+      try {
+        res.write(payload);
+      } catch {
+        clients.delete(res);
+      }
+    }
   }
 }
 
@@ -1829,6 +1901,11 @@ function fixInfo(op) {
     }
   }
   if (op === "run" && lane.phase === "failed") {
+    if (app.runMode === "java") return { kind: "run-java", label: "Fix startup failure with Copilot" };
+    if (app.runMode === "quarkus") return { kind: "run-quarkus", label: "Fix Quarkus startup with Copilot" };
+    return { kind: "run-spring", label: "Fix Spring Boot startup with Copilot" };
+  }
+  if (op === "debug" && lane.phase === "failed") {
     if (app.runMode === "java") return { kind: "run-java", label: "Fix startup failure with Copilot" };
     if (app.runMode === "quarkus") return { kind: "run-quarkus", label: "Fix Quarkus startup with Copilot" };
     return { kind: "run-spring", label: "Fix Spring Boot startup with Copilot" };
@@ -1856,6 +1933,14 @@ function laneStatus(op) {
     s.appPort = app.appPort;
     s.appUp = app.appUp;
   }
+  if (op === "debug") {
+    s.runMode = app.runMode;
+    s.appPort = app.appPort;
+    s.appUp = app.appUp;
+    s.paused = !!(debug.session && debug.session.paused);
+    s.attached = !!(debug.session && debug.session.active);
+    s.attaching = debug.attaching;
+  }
   if (op === "test") s.lastTest = lastTest;
   return s;
 }
@@ -1866,6 +1951,7 @@ function statusSnapshot() {
     test: laneStatus("test"),
     package: laneStatus("package"),
     run: laneStatus("run"),
+    debug: laneStatus("debug"),
     metricsTier: lastMetrics.metricsTier || null,
     reload: liveReloadStatus(),
     continuous: continuousStatus(),
@@ -1936,7 +2022,7 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
     lane.console = [];
     session.log(`[coffilot] ${lane.command}`, { level: "info", ephemeral: true });
 
-    const child = spawn(toolBin, withJLineDumbFlag(args, toolBin), {
+    const child = spawn(toolBin, quoteWinShellArgs(withJLineDumbFlag(args, toolBin)), {
       cwd: workspacePath,
       env: env || toolEnv(),
       // mvnw.cmd / mvnd.cmd / gradlew.bat are batch scripts; modern Node refuses
@@ -1955,6 +2041,16 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
     // lane idle for the whole run, leaving the Stop button disabled (and the running
     // spinner / button-greying off) until the process exits.
     broadcast("status", statusSnapshot());
+
+    // Debug lane: the JVM carrying the JDWP agent has just been spawned (phase
+    // "running"). Start the connect-with-retry now — not back in startDebug — so the
+    // attach budget covers JVM startup only. The pure-Java path runs a full build
+    // (phase "building") before this point, which on a cold build can exceed the
+    // attach window; deferring to the running spawn keeps the budget honest. The
+    // loop aborts promptly if this child exits (close handler flips attachCancel).
+    if (op === "debug" && phase === "running" && debug.jdwpPort) {
+      void attachDebugger(debug.jdwpPort).catch(() => {});
+    }
 
     const wire = (stream, name) => {
       let buf = "";
@@ -2002,6 +2098,15 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
         // A run that exits non-zero before the app ever served metrics is a
         // startup crash (surface a Fix button); otherwise it was a clean stop.
         lane.phase = code === 0 || app.appReachedUp ? "stopped" : "failed";
+        // The debug JVM exited: stop the connect-retry loop and clean up the
+        // generated init script. The JDWP socket dropping triggers the session's
+        // onClosed too, but a crash before attach never opens it, so do it here.
+        if (op === "debug") {
+          debug.attachCancel.aborted = true;
+          debug.attaching = false;
+          cleanupDebugInitScript();
+          broadcastDebug();
+        }
       } else {
         lane.phase = code === 0 ? "idle" : "failed";
       }
@@ -2018,8 +2123,8 @@ function tail(op = "build", n = 25) {
 // Pick the lane an agent status check most likely cares about: a failed lane
 // first, then a busy one, else build.
 function mostRelevantOp() {
-  for (const o of ["build", "test", "package", "run"]) if (lanes[o].phase === "failed") return o;
-  for (const o of ["run", "test", "package", "build"]) if (lanes[o].child) return o;
+  for (const o of ["build", "test", "package", "run", "debug"]) if (lanes[o].phase === "failed") return o;
+  for (const o of ["run", "debug", "test", "package", "build"]) if (lanes[o].child) return o;
   return "build";
 }
 
@@ -2824,13 +2929,21 @@ async function runAffectedTestsCore(warm, mavenProfiles, opts = {}) {
   }
 }
 
-async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
+async function startApp({ module, profiles, mavenProfiles, mode, dbg = null } = {}) {
+  const op = dbg ? "debug" : "run";
   if (!buildTool) {
-    pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "run");
+    pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", op);
     return noToolResult();
   }
-  if (runLaneBusy()) return { ok: false, error: "The app is already running. Stop it first." };
-  lanes.run.warm = false;
+  if (appBusy()) {
+    return {
+      ok: false,
+      error: debugLaneBusy()
+        ? "A debug session is already running. Stop it first."
+        : "The app is already running. Stop it first.",
+    };
+  }
+  lanes[op].warm = false;
   app.appPort = null;
   app.appUp = false;
   app.appReachedUp = false;
@@ -2861,6 +2974,8 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
       // (SPRING_PROFILES_ACTIVE / SERVER_PORT) to avoid cross-platform --args
       // quoting pitfalls.
       const args = [gradleTaskPath(module, "bootRun"), "--console=plain"];
+      // Debug: an init script adds the JDWP agent to the forked bootRun JVM.
+      if (dbg) args.push("--init-script", gradleDebugInitScript(dbg));
       const extra = {};
       if (profiles) extra.SPRING_PROFILES_ACTIVE = profiles;
       if (settings.randomPort) {
@@ -2872,11 +2987,13 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
         }
         if (port) {
           extra.SERVER_PORT = String(port);
-          pushConsole(`[coffilot] using HTTP port ${port} via SERVER_PORT.`, "stdout", "run");
+          pushConsole(`[coffilot] using HTTP port ${port} via SERVER_PORT.`, "stdout", op);
         }
       }
-      spawnTool("run", args, "running", { bin: r.bin, label: r.label, env: toolEnv(extra), onLine: detectPort });
-      if (settings.devtools && mod && mod.devtools) {
+      spawnTool(op, args, "running", { bin: r.bin, label: r.label, env: toolEnv(extra), onLine: detectPort });
+      // Live reload would recompile and restart the JVM, dropping the debug
+      // session — keep it off while debugging.
+      if (!dbg && settings.devtools && mod && mod.devtools) {
         startLiveReload({ module: module || "", mavenProfiles, bin: r.bin, label: r.label });
       }
       return { ok: true, started: true, mode: "spring", command: `${r.label} ${args.join(" ")}` };
@@ -2888,8 +3005,10 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
     args.push("-Dmaven.test.skip=true", "spring-boot:run");
     if (profiles) args.push(`-Dspring-boot.run.profiles=${profiles}`);
     // Pass the native-access flag to the forked app JVM so its FFM-using
-    // dependencies don't print restricted-method warnings.
-    args.push(`-Dspring-boot.run.jvmArguments=${NATIVE_ACCESS_FLAG}`);
+    // dependencies don't print restricted-method warnings; in Debug mode the JDWP
+    // agent rides along on the same jvmArguments string.
+    const jvmArgs = dbg ? `${NATIVE_ACCESS_FLAG} ${jdwpAgentArg(dbg)}` : NATIVE_ACCESS_FLAG;
+    args.push(`-Dspring-boot.run.jvmArguments=${jvmArgs}`);
     // "Use a random HTTP port": run on a free port the console picks (via
     // server.port) so the app doesn't collide with whatever owns the default.
     if (settings.randomPort) {
@@ -2900,12 +3019,12 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
         /* fall back to server.port=0 (Spring picks one; detectPort reads it) */
       }
       args.push(`-Dspring-boot.run.arguments=--server.port=${port}`);
-      pushConsole(`[coffilot] using HTTP port ${port || "(random)"} via server.port.`, "stdout", "run");
+      pushConsole(`[coffilot] using HTTP port ${port || "(random)"} via server.port.`, "stdout", op);
     }
-    spawnTool("run", args, "running", { onLine: detectPort }); // fire-and-forget
+    spawnTool(op, args, "running", { onLine: detectPort }); // fire-and-forget
     // DevTools restarts in place when target/classes changes, so watch sources
-    // and recompile on save to drive that loop automatically.
-    if (settings.devtools && mod && mod.devtools) {
+    // and recompile on save to drive that loop automatically (off while debugging).
+    if (!dbg && settings.devtools && mod && mod.devtools) {
       const lr = resolveRunner(true);
       startLiveReload({ module: module || "", mavenProfiles, bin: lr.bin, label: lr.label });
     }
@@ -2915,11 +3034,14 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
   if (resolved === "quarkus") {
     // Quarkus dev mode (quarkus:dev / quarkusDev) runs the app in the foreground
     // with built-in live reload — no DevTools-style recompile loop needed. The
-    // active config profile and HTTP port flow through -D / env vars.
+    // active config profile and HTTP port flow through -D / env vars. Debug uses
+    // Quarkus's built-in JDWP support (-Ddebug=<port> -Dsuspend=<y|n>), which it
+    // binds to localhost.
     const r = resolveRunner(false);
+    const quarkusDebug = dbg ? [`-Ddebug=${dbg.jdwpPort}`, `-Dsuspend=${dbg.suspend ? "y" : "n"}`] : [];
 
     if (buildTool === "gradle") {
-      const args = [gradleTaskPath(module, "quarkusDev"), "--console=plain"];
+      const args = [gradleTaskPath(module, "quarkusDev"), "--console=plain", ...quarkusDebug];
       const extra = {};
       if (profiles) extra.QUARKUS_PROFILE = profiles;
       if (settings.randomPort) {
@@ -2931,10 +3053,10 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
         }
         if (port) {
           extra.QUARKUS_HTTP_PORT = String(port);
-          pushConsole(`[coffilot] using HTTP port ${port} via QUARKUS_HTTP_PORT.`, "stdout", "run");
+          pushConsole(`[coffilot] using HTTP port ${port} via QUARKUS_HTTP_PORT.`, "stdout", op);
         }
       }
-      spawnTool("run", args, "running", { bin: r.bin, label: r.label, env: toolEnv(extra), onLine: detectPort });
+      spawnTool(op, args, "running", { bin: r.bin, label: r.label, env: toolEnv(extra), onLine: detectPort });
       return { ok: true, started: true, mode: "quarkus", command: `${r.label} ${args.join(" ")}` };
     }
 
@@ -2942,6 +3064,7 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
     if (module) args.push("-pl", module);
     if (mavenProfiles && mavenProfiles.trim()) args.push("-P", mavenProfiles.trim());
     if (profiles) args.push(`-Dquarkus.profile=${profiles}`);
+    args.push(...quarkusDebug);
     if (settings.randomPort) {
       let port = 0;
       try {
@@ -2951,32 +3074,33 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
       }
       if (port) {
         args.push(`-Dquarkus.http.port=${port}`);
-        pushConsole(`[coffilot] using HTTP port ${port} via quarkus.http.port.`, "stdout", "run");
+        pushConsole(`[coffilot] using HTTP port ${port} via quarkus.http.port.`, "stdout", op);
       }
     }
     args.push("quarkus:dev");
-    spawnTool("run", args, "running", { onLine: detectPort }); // fire-and-forget
+    spawnTool(op, args, "running", { onLine: detectPort }); // fire-and-forget
     return { ok: true, started: true, mode: "quarkus", command: `${baseRunner().label} ${args.join(" ")}` };
   }
 
   // Non-Spring: hand off to the generic runner (Gradle application run /
   // executable jar via java -jar / configured main class via java -cp).
-  runPureJava({ module, mavenProfiles });
+  runPureJava({ module, mavenProfiles, dbg });
   return { ok: true, started: true, mode: "java" };
 }
 
-/** Mark the Run lane failed with a console message (used by the generic runner
- * when it can't find anything launchable). */
-function failRunLane(msg) {
-  pushConsole(`[coffilot] ${msg}`, "stderr", "run");
-  lanes.run.phase = "failed";
-  lanes.run.exitCode = -1;
+/** Mark the Run/Debug lane failed with a console message (used by the generic
+ * runner when it can't find anything launchable). */
+function failRunLane(msg, op = "run") {
+  pushConsole(`[coffilot] ${msg}`, "stderr", op);
+  lanes[op].phase = "failed";
+  lanes[op].exitCode = -1;
   broadcast("status", statusSnapshot());
 }
 
 /** Two-phase pure-Java launch for non-Spring modules. Both phases run on the
- * independent Run lane so launching the app never blocks (or is blocked by) a
- * Build/Test on the shared build lane. The launch strategy degrades by capability:
+ * independent Run lane (or the Debug lane when `dbg` is set) so launching the app
+ * never blocks (or is blocked by) a Build/Test on the shared build lane. The
+ * launch strategy degrades by capability:
  *   1. Gradle `application` plugin  -> `gradle :module:run` (resolves classpath +
  *      main class and forks the app JVM — the canonical generic launcher).
  *   2. An executable jar            -> `java -jar <jar>` (fat/shaded jars, or a jar
@@ -2984,8 +3108,12 @@ function failRunLane(msg) {
  *   3. A configured main class      -> `java -cp <runtime classpath> <mainClass>`
  *      (Maven reconstructs the classpath via dependency:build-classpath; Gradle
  *      falls back to compiled classes + resources).
- * If none apply, the lane fails with actionable guidance. */
-async function runPureJava({ module, mavenProfiles }) {
+ * If none apply, the lane fails with actionable guidance. When `dbg` is set the
+ * JDWP agent is injected (Gradle `run` via an init script, plain `java` via an
+ * argv flag). */
+async function runPureJava({ module, mavenProfiles, dbg = null }) {
+  const op = dbg ? "debug" : "run";
+  const javaAgent = dbg ? [jdwpAgentArg(dbg)] : [];
   app.runMode = "java";
   const mod = listModules().find((m) => m.name === (module || "")) || null;
 
@@ -2993,8 +3121,10 @@ async function runPureJava({ module, mavenProfiles }) {
   if (buildTool === "gradle" && mod && mod.application) {
     const r = resolveRunner(false);
     const task = gradleTaskPath(module, "run");
-    pushConsole(`[coffilot] launching via the Gradle application plugin (${task}).`, "stdout", "run");
-    spawnTool("run", [task, "--console=plain"], "running", {
+    pushConsole(`[coffilot] launching via the Gradle application plugin (${task}).`, "stdout", op);
+    const args = [task, "--console=plain"];
+    if (dbg) args.push("--init-script", gradleDebugInitScript(dbg));
+    spawnTool(op, args, "running", {
       bin: r.bin,
       label: r.label,
       env: toolEnv(),
@@ -3007,21 +3137,21 @@ async function runPureJava({ module, mavenProfiles }) {
   if (buildTool === "gradle") {
     const r = resolveRunner(false);
     const buildArgs = [gradleTaskPath(module, "build"), "-x", "test", "--console=plain"];
-    const code = await spawnTool("run", buildArgs, "building", { bin: r.bin, label: r.label });
+    const code = await spawnTool(op, buildArgs, "building", { bin: r.bin, label: r.label });
     if (code !== 0) return; // run lane already 'failed' -> "fix startup" path
   } else {
     const pkg = ["-ntp", "-Dmaven.test.skip=true"];
     if (module) pkg.push("-pl", module);
     if (mavenProfiles && mavenProfiles.trim()) pkg.push("-P", mavenProfiles.trim());
     pkg.push("package");
-    const code = await spawnTool("run", pkg, "building", {});
+    const code = await spawnTool(op, pkg, "building", {});
     if (code !== 0) return; // run lane already 'failed' -> "fix startup" path
   }
 
   // 2. Prefer an executable jar (its manifest declares a Main-Class).
   const found = await findLaunchJar(module);
   if (found && found.mainClass) {
-    spawnTool("run", [NATIVE_ACCESS_FLAG, "-jar", found.jar], "running", {
+    spawnTool(op, [...javaAgent, NATIVE_ACCESS_FLAG, "-jar", found.jar], "running", {
       bin: "java",
       label: "java",
       onLine: detectPort,
@@ -3032,10 +3162,10 @@ async function runPureJava({ module, mavenProfiles }) {
   // 3. No executable jar — launch a configured main class on a runtime classpath.
   const mainClass = mod && mod.mainClass;
   if (mainClass) {
-    const cp = await runtimeClasspath(module, mavenProfiles);
+    const cp = await runtimeClasspath(module, mavenProfiles, op);
     if (cp) {
-      pushConsole(`[coffilot] launching ${mainClass} with java -cp.`, "stdout", "run");
-      spawnTool("run", [NATIVE_ACCESS_FLAG, "-cp", cp, mainClass], "running", {
+      pushConsole(`[coffilot] launching ${mainClass} with java -cp.`, "stdout", op);
+      spawnTool(op, [...javaAgent, NATIVE_ACCESS_FLAG, "-cp", cp, mainClass], "running", {
         bin: "java",
         label: "java",
         onLine: detectPort,
@@ -3052,9 +3182,9 @@ async function runPureJava({ module, mavenProfiles }) {
     pushConsole(
       "[coffilot] no executable manifest or configured main class confirmed; attempting java -jar as a fallback.",
       "stdout",
-      "run",
+      op,
     );
-    spawnTool("run", [NATIVE_ACCESS_FLAG, "-jar", found.jar], "running", {
+    spawnTool(op, [...javaAgent, NATIVE_ACCESS_FLAG, "-jar", found.jar], "running", {
       bin: "java",
       label: "java",
       onLine: detectPort,
@@ -3070,6 +3200,7 @@ async function runPureJava({ module, mavenProfiles }) {
       : "set a `<mainClass>` on the Maven Jar/Shade/Assembly plugin, or an `<exec.mainClass>` property";
   failRunLane(
     `no runnable .jar under ${dirLabel} and no main class is configured for this module — ${hint}, then Run again.`,
+    op,
   );
 }
 
@@ -3078,7 +3209,7 @@ async function runPureJava({ module, mavenProfiles }) {
  * prepends the module's compiled classes. Gradle (without the application plugin,
  * which would otherwise be used) can't resolve external dependencies cheaply, so
  * it falls back to the compiled classes + resources and warns. */
-async function runtimeClasspath(module, mavenProfiles) {
+async function runtimeClasspath(module, mavenProfiles, op = "run") {
   const moduleDir = path.join(workspacePath, module || "");
   if (buildTool === "gradle") {
     const classes = path.join(moduleDir, "build", "classes", "java", "main");
@@ -3087,7 +3218,7 @@ async function runtimeClasspath(module, mavenProfiles) {
       "[coffilot] no application plugin detected; launching with compiled classes only — external dependencies may be missing. " +
         "Apply the Gradle `application` plugin for a complete runtime classpath.",
       "stderr",
-      "run",
+      op,
     );
     return [classes, resources].filter(existsSync).join(path.delimiter) || classes;
   }
@@ -3097,7 +3228,7 @@ async function runtimeClasspath(module, mavenProfiles) {
   if (module) args.push("-pl", module);
   if (mavenProfiles && mavenProfiles.trim()) args.push("-P", mavenProfiles.trim());
   args.push("dependency:build-classpath", `-Dmdep.outputFile=${cpFile}`, "-Dmdep.includeScope=runtime");
-  const code = await spawnTool("run", args, "building", {});
+  const code = await spawnTool(op, args, "building", {});
   let deps = "";
   try {
     deps = readFileSync(cpFile, "utf8").trim();
@@ -3203,6 +3334,204 @@ function readZipEntry(zipPath, entryName) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Debug lane (JDWP) — launch the app with the JDWP agent enabled and drive a
+// debug session (breakpoints, stepping, stack, locals, evaluate) through the
+// self-contained engine in jdwp.mjs. Mutually exclusive with Run: both share the
+// single app slot (the shared `app` state: port, mode, live metrics), so only
+// one of them owns the running JVM at a time. The JDWP transport binds to
+// 127.0.0.1 only.
+// ---------------------------------------------------------------------------
+
+const debug = {
+  session: null, // DebugSession (created lazily; reused across VM restarts so breakpoints persist)
+  jdwpPort: null, // loopback JDWP port for the current/last launch
+  suspend: false, // suspend-on-start (pause at the very first instruction)
+  attaching: false, // true while the connect-with-retry loop runs
+  attachCancel: { aborted: false }, // flipped to stop the connect loop if the launch exits early
+  initScript: null, // generated Gradle init-script path to clean up
+};
+
+/** The JDWP agent argument injected into the app JVM. server=y means the JVM
+ * listens; we connect to it. suspend=y holds the VM at startup until we attach. */
+function jdwpAgentArg(dbg) {
+  return `-agentlib:jdwp=transport=dt_socket,server=y,suspend=${dbg.suspend ? "y" : "n"},address=127.0.0.1:${dbg.jdwpPort}`;
+}
+
+/** Write a throwaway Gradle init script that adds the JDWP agent (and the
+ * native-access flag) to the forked app JVM of JavaExec-typed run tasks
+ * (bootRun / run). Quarkus uses -Ddebug instead, so quarkusDev isn't matched. */
+function gradleDebugInitScript(dbg) {
+  const flags = [NATIVE_ACCESS_FLAG, jdwpAgentArg(dbg)];
+  const body = [
+    "gradle.allprojects {",
+    "  tasks.matching { it.name == 'bootRun' || it.name == 'run' }.configureEach { t ->",
+    "    if (t instanceof JavaExec) {",
+    `      t.jvmArgs(${JSON.stringify(flags)})`,
+    "    }",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+  const file = path.join(os.tmpdir(), `coffilot-debug-${process.pid}-${dbg.jdwpPort}.gradle`);
+  writeFileSync(file, body);
+  debug.initScript = file;
+  return file;
+}
+
+function cleanupDebugInitScript() {
+  if (!debug.initScript) return;
+  try {
+    if (existsSync(debug.initScript)) unlinkSync(debug.initScript);
+  } catch {
+    /* best-effort */
+  }
+  debug.initScript = null;
+}
+
+/** Create the DebugSession once and reuse it for the extension's lifetime so
+ * breakpoints set before/between launches survive. The engine's connect() resets
+ * per-session install state, so the same object reconnects cleanly to a new VM. */
+function ensureDebugSession() {
+  if (debug.session) return debug.session;
+  debug.session = new DebugSession({
+    log: (m) => pushConsole(`[debug] ${m}`, "stdout", "debug"),
+    onPaused: () => broadcastDebug(),
+    onResumed: () => broadcastDebug(),
+    onBreakpoints: () => broadcastDebug(),
+    onClosed: () => onDebugVmClosed(),
+  });
+  return debug.session;
+}
+
+function debugSnapshot() {
+  const s = debug.session;
+  const base = s
+    ? s.snapshot()
+    : { active: false, paused: false, stoppedReason: null, thread: null, location: null, frames: [], breakpoints: [] };
+  return {
+    laneBusy: lanes.debug.child !== null,
+    attaching: debug.attaching,
+    port: debug.jdwpPort,
+    suspend: debug.suspend,
+    ...base,
+  };
+}
+
+function broadcastDebug() {
+  broadcast("debug", debugSnapshot());
+  // The Debug lane header (running / paused) lives in the shared status too.
+  broadcast("status", statusSnapshot());
+}
+
+// The JDWP socket dropped — usually the debuggee VM exited. Keep the session
+// object (and its breakpoint specs) for the next launch; just reflect the state.
+function onDebugVmClosed() {
+  debug.attaching = false;
+  pushConsole("[debug] debug session ended (VM disconnected)", "stdout", "debug");
+  broadcastDebug();
+}
+
+/** Launch the app with JDWP enabled and attach the debugger. Mutually exclusive
+ * with Run. Returns once the JVM has been launched; the connect-with-retry runs
+ * in the background and broadcasts when attached. */
+async function startDebug({ module, profiles, mavenProfiles, mode, suspend } = {}) {
+  if (!buildTool) {
+    pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "debug");
+    return noToolResult();
+  }
+  if (appBusy()) {
+    return {
+      ok: false,
+      error: debugLaneBusy()
+        ? "A debug session is already running. Stop it first."
+        : "The app is already running. Stop it first.",
+    };
+  }
+  let jdwpPort;
+  try {
+    jdwpPort = await freePort();
+  } catch {
+    return { ok: false, error: "Could not reserve a loopback port for the debugger." };
+  }
+  debug.jdwpPort = jdwpPort;
+  debug.suspend = suspend === true;
+  debug.attaching = false;
+  debug.attachCancel = { aborted: false };
+  ensureDebugSession();
+  cleanupDebugInitScript();
+
+  pushConsole(
+    `[coffilot] starting debug session (JDWP on 127.0.0.1:${jdwpPort}, suspend=${debug.suspend ? "y" : "n"})`,
+    "stdout",
+    "debug",
+  );
+  const dbg = { jdwpPort, suspend: debug.suspend };
+  const res = await startApp({ module, profiles, mavenProfiles, mode, dbg });
+  if (!res || res.ok === false) {
+    cleanupDebugInitScript();
+    return res || { ok: false, error: "Failed to start the app for debugging." };
+  }
+  // The connect-with-retry is kicked off by spawnTool the moment the app JVM
+  // (phase "running") is spawned, so the attach budget covers JVM startup only —
+  // never a long preceding build. Nothing more to do here.
+  return { ok: true, started: true, debug: true, port: jdwpPort, suspend: debug.suspend, mode: res.mode };
+}
+
+async function attachDebugger(jdwpPort) {
+  const sess = ensureDebugSession();
+  // spawnTool fires this once per "running" spawn; guard against a re-entrant
+  // call while a connect loop is already in flight.
+  if (debug.attaching) return;
+  debug.attaching = true;
+  broadcastDebug();
+  try {
+    // Generous budget (~10 min) so even a cold compile inside the run wrapper
+    // (Spring/Quarkus build the app during the "running" phase) is covered. The
+    // loop exits early when the launch child dies: its close handler flips
+    // attachCancel.aborted, which connect() honors between attempts.
+    await sess.connect("127.0.0.1", jdwpPort, { retries: 4000, delayMs: 150, signal: debug.attachCancel });
+    debug.attaching = false;
+    pushConsole(`[debug] debugger attached on 127.0.0.1:${jdwpPort}`, "stdout", "debug");
+    broadcastDebug();
+  } catch (e) {
+    debug.attaching = false;
+    if (!debug.attachCancel.aborted) {
+      pushConsole(`[debug] could not attach the debugger: ${e.message}`, "stderr", "debug");
+    }
+    broadcastDebug();
+  }
+}
+
+/** Stop the debug session: cancel any pending attach, drop the JDWP connection,
+ * and kill the app JVM. Breakpoint specs persist for the next session. */
+function stopDebug() {
+  debug.attachCancel.aborted = true;
+  debug.attaching = false;
+  if (debug.session) {
+    try {
+      debug.session.dispose();
+    } catch {
+      /* ignore */
+    }
+  }
+  cleanupDebugInitScript();
+  const res = stopApp("debug");
+  broadcastDebug();
+  return res.stopped
+    ? { ok: true, stopped: true }
+    : { ok: true, stopped: false, note: "No debug session was running." };
+}
+
+// Guard helper for the per-action debug endpoints: there must be a live,
+// attached session to control.
+function withDebugSession(fn) {
+  if (!debug.session || !debug.session.active) {
+    return { ok: false, error: "No debug session is attached. Start Debug first." };
+  }
+  return fn(debug.session);
+}
+
 /** SIGTERM (then SIGKILL) a child process tree, cross-platform. */
 function killChild(child) {
   if (!child) return;
@@ -3210,7 +3539,9 @@ function killChild(child) {
     // shell:true means child is cmd.exe; kill the whole tree by PID so the
     // spawned Maven/Java processes don't get orphaned.
     try {
-      spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"]);
+      // .on("error") so a failed taskkill spawn (emitted asynchronously) can't
+      // crash the process; the try/catch only covers a synchronous spawn throw.
+      spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"]).on("error", () => {});
     } catch {
       /* ignore */
     }
@@ -3302,11 +3633,11 @@ function stopApp(op) {
   let targets;
   if (op === "maven" || op === "build-group") targets = ["build", "test", "package"];
   else if (op && lanes[op]) targets = [op];
-  else targets = ["build", "test", "package", "run"];
+  else targets = ["build", "test", "package", "run", "debug"];
   let stopped = false;
   let warmBuildOp = null; // a build lane whose work is inside a daemon
   for (const o of targets) {
-    if (o === "run") {
+    if (o === "run" || o === "debug") {
       stopMetricsPolling();
       stopLiveReload();
       if (profileChild) {
@@ -3322,7 +3653,7 @@ function stopApp(op) {
     if (child) {
       killChild(child);
       stopped = true;
-      if (o !== "run" && lane.warm) warmBuildOp = o;
+      if (o !== "run" && o !== "debug" && lane.warm) warmBuildOp = o;
     }
   }
   // Build lanes are serialized, so at most one warm daemon build is ever live.
@@ -3368,6 +3699,13 @@ async function restart(op, params = {}) {
     }
     return startApp(params);
   }
+  if (op === "debug") {
+    stopDebug();
+    if (!(await waitForLaneIdle(debugLaneBusy))) {
+      return { ok: false, error: "Timed out stopping the debug session; press Stop, then Debug." };
+    }
+    return startDebug(params);
+  }
   if (!["build", "test", "package"].includes(op)) {
     return { ok: false, error: `Cannot restart "${op}".` };
   }
@@ -3407,6 +3745,13 @@ function gracefulShutdown(signal) {
     /* host channel may already be gone */
   }
   stopApp(); // SIGTERM every lane + stop metrics polling / live reload timers
+  debug.attachCancel.aborted = true;
+  try {
+    debug.session?.dispose();
+  } catch {
+    /* ignore */
+  }
+  cleanupDebugInitScript();
   // Don't block on killChild's 5s SIGKILL escalation; exit promptly. The "exit"
   // handler below force-kills anything still alive as a last resort.
   setTimeout(() => process.exit(0), 1500).unref();
@@ -3422,7 +3767,7 @@ process.once("SIGINT", () => gracefulShutdown("SIGINT"));
 // tree is still alive, so checking it here would skip the very processes we need
 // to reap.
 process.on("exit", () => {
-  for (const o of ["build", "test", "package", "run"]) {
+  for (const o of ["build", "test", "package", "run", "debug"]) {
     const child = lanes[o].child;
     if (!child || !child.pid) continue;
     try {
@@ -3456,7 +3801,8 @@ function detectPort(line) {
     const m = line.match(re);
     if (m) {
       app.appPort = Number(m[1]);
-      pushConsole(`[coffilot] detected app port ${app.appPort}; polling for live metrics`, "stdout", "run");
+      const portOp = lanes.debug.child ? "debug" : "run";
+      pushConsole(`[coffilot] detected app port ${app.appPort}; polling for live metrics`, "stdout", portOp);
       broadcast("status", statusSnapshot());
       startMetricsPolling();
       return;
@@ -3645,8 +3991,11 @@ async function findTestResultDirs(root, depth, acc = []) {
 
 function startMetricsPolling() {
   stopMetricsPolling();
-  metricsTimer = setInterval(refreshMetrics, 2500);
-  refreshMetrics();
+  // refreshMetrics is async; neither setInterval nor a bare call awaits it, so
+  // guard both so a failed poll can never escape as an unhandled rejection.
+  const poll = () => Promise.resolve(refreshMetrics()).catch(() => {});
+  metricsTimer = setInterval(poll, 2500);
+  poll();
 }
 
 function stopMetricsPolling() {
@@ -4859,7 +5208,7 @@ function sendJson(res, code, data) {
   res.end(JSON.stringify(data));
 }
 
-const server = createServer(async (req, res) => {
+async function handleRequest(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
   if (req.method === "GET" && STATIC_ASSETS[url.pathname]) {
@@ -4890,11 +5239,20 @@ const server = createServer(async (req, res) => {
     });
     if (!sseClients.has(instanceId)) sseClients.set(instanceId, new Set());
     sseClients.get(instanceId).add(res);
-    res.write(`event: status\ndata: ${JSON.stringify(statusSnapshot())}\n\n`);
-    res.write(`event: metrics\ndata: ${JSON.stringify(lastMetrics)}\n\n`);
-    res.write(`event: tests\ndata: ${JSON.stringify(lastTestReport)}\n\n`);
-    res.write(`event: profile\ndata: ${JSON.stringify(profilePublic())}\n\n`);
-    req.on("close", () => sseClients.get(instanceId)?.delete(res));
+    // Drop this client on close OR error: a broken SSE socket emits "error"
+    // asynchronously, which would otherwise crash the process (no listener).
+    const drop = () => sseClients.get(instanceId)?.delete(res);
+    res.on("error", drop);
+    req.on("close", drop);
+    try {
+      res.write(`event: status\ndata: ${JSON.stringify(statusSnapshot())}\n\n`);
+      res.write(`event: metrics\ndata: ${JSON.stringify(lastMetrics)}\n\n`);
+      res.write(`event: tests\ndata: ${JSON.stringify(lastTestReport)}\n\n`);
+      res.write(`event: debug\ndata: ${JSON.stringify(debugSnapshot())}\n\n`);
+      res.write(`event: profile\ndata: ${JSON.stringify(profilePublic())}\n\n`);
+    } catch {
+      drop();
+    }
     return;
   }
 
@@ -4904,8 +5262,15 @@ const server = createServer(async (req, res) => {
       metrics: lastMetrics,
       // Concatenate all lane buffers; each entry is tagged with its op so the
       // UI replays it into the right console.
-      console: [...lanes.build.console, ...lanes.test.console, ...lanes.package.console, ...lanes.run.console],
+      console: [
+        ...lanes.build.console,
+        ...lanes.test.console,
+        ...lanes.package.console,
+        ...lanes.run.console,
+        ...lanes.debug.console,
+      ],
       tests: lastTestReport,
+      debug: debugSnapshot(),
       profile: profilePublic(),
       env: envSnapshot(),
     });
@@ -4975,6 +5340,81 @@ const server = createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/restart") {
     const body = await readBody(req);
     sendJson(res, 200, await restart(body.op, body)); // stop the lane, then relaunch it
+    return;
+  }
+
+  // --- Debug lane (JDWP) ---------------------------------------------------
+  if (req.method === "POST" && url.pathname === "/api/debug/start") {
+    const body = await readBody(req);
+    sendJson(
+      res,
+      200,
+      await startDebug({
+        module: body.module,
+        profiles: body.profiles,
+        mavenProfiles: body.mavenProfiles,
+        mode: body.mode,
+        suspend: body.suspend === true,
+      }),
+    );
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/debug/stop") {
+    sendJson(res, 200, stopDebug());
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/debug/status") {
+    sendJson(res, 200, debugSnapshot());
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/debug/breakpoint") {
+    const body = await readBody(req);
+    if (!body.class || !Number.isInteger(body.line)) {
+      sendJson(res, 200, { ok: false, error: "Provide a class (binary name) and an integer line." });
+      return;
+    }
+    const bp = await ensureDebugSession().addBreakpoint(String(body.class), Number(body.line));
+    sendJson(res, 200, {
+      ok: true,
+      breakpoint: { id: bp.id, class: bp.className, line: bp.line, verified: bp.verified },
+    });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/debug/breakpoint/remove") {
+    const body = await readBody(req);
+    const removed = debug.session ? await debug.session.removeBreakpoint(Number(body.id)) : false;
+    sendJson(res, 200, { ok: true, removed });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/debug/continue") {
+    sendJson(res, 200, await withDebugSession((s) => s.resume()));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/debug/step") {
+    const body = await readBody(req);
+    sendJson(res, 200, await withDebugSession((s) => s.step(body.depth)));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/debug/pause") {
+    sendJson(res, 200, await withDebugSession((s) => s.pause()));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/debug/stack") {
+    sendJson(res, 200, debug.session ? await debug.session.stack() : { paused: false, frames: [] });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/debug/locals") {
+    const frame = Number(url.searchParams.get("frame") || 0) || 0;
+    sendJson(res, 200, await withDebugSession((s) => s.locals(frame)));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/debug/evaluate") {
+    const body = await readBody(req);
+    sendJson(
+      res,
+      200,
+      await withDebugSession((s) => s.evaluate(String(body.expression || ""), Number(body.frame || 0))),
+    );
     return;
   }
 
@@ -5061,6 +5501,28 @@ const server = createServer(async (req, res) => {
 
   res.writeHead(404);
   res.end("Not found");
+}
+
+// Wrap the route handler so a throw in any endpoint (Build/Test/Package/Run/
+// Debug/MCP/…) can't reject an un-awaited promise — which would otherwise crash
+// the process and take the loopback server down. Log it and return a 500 so the
+// canvas stays connected.
+const server = createServer((req, res) => {
+  handleRequest(req, res).catch((err) => {
+    try {
+      session.log(`[coffilot] request handler error on ${req.method} ${req.url}: ${err?.stack || err}`, {
+        level: "error",
+      });
+    } catch {
+      /* logging must never re-throw */
+    }
+    try {
+      if (res.headersSent) res.end();
+      else sendJson(res, 500, { ok: false, error: "Internal error" });
+    } catch {
+      /* the socket is already gone */
+    }
+  });
 });
 
 let serverUrl = null;
@@ -5225,17 +5687,153 @@ function makeCanvas() {
       {
         name: "stop_app",
         description:
-          "Stop a running lane. Pass op=build|test|package|run to stop one, op=maven to stop the build/test/package lane, or omit to stop all.",
+          "Stop a running lane. Pass op=build|test|package|run|debug to stop one, op=maven to stop the build/test/package lane, or omit to stop all.",
         inputSchema: {
           type: "object",
-          properties: { op: { type: "string", enum: ["build", "test", "package", "run", "maven"] } },
+          properties: { op: { type: "string", enum: ["build", "test", "package", "run", "debug", "maven"] } },
         },
         handler: async (ctx) => stopApp(ctx.input?.op),
       },
       {
+        name: "start_debug",
+        description:
+          "Launch the app under the JDWP debugger and attach (mutually exclusive with start_app/Run — stop one before starting the other). Returns immediately; output streams to the canvas and the debugger attaches in the background. Set breakpoints first (set_breakpoint) or use suspend=true to pause at startup, then drive the session with debug_continue, debug_step, debug_stack, get_variables, and debug_evaluate. Spring Boot, Quarkus and plain-Java modules are all supported.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            module: { type: "string", description: "Module to debug (Maven -pl / Gradle subproject, e.g. 'web')." },
+            profiles: {
+              type: "string",
+              description: "Config profile(s) to activate (default 'dev'): Spring profiles or the Quarkus profile.",
+            },
+            mavenProfiles: {
+              type: "string",
+              description: "Maven build profiles to activate via -P (Maven projects only; ignored for Gradle).",
+            },
+            mode: {
+              type: "string",
+              enum: ["spring", "quarkus", "java"],
+              description: "Force the run strategy; defaults to auto-detect from the module.",
+            },
+            suspend: {
+              type: "boolean",
+              description:
+                "Suspend the VM at startup until the debugger attaches (useful to debug early startup code).",
+            },
+          },
+        },
+        handler: async (ctx) =>
+          startDebug({
+            module: ctx.input?.module,
+            profiles: ctx.input?.profiles ?? "dev",
+            mavenProfiles: ctx.input?.mavenProfiles,
+            mode: ctx.input?.mode,
+            suspend: ctx.input?.suspend === true,
+          }),
+      },
+      {
+        name: "stop_debug",
+        description:
+          "Detach the debugger and stop the app JVM started for debugging. Breakpoints are kept for next time.",
+        inputSchema: { type: "object", properties: {} },
+        handler: async () => stopDebug(),
+      },
+      {
+        name: "set_breakpoint",
+        description:
+          "Add a line breakpoint at class:line (class is the binary name, e.g. 'com.example.App' or 'com.example.App$Inner'). Works before or during a debug session; it arms automatically when the class loads. Returns the breakpoint id and whether it is verified (armed).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            class: {
+              type: "string",
+              description: "Fully-qualified binary class name (e.g. com.example.OrderService).",
+            },
+            line: { type: "integer", description: "1-based source line number for the breakpoint." },
+          },
+          required: ["class", "line"],
+        },
+        handler: async (ctx) => {
+          const cls = ctx.input?.class;
+          const line = Number(ctx.input?.line);
+          if (!cls || !Number.isInteger(line)) {
+            return { ok: false, error: "Provide a class (binary name) and an integer line." };
+          }
+          const bp = await ensureDebugSession().addBreakpoint(String(cls), line);
+          return { ok: true, breakpoint: { id: bp.id, class: bp.className, line: bp.line, verified: bp.verified } };
+        },
+      },
+      {
+        name: "remove_breakpoint",
+        description: "Remove a breakpoint by its id (from set_breakpoint or debug_status).",
+        inputSchema: {
+          type: "object",
+          properties: { id: { type: "integer", description: "Breakpoint id to remove." } },
+          required: ["id"],
+        },
+        handler: async (ctx) => {
+          const removed = debug.session ? await debug.session.removeBreakpoint(Number(ctx.input?.id)) : false;
+          return { ok: true, removed };
+        },
+      },
+      {
+        name: "debug_continue",
+        description: "Resume execution from a paused breakpoint/step until the next breakpoint (or the program ends).",
+        inputSchema: { type: "object", properties: {} },
+        handler: async () => withDebugSession((s) => s.resume()),
+      },
+      {
+        name: "debug_step",
+        description:
+          "Single-step the paused thread one source line. depth=over (default) runs called methods without stepping in; into steps into the next call; out runs until the current method returns.",
+        inputSchema: {
+          type: "object",
+          properties: { depth: { type: "string", enum: ["over", "into", "out"], description: "Step granularity." } },
+        },
+        handler: async (ctx) => withDebugSession((s) => s.step(ctx.input?.depth)),
+      },
+      {
+        name: "debug_stack",
+        description: "Return the paused thread's call stack (top frame first: class, method, line).",
+        inputSchema: { type: "object", properties: {} },
+        handler: async () => (debug.session ? debug.session.stack() : { paused: false, frames: [] }),
+      },
+      {
+        name: "get_variables",
+        description:
+          "List local variables (and `this`) visible in a paused stack frame, with values. frame=0 is the top frame (default). Requires classes compiled with debug info (javac -g) for local names.",
+        inputSchema: {
+          type: "object",
+          properties: { frame: { type: "integer", description: "Stack frame index (0 = top). Defaults to 0." } },
+        },
+        handler: async (ctx) => withDebugSession((s) => s.locals(Number(ctx.input?.frame || 0))),
+      },
+      {
+        name: "debug_evaluate",
+        description:
+          "Inspect a local variable or a dotted field path (e.g. 'order.customer.name') in a paused frame. This is a field/variable inspector, not a Java expression compiler — no method calls or arithmetic.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            expression: { type: "string", description: "A local name or dotted field path (e.g. user.address.city)." },
+            frame: { type: "integer", description: "Stack frame index (0 = top). Defaults to 0." },
+          },
+          required: ["expression"],
+        },
+        handler: async (ctx) =>
+          withDebugSession((s) => s.evaluate(String(ctx.input?.expression || ""), Number(ctx.input?.frame || 0))),
+      },
+      {
+        name: "debug_status",
+        description:
+          "Return the debug session state: whether the debugger is attached, whether it is paused (and where), the current stack, and the breakpoint list.",
+        inputSchema: { type: "object", properties: {} },
+        handler: async () => debugSnapshot(),
+      },
+      {
         name: "get_status",
         description:
-          "Return per-lane status (build/test/package/run: phase, last command, exit code, suggested fix), last test summary, live metrics tier, and a recent output tail.",
+          "Return per-lane status (build/test/package/run/debug: phase, last command, exit code, suggested fix), last test summary, live metrics tier, and a recent output tail.",
         inputSchema: { type: "object", properties: {} },
         handler: async () => ({
           ...statusSnapshot(),
@@ -5326,9 +5924,17 @@ function makeCanvas() {
       // during the brief startup window.
       await serverReady;
       const inst = instanceFor(ctx.instanceId);
+      const status =
+        lanes.debug.child && debug.session && debug.session.paused
+          ? "debug: paused"
+          : lanes.debug.child
+            ? `debugging on :${app.appPort ?? "?"}`
+            : lanes.run.phase === "running"
+              ? `running on :${app.appPort ?? "?"}`
+              : lanes.run.phase;
       return {
         title: "Coffilot",
-        status: lanes.run.phase === "running" ? `running on :${app.appPort ?? "?"}` : lanes.run.phase,
+        status,
         url: `${serverUrl}/?instance=${encodeURIComponent(ctx.instanceId)}&token=${inst.token}`,
       };
     },

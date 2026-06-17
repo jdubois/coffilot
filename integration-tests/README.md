@@ -98,7 +98,10 @@ Then open a Copilot session on that project, reload extensions, and open the
 
 - `hello-world` to confirm Build / Test / Package work with no Spring at all.
 - `gradle-hello-world` to confirm the same lanes drive a Gradle project.
-- `spring-mvc` for the Run lane and process-level metrics.
+- `spring-mvc` for the Run lane and process-level metrics. Also the easiest **Debug**
+  check: switch to the Debug tab, add a breakpoint at
+  `com.example.springmvc.HelloController:11`, click **Debug**, then hit `GET /` — the
+  session pauses in `hello()` with the call stack and frame variables shown.
 - `spring-mvc-actuator-devtools` for the Actuator metrics tier.
 - `spring-mvc-bootui` (run with `-Pdev`) for the full BootUI metrics + advisor scan.
 - `quarkus-rest` for the Quarkus Run lane (`quarkus:dev`) and the Quarkus metrics tier.

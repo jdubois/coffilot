@@ -7,7 +7,14 @@ const buildConsoleEl = document.getElementById("build-console");
 const packageConsoleEl = document.getElementById("package-console");
 const testConsoleEl = document.getElementById("test-console");
 const runConsoleEl = document.getElementById("run-console");
-const consoles = { build: buildConsoleEl, package: packageConsoleEl, test: testConsoleEl, run: runConsoleEl };
+const debugConsoleEl = document.getElementById("debug-console");
+const consoles = {
+  build: buildConsoleEl,
+  package: packageConsoleEl,
+  test: testConsoleEl,
+  run: runConsoleEl,
+  debug: debugConsoleEl,
+};
 // Which main tab is active, used as the fallback target for op-less lines.
 let activeTab = "build";
 // Last full status snapshot ({ build, test, package, run, reload }). The
@@ -73,6 +80,29 @@ const autoProfileInput = document.getElementById("in-autoprofile");
 const btnOpenBrowser = document.getElementById("btn-open-browser");
 const btnFix = document.getElementById("btn-fix");
 const btnRun = document.getElementById("btn-run");
+const btnDebug = document.getElementById("btn-debug");
+// Debug-tab controls + state.
+const dbgStateEl = document.getElementById("dbg-state");
+const dbgLocEl = document.getElementById("dbg-loc");
+const dbgSuspendInput = document.getElementById("in-dbg-suspend");
+const btnDbgContinue = document.getElementById("btn-dbg-continue");
+const btnDbgStepOver = document.getElementById("btn-dbg-stepover");
+const btnDbgStepInto = document.getElementById("btn-dbg-stepinto");
+const btnDbgStepOut = document.getElementById("btn-dbg-stepout");
+const btnDbgPause = document.getElementById("btn-dbg-pause");
+const bpClassInput = document.getElementById("in-bp-class");
+const bpLineInput = document.getElementById("in-bp-line");
+const btnBpAdd = document.getElementById("btn-bp-add");
+const bpListEl = document.getElementById("bp-list");
+const dbgStackEl = document.getElementById("dbg-stack");
+const dbgVarsEl = document.getElementById("dbg-vars");
+const dbgFrameLabel = document.getElementById("dbg-frame-label");
+const dbgEvalInput = document.getElementById("in-dbg-eval");
+const btnDbgEval = document.getElementById("btn-dbg-eval");
+const dbgEvalResult = document.getElementById("dbg-eval-result");
+const tabDebugBadge = document.getElementById("tab-debug-badge");
+let debugSnap = null;
+let dbgSelectedFrame = 0;
 // Run-tab flame graph (async-profiler) controls.
 const flameEvent = document.getElementById("flame-event");
 const flameDuration = document.getElementById("flame-duration");
@@ -98,12 +128,14 @@ const btnSpin = {
   test: document.querySelector("#btn-test .btn-spin"),
   package: document.querySelector("#btn-package .btn-spin"),
   run: document.querySelector("#btn-run .btn-spin"),
+  debug: document.querySelector("#btn-debug .btn-spin"),
 };
 const tabSpin = {
   build: document.querySelector('.tab[data-tab="build"] .tab-spin'),
   test: document.querySelector('.tab[data-tab="test"] .tab-spin'),
   package: document.querySelector('.tab[data-tab="package"] .tab-spin'),
   run: document.querySelector('.tab[data-tab="run"] .tab-spin'),
+  debug: document.querySelector('.tab[data-tab="debug"] .tab-spin'),
 };
 // Build/Test/Package share one serialized Maven lane, so while one runs the
 // others are greyed out until it's stopped.
@@ -120,6 +152,7 @@ const triggerButton = {
   test: mvnButtons.test,
   package: mvnButtons.package,
   run: btnRun,
+  debug: btnDebug,
 };
 const capsEl = document.getElementById("caps");
 const metricsSrc = document.getElementById("metrics-src");
@@ -225,6 +258,7 @@ function showTab(name) {
   document.getElementById("package-pane").classList.toggle("active", name === "package");
   document.getElementById("test-pane").classList.toggle("active", name === "test");
   document.getElementById("run-pane").classList.toggle("active", name === "run");
+  document.getElementById("debug-pane").classList.toggle("active", name === "debug");
   // The header (phase/command/exit/fix) follows the active tab, so
   // re-render it for the newly shown lane from the last status snapshot.
   if (statusSnap) renderLaneHeader(statusSnap[name] || {});
@@ -448,13 +482,14 @@ if (logSearchInput) logSearchInput.addEventListener("input", applyLogFilter);
 // spinner the moment it's clicked and clear it when the lane goes idle (or a
 // safety timeout fires, in case the process ignores the stop and the user
 // needs to retry).
-const stopping = { maven: false, run: false };
-const stopTimers = { maven: null, run: null };
+const stopping = { maven: false, run: false, debug: false };
+const stopTimers = { maven: null, run: null, debug: null };
 
 function markStopping(which, op) {
   if (stopping[which]) return;
   stopping[which] = true;
-  appendLine(`[canvas] stopping ${which === "run" ? "the app" : "the build"}\u2026`, "stdout", op);
+  const what = which === "debug" ? "the debugger" : which === "run" ? "the app" : "the build";
+  appendLine(`[canvas] stopping ${what}\u2026`, "stdout", op);
   if (statusSnap) renderStatus(statusSnap);
   clearTimeout(stopTimers[which]);
   stopTimers[which] = setTimeout(() => {
@@ -470,9 +505,9 @@ function clearStopping(which) {
   stopTimers[which] = null;
 }
 
-// Each lane's primary button doubles as Build/Test/Package/Run (idle) and Stop
-// (while that lane is busy), so there's exactly one action per lane.
-const laneLabel = { build: "Build", test: "Run tests", package: "Package", run: "Run" };
+// Each lane's primary button doubles as Build/Test/Package/Run/Debug (idle) and
+// Stop (while that lane is busy), so there's exactly one action per lane.
+const laneLabel = { build: "Build", test: "Run tests", package: "Package", run: "Run", debug: "Debug" };
 function setLaneButton(op, { label, danger, disabled, busyState, title }) {
   const btn = triggerButton[op];
   if (!btn) return;
@@ -492,8 +527,8 @@ function setLaneButton(op, { label, danger, disabled, busyState, title }) {
 // to exit) flips to "starting" the first time the lane reports not-busy, then
 // clears once the relaunch reports busy. A safety timeout is the backstop in
 // case the restart never starts (e.g. it timed out server-side).
-const restarting = { build: false, test: false, package: false, run: false };
-const restartTimers = { build: null, test: null, package: null, run: null };
+const restarting = { build: false, test: false, package: false, run: false, debug: false };
+const restartTimers = { build: null, test: null, package: null, run: null, debug: null };
 
 function markRestarting(op) {
   if (restarting[op]) return;
@@ -519,7 +554,7 @@ function clearRestarting(op) {
 // Advance the restart state machine from the raw (server-reported) busy flags,
 // so the mask drops exactly when the relaunched process is up.
 function syncRestarting(s) {
-  for (const op of ["build", "test", "package", "run"]) {
+  for (const op of ["build", "test", "package", "run", "debug"]) {
     const busy = !!(s[op] && s[op].busy);
     if (restarting[op] === "stopping" && !busy) restarting[op] = "starting";
     else if (restarting[op] === "starting" && busy) clearRestarting(op);
@@ -564,12 +599,13 @@ function renderStatus(s) {
   // Drop the optimistic "stopping" state once the process has actually exited.
   const mvnBusy = laneActive(s, "build") || laneActive(s, "test") || laneActive(s, "package");
   if (stopping.run && !laneActive(s, "run")) clearStopping("run");
+  if (stopping.debug && !laneActive(s, "debug")) clearStopping("debug");
   if (stopping.maven && !mvnBusy) clearStopping("maven");
   // Per-lane spinners on the trigger buttons and tabs (global, so they reflect
   // activity regardless of which tab is showing). The `is-restarting` class
   // turns the trigger's spinner into a rotating restart glyph without touching
   // the label, so the button keeps its width.
-  for (const op of ["build", "test", "package", "run"]) {
+  for (const op of ["build", "test", "package", "run", "debug"]) {
     const active = laneActive(s, op);
     if (btnSpin[op]) btnSpin[op].hidden = !active;
     if (tabSpin[op]) tabSpin[op].hidden = !active;
@@ -599,9 +635,13 @@ function renderStatus(s) {
       setLaneButton(op, { label: laneLabel[op], disabled: !!restarting[op] });
     }
   }
+  // Run and Debug share the single app slot, so they're mutually exclusive: each
+  // trigger restarts its own lane but is locked out while the other owns the app.
+  const runLaneActive = laneActive(s, "run");
+  const debugLaneActive = laneActive(s, "debug");
   if (!toolPresent) {
     setLaneButton("run", { label: laneLabel.run, disabled: true, title: "Coffilot needs a Maven or Gradle project." });
-  } else if (laneActive(s, "run")) {
+  } else if (runLaneActive) {
     const isStopping = stopping.run;
     setLaneButton("run", {
       label: isStopping ? "Stopping\u2026" : "Stop",
@@ -611,10 +651,37 @@ function renderStatus(s) {
       title: isStopping ? "Stopping the app\u2026" : "Stop the running app",
     });
   } else {
-    setLaneButton("run", { label: laneLabel.run, disabled: !!restarting.run });
+    setLaneButton("run", {
+      label: laneLabel.run,
+      disabled: !!restarting.run || debugLaneActive,
+      title: debugLaneActive ? "Stop the debugger first" : "",
+    });
+  }
+  if (!toolPresent) {
+    setLaneButton("debug", {
+      label: laneLabel.debug,
+      disabled: true,
+      title: "Coffilot needs a Maven or Gradle project.",
+    });
+  } else if (debugLaneActive) {
+    const isStopping = stopping.debug;
+    setLaneButton("debug", {
+      label: isStopping ? "Stopping\u2026" : "Stop",
+      danger: true,
+      disabled: isStopping,
+      busyState: isStopping ? "stopping" : "stop",
+      title: isStopping ? "Stopping the debugger\u2026" : "Stop the debug session",
+    });
+  } else {
+    setLaneButton("debug", {
+      label: laneLabel.debug,
+      disabled: !!restarting.debug || runLaneActive,
+      title: runLaneActive ? "Stop the running app first" : "",
+    });
   }
   // Test-view toggles (Full build / Continuous testing) reflect server state.
   reflectTestToggles();
+  renderDebug(debugSnap, s);
   // Header (phase / command / exit / fix) follows the active tab; while the
   // active tab's lane is restarting, show a steady "restarting" phase instead of
   // the momentary failed/idle flicker (and no stale Fix button).
@@ -666,6 +733,170 @@ function mb(bytes) {
 }
 function row(k, v) {
   return `<div class="metric"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+}
+
+// --- Debug lane rendering ----------------------------------------------------
+// Class-name tail (com.example.Foo$Bar -> Foo$Bar) for compact display; the full
+// binary name is kept in the title attribute.
+function shortClass(name) {
+  if (!name) return "";
+  const i = name.lastIndexOf(".");
+  return i === -1 ? name : name.slice(i + 1);
+}
+
+// Tracks the "paused at" identity so we only refetch locals when the stop point
+// (or the selected frame) actually changes, not on every SSE debug push.
+let dbgPausedKey = null;
+
+function renderDebug(d, s) {
+  d = d || debugSnap || {};
+  const attached = !!d.active;
+  const paused = !!d.paused;
+  const debugBusy = !!(d.laneBusy || (s && s.debug && s.debug.busy));
+
+  let state = "not started";
+  let cls = "idle";
+  if (d.attaching) {
+    state = "connecting\u2026";
+    cls = "running";
+  } else if (paused) {
+    state = "paused";
+    cls = "paused";
+  } else if (attached) {
+    state = "running";
+    cls = "running";
+  } else if (debugBusy) {
+    state = "launching\u2026";
+    cls = "running";
+  }
+  dbgStateEl.textContent = state;
+  dbgStateEl.className = "pill " + cls;
+
+  const loc = d.location;
+  dbgLocEl.textContent = loc ? `${shortClass(loc.class)}.${loc.method}:${loc.line}` : "";
+  dbgLocEl.title = loc ? `${loc.class}.${loc.method}:${loc.line}` : "";
+
+  // Stepping/continue only make sense while paused; pause only while running.
+  btnDbgContinue.disabled = !paused;
+  btnDbgStepOver.disabled = !paused;
+  btnDbgStepInto.disabled = !paused;
+  btnDbgStepOut.disabled = !paused;
+  btnDbgPause.disabled = !attached || paused;
+  dbgEvalInput.disabled = !paused;
+  btnDbgEval.disabled = !paused;
+
+  renderBreakpoints(d.breakpoints || []);
+  renderStack(d.frames || [], paused);
+
+  if (paused) {
+    const key = `${loc ? loc.class : ""}:${loc ? loc.line : ""}:${dbgSelectedFrame}`;
+    if (key !== dbgPausedKey) {
+      dbgPausedKey = key;
+      refreshVars();
+    }
+  } else {
+    dbgPausedKey = null;
+    dbgSelectedFrame = 0;
+    dbgFrameLabel.textContent = "";
+    dbgVarsEl.innerHTML = `<li class="empty">Variables appear while paused at a breakpoint.</li>`;
+  }
+
+  const bpN = (d.breakpoints || []).length;
+  if (paused) {
+    tabDebugBadge.hidden = false;
+    tabDebugBadge.textContent = "\u25cf";
+    tabDebugBadge.className = "badge paused";
+    tabDebugBadge.title = "Paused at a breakpoint";
+  } else if (bpN) {
+    tabDebugBadge.hidden = false;
+    tabDebugBadge.textContent = String(bpN);
+    tabDebugBadge.className = "badge";
+    tabDebugBadge.title = `${bpN} breakpoint${bpN === 1 ? "" : "s"}`;
+  } else {
+    tabDebugBadge.hidden = true;
+  }
+}
+
+function renderBreakpoints(list) {
+  if (!list.length) {
+    bpListEl.innerHTML = `<li class="empty">No breakpoints. Add a class (binary name) and a line above.</li>`;
+    return;
+  }
+  bpListEl.innerHTML = list
+    .map((b) => {
+      const status = b.error
+        ? `<span class="bp-status error" title="${esc(b.error)}">error</span>`
+        : b.verified
+          ? `<span class="bp-status ok">armed</span>`
+          : `<span class="bp-status pending">pending</span>`;
+      return `<li class="bp-row" data-id="${b.id}">
+        <span class="bp-where" title="${esc(b.class)}:${b.line}"><span class="bp-class">${esc(shortClass(b.class))}</span><span class="bp-line">:${b.line}</span></span>
+        ${status}
+        <button class="bp-remove" data-id="${b.id}" title="Remove breakpoint">\u2715</button>
+      </li>`;
+    })
+    .join("");
+  bpListEl.querySelectorAll(".bp-remove").forEach((btn) => {
+    btn.onclick = () => post("/api/debug/breakpoint/remove", { id: Number(btn.dataset.id) });
+  });
+}
+
+function renderStack(frames, paused) {
+  if (!paused || !frames.length) {
+    dbgStackEl.innerHTML = `<li class="empty">${paused ? "No frames." : "The call stack appears while paused."}</li>`;
+    return;
+  }
+  if (dbgSelectedFrame >= frames.length) dbgSelectedFrame = 0;
+  dbgStackEl.innerHTML = frames
+    .map((f) => {
+      const where = f.native ? "(native)" : `${esc(shortClass(f.class))}.${esc(f.method)}:${f.line}`;
+      const sel = f.index === dbgSelectedFrame ? " selected" : "";
+      return `<li class="stack-frame${sel}" data-index="${f.index}" title="${esc(f.class)}.${esc(f.method)}">
+        <span class="frame-idx">${f.index}</span><span class="frame-where">${where}</span>
+      </li>`;
+    })
+    .join("");
+  dbgStackEl.querySelectorAll(".stack-frame").forEach((li) => {
+    li.onclick = () => {
+      const idx = Number(li.dataset.index);
+      if (idx === dbgSelectedFrame) return;
+      dbgSelectedFrame = idx;
+      dbgPausedKey = null; // force a locals refresh for the newly selected frame
+      if (debugSnap) renderDebug(debugSnap, statusSnap);
+    };
+  });
+}
+
+// Fetch + render locals for the selected frame (only meaningful while paused).
+async function refreshVars() {
+  dbgFrameLabel.textContent = ` \u00b7 frame ${dbgSelectedFrame}`;
+  dbgVarsEl.innerHTML = `<li class="empty">Loading variables\u2026</li>`;
+  let r;
+  try {
+    r = await (await fetch(`/api/debug/locals?frame=${dbgSelectedFrame}&${qs}`)).json();
+  } catch (e) {
+    dbgVarsEl.innerHTML = `<li class="empty">Could not read variables: ${esc(e.message)}</li>`;
+    return;
+  }
+  if (!r || r.ok === false) {
+    dbgVarsEl.innerHTML = `<li class="empty">${esc((r && r.error) || "No variables.")}</li>`;
+    return;
+  }
+  const vars = r.variables || [];
+  if (!vars.length) {
+    dbgVarsEl.innerHTML = `<li class="empty">${esc(r.note || "No variables in this frame.")}</li>`;
+    return;
+  }
+  dbgVarsEl.innerHTML = vars
+    .map(
+      (v) => `<li class="var-row">
+      <span class="var-name">${esc(v.name)}</span>
+      <span class="var-type">${esc(v.type || "")}</span>
+      <span class="var-value" title="${esc(v.value)}">${esc(v.value)}</span>
+    </li>`,
+    )
+    .join("");
+  if (r.note) dbgVarsEl.innerHTML += `<li class="empty">${esc(r.note)}</li>`;
 }
 
 // Last rendered heap-fill width (%). The metrics panel is rebuilt from scratch
@@ -1379,6 +1610,7 @@ function applyEnv(env) {
   toolPresent = !!(env && env.buildTool);
   if (noToolBanner) noToolBanner.hidden = toolPresent;
   btnRun.disabled = !toolPresent;
+  btnDebug.disabled = !toolPresent;
   for (const op of ["build", "test", "package"]) {
     if (mvnButtons[op]) mvnButtons[op].disabled = !toolPresent;
   }
@@ -1575,7 +1807,8 @@ setupCombo(mvnProfilesInput, mavenMenu, () => mavenItems);
 // restarts it (stop the current process, then relaunch with the same inputs).
 function triggerLane(op, startPath, body) {
   if (restarting[op]) return; // a restart is already in flight (either phase)
-  const busy = op === "run" ? laneBusy("run") : laneBusy("build") || laneBusy("test") || laneBusy("package");
+  const busy =
+    op === "run" || op === "debug" ? laneBusy(op) : laneBusy("build") || laneBusy("test") || laneBusy("package");
   if (busy) {
     markRestarting(op);
     if (statusSnap) renderStatus(statusSnap); // reflect "Restarting…" without waiting for the next event
@@ -1607,6 +1840,12 @@ function stopLane(which, op) {
     post("/api/stop", { op: "run" });
     return;
   }
+  if (which === "debug") {
+    clearRestarting("debug");
+    markStopping("debug", "debug");
+    post("/api/debug/stop", {});
+    return;
+  }
   const s = statusSnap || {};
   const target = op || ["build", "test", "package"].find((o) => s[o] && s[o].busy) || activeTab;
   // A Stop wins over any in-flight restart of the build group.
@@ -1624,6 +1863,17 @@ function laneAction(op) {
       module: document.getElementById("in-module").value.trim(),
       profiles: document.getElementById("in-profiles").value.trim(),
       mavenProfiles: mvnProfiles(),
+    });
+    return;
+  }
+  if (op === "debug") {
+    if (laneBusy("debug")) return stopLane("debug");
+    showTab("debug");
+    triggerLane("debug", "/api/debug/start", {
+      module: document.getElementById("in-module").value.trim(),
+      profiles: document.getElementById("in-profiles").value.trim(),
+      mavenProfiles: mvnProfiles(),
+      suspend: dbgSuspendInput.checked,
     });
     return;
   }
@@ -1648,6 +1898,54 @@ document.getElementById("btn-build").onclick = () => laneAction("build");
 document.getElementById("btn-test").onclick = () => laneAction("test");
 document.getElementById("btn-package").onclick = () => laneAction("package");
 document.getElementById("btn-run").onclick = () => laneAction("run");
+
+// --- Debug lane controls ---------------------------------------------------
+// The Debug trigger launches the app with JDWP and attaches the debugger; it is
+// mutually exclusive with Run (the backend rejects if the app is already up). The
+// single lane button starts the session when idle and stops it while busy.
+btnDebug.onclick = () => laneAction("debug");
+btnDbgContinue.onclick = () => post("/api/debug/continue", {});
+btnDbgStepOver.onclick = () => post("/api/debug/step", { depth: "over" });
+btnDbgStepInto.onclick = () => post("/api/debug/step", { depth: "into" });
+btnDbgStepOut.onclick = () => post("/api/debug/step", { depth: "out" });
+btnDbgPause.onclick = () => post("/api/debug/pause", {});
+
+function addBreakpoint() {
+  const klass = bpClassInput.value.trim();
+  const line = parseInt(bpLineInput.value, 10);
+  if (!klass || !Number.isInteger(line) || line <= 0) {
+    appendLine("[canvas] enter a class (binary name) and a positive line number", "stderr", "debug");
+    return;
+  }
+  post("/api/debug/breakpoint", { class: klass, line });
+  bpLineInput.value = "";
+}
+btnBpAdd.onclick = addBreakpoint;
+bpClassInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") addBreakpoint();
+});
+bpLineInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") addBreakpoint();
+});
+
+async function evalExpr() {
+  const expr = dbgEvalInput.value.trim();
+  if (!expr) return;
+  dbgEvalResult.textContent = "\u2026";
+  dbgEvalResult.className = "eval-result";
+  const r = await postJson("/api/debug/evaluate", { expression: expr, frame: dbgSelectedFrame });
+  if (!r || r.ok === false) {
+    dbgEvalResult.textContent = (r && r.error) || "Evaluation failed.";
+    dbgEvalResult.className = "eval-result error";
+  } else {
+    dbgEvalResult.textContent = `${r.value}${r.type ? `  (${r.type})` : ""}`;
+    dbgEvalResult.className = "eval-result ok";
+  }
+}
+btnDbgEval.onclick = evalExpr;
+dbgEvalInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") evalExpr();
+});
 
 // Run tab: force-open the running app in a browser.
 btnOpenBrowser.onclick = () => post("/api/open-app", {});
@@ -1754,11 +2052,11 @@ let lastRunnerLabel = null;
 // active phase (build→building, test→testing, run→running). Because each
 // lane is tracked independently, a build finishing won't yank you off the
 // Run tab, and starting a test while the app runs jumps to the Test tab.
-const laneActivePhase = { build: "building", test: "testing", package: "packaging", run: "running" };
-const laneWasActive = { build: false, test: false, package: false, run: false };
+const laneActivePhase = { build: "building", test: "testing", package: "packaging", run: "running", debug: "running" };
+const laneWasActive = { build: false, test: false, package: false, run: false, debug: false };
 function followLaneActivity(s) {
   if (!s) return;
-  for (const op of ["build", "test", "package", "run"]) {
+  for (const op of ["build", "test", "package", "run", "debug"]) {
     const lane = s[op];
     if (!lane) continue;
     const active = lane.phase === laneActivePhase[op];
@@ -1782,6 +2080,10 @@ es.addEventListener("status", (e) => {
   followLaneActivity(s);
 });
 es.addEventListener("metrics", (e) => renderMetrics(JSON.parse(e.data)));
+es.addEventListener("debug", (e) => {
+  debugSnap = JSON.parse(e.data);
+  renderDebug(debugSnap, statusSnap);
+});
 es.addEventListener("profile", (e) => renderProfileState(JSON.parse(e.data)));
 es.addEventListener("test-progress", (e) => {
   renderTestProgress(JSON.parse(e.data));
@@ -1829,9 +2131,11 @@ setTimeout(hideLoading, 4000);
 fetch(`/api/state?${qs}`)
   .then((r) => r.json())
   .then((s) => {
+    debugSnap = s.debug || null;
     renderStatus(s.status);
     renderMetrics(s.metrics);
     applyEnv(s.env);
+    renderDebug(debugSnap, s.status);
     if (s.profile) renderProfileState(s.profile);
     if (s.status && s.status.test) lastRunnerLabel = s.status.test.runnerLabel;
     renderTests(s.tests, { runnerLabel: lastRunnerLabel });

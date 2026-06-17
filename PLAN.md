@@ -26,6 +26,14 @@ Shipped in the extension today:
 
 - Build / Test / Package / Run lanes with live SSE-streamed console output, a
   graphical JUnit test view with a live progress bar, and a console toggle.
+- **Debug lane** alongside Run: relaunches the app with the JDWP agent enabled
+  (loopback only) and attaches a self-contained JDWP debugger (`jdwp.mjs`, no
+  external DAP/JDTLS dependency). Breakpoints (armed on class-prepare, so they can
+  be set before launch), continue, step in/over/out, pause, paused call stack,
+  frame-local variables and a dotted-path evaluator. Per-build-tool agent injection
+  (plain Java argv, Spring Maven `-Dspring-boot.run.jvmArguments`, a generated Gradle
+  init-script for Spring/app Gradle, Quarkus `-Ddebug`). Debug and Run are mutually
+  exclusive (shared app slot); live reload is disabled while debugging.
 - **Maven and Gradle support**, auto-detected from project markers (Maven preferred
   when both are present; a clear degraded notice when neither is). The wrapper
   (`./mvnw` / `./gradlew`) is preferred over a system `mvn` / `gradle`, cross-platform.
@@ -61,7 +69,10 @@ Shipped in the extension today:
   native-access warnings.
 - Agent-facing actions: `build_app`, `run_tests`, `run_affected_tests`,
   `package_app`, `start_app`, `stop_app`, `get_status`, `get_metrics`,
-  `profile_app`, `fix_issue`, `run_scan`, `set_log_level`.
+  `profile_app`, `fix_issue`, `run_scan`, `set_log_level`, plus the debug actions
+  `start_debug`, `stop_debug`, `set_breakpoint`, `remove_breakpoint`,
+  `debug_continue`, `debug_step`, `debug_stack`, `get_variables`, `debug_evaluate`
+  and `debug_status`.
 
 ## Known limitations
 
@@ -76,6 +87,12 @@ Shipped in the extension today:
 - **No live per-test progress for Gradle.** Maven's Surefire console output drives the
   class-by-class progress bar; Gradle's graphical test view fills in from the final
   JUnit XML report instead.
+- **The debug evaluator is a field-path resolver, not a Java expression compiler.** It
+  resolves a local (or `this`) and walks dotted instance-field paths (e.g.
+  `order.customer.name`); it does not call methods or evaluate arbitrary expressions.
+  Frame-local variables also require classes compiled with debug info (`-g`, the
+  default for Maven/Gradle). The Quarkus-on-Gradle `-Ddebug` forwarding is
+  best-effort and unverified.
 - **The flame graph needs async-profiler installed** and resolves the app JVM via
   `lsof` on the detected HTTP port (falling back to the run lane's child for
   plain-`java` runs), so a port-less app started through a forked wrapper can't be
