@@ -41,6 +41,10 @@ Shipped in the extension today:
   cross-platform detected.
 - Live JVM metrics tiered BootUI → Actuator → Quarkus Micrometer/health → process,
   with a source badge.
+- Live log viewer on the Run console (minimum-severity filter + text search, with
+  severity-colored lines and inherited levels for stack traces) and runtime log-level
+  control via Spring Boot Actuator `/loggers` (a Loggers side tab + the `set_log_level`
+  action), so loggers can be changed live without a restart.
 - "Fix with Copilot" for compile, package, test, plain-Java, Spring Boot and Quarkus
   startup failures, and for BootUI advisor-scan findings.
 - BootUI MCP server toggle + advisor scans when the running app exposes BootUI.
@@ -50,7 +54,7 @@ Shipped in the extension today:
   `MAVEN_OPTS` / `GRADLE_OPTS`) and, for Maven, the app JVM to silence JDK
   native-access warnings.
 - Agent-facing actions: `build_app`, `run_tests`, `package_app`, `start_app`,
-  `stop_app`, `get_status`, `get_metrics`, `fix_issue`, `run_scan`.
+  `stop_app`, `get_status`, `get_metrics`, `fix_issue`, `run_scan`, `set_log_level`.
 
 ## Known limitations
 

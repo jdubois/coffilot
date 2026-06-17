@@ -1269,6 +1269,7 @@ const app = {
   appUp: false,
   appReachedUp: false, // app served a metrics endpoint at least once this run
   actuatorPrefix: null, // discovered Actuator base path this run (/actuator or /management)
+  loggersPrefix: null, // discovered Actuator base path that serves /loggers this run
   module: null, // module selected for the current run (for live reload)
   mavenProfiles: null, // Maven profiles used for the current run (for live reload)
 };
@@ -1693,6 +1694,10 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
         app.appUp = false;
         stopMetricsPolling();
         stopLiveReload();
+        // The app is gone: reset the cached metrics so the panel (and the
+        // Loggers tab, which keys off appUp) reflect "not running" instead of the
+        // last polled reading, which still said appUp:true.
+        lastMetrics = { appUp: false };
         broadcast("metrics", lastMetrics);
         // A run that exits non-zero before the app ever served metrics is a
         // startup crash (surface a Fix button); otherwise it was a clean stop.
@@ -1946,6 +1951,7 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
   app.appUp = false;
   app.appReachedUp = false;
   app.actuatorPrefix = null;
+  app.loggersPrefix = null;
   csrfToken = null;
   lastMetrics = { appUp: false };
 
@@ -3427,6 +3433,119 @@ async function mcpScan(tool) {
 }
 
 // ---------------------------------------------------------------------------
+// Runtime log levels — Spring Boot Actuator /loggers (read + live change)
+// ---------------------------------------------------------------------------
+// The /loggers endpoint lists every logger with its configured/effective level
+// and accepts a POST to change a level without restarting the app — the inner-loop
+// equivalent of an IDE's runtime log-level control. It lives under the same base
+// path as the other Actuator endpoints (/actuator or /management), so we reuse the
+// prefix discovered by the metrics tier when we have it.
+
+const DEFAULT_LOG_LEVELS = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
+
+/**
+ * Generic CSRF-aware POST against the running app: seed an XSRF-TOKEN from a prior
+ * GET on the same app (Spring Security's SPA CSRF protection), echo it back on the
+ * write, and refresh once on a 403. Self-contained so it works for a plain Actuator
+ * app (no token seeded → posts without the header, which succeeds when the endpoint
+ * isn't behind CSRF) as well as a secured one.
+ */
+async function appPostCsrf(base, seedPath, postPath, body) {
+  let token = null;
+  const seed = async () => {
+    try {
+      const res = await fetch(base + seedPath, { headers: { Accept: "application/json" } });
+      const m = (res.headers.get("set-cookie") || "").match(/XSRF-TOKEN=([^;]+)/);
+      if (m) token = decodeURIComponent(m[1]);
+      await res.text().catch(() => null);
+    } catch {
+      // No token available; the POST will surface any resulting 403.
+    }
+  };
+  const send = async () => {
+    const headers = { "Content-Type": "application/json", Accept: "application/json" };
+    if (token) {
+      headers["X-XSRF-TOKEN"] = token;
+      headers["Cookie"] = `XSRF-TOKEN=${encodeURIComponent(token)}`;
+    }
+    return fetch(base + postPath, { method: "POST", headers, body: JSON.stringify(body ?? {}) });
+  };
+  await seed();
+  let res = await send();
+  if (res.status === 403) {
+    token = null;
+    await seed();
+    res = await send();
+  }
+  return res;
+}
+
+/**
+ * Read the running app's loggers from Actuator. Returns the available levels and a
+ * normalized logger list (ROOT first, then alphabetical), or { available:false } when
+ * the app is down or exposes no /loggers endpoint.
+ */
+async function loggersStatus() {
+  const base = appBase();
+  if (!base) return { available: false };
+  // Prefer the prefix the metrics tier already confirmed, then the usual candidates.
+  const prefixes = app.actuatorPrefix
+    ? [app.actuatorPrefix, ...ACTUATOR_PREFIXES.filter((p) => p !== app.actuatorPrefix)]
+    : ACTUATOR_PREFIXES;
+  for (const prefix of prefixes) {
+    const json = await fetchJson(base, `${prefix}/loggers`);
+    if (!json || !json.loggers) continue;
+    app.loggersPrefix = prefix;
+    const levels = Array.isArray(json.levels) && json.levels.length ? json.levels : DEFAULT_LOG_LEVELS;
+    const loggers = Object.entries(json.loggers).map(([name, v]) => ({
+      name,
+      configuredLevel: (v && v.configuredLevel) || null,
+      effectiveLevel: (v && v.effectiveLevel) || null,
+    }));
+    loggers.sort((a, b) => (a.name === "ROOT" ? -1 : b.name === "ROOT" ? 1 : a.name.localeCompare(b.name)));
+    return { available: true, prefix, levels, loggers };
+  }
+  return { available: false };
+}
+
+/**
+ * Change one logger's level live. A null/empty level resets it to its default
+ * (inherited) level. Returns { ok, status } with the refreshed logger list so the UI
+ * (and agent) immediately see the new effective levels.
+ */
+async function setLoggerLevel(name, level) {
+  const base = appBase();
+  if (!base) return { ok: false, error: "App is not running." };
+  if (!name) return { ok: false, error: "No logger specified." };
+  const lvl = level ? String(level).toUpperCase() : null;
+  if (lvl && !DEFAULT_LOG_LEVELS.includes(lvl)) return { ok: false, error: `Unknown level "${level}".` };
+  // The agent's set_log_level action can run before any GET has cached the
+  // Actuator base path, so discover it now (this also rejects apps with no
+  // /loggers endpoint up front rather than blindly POSTing to /actuator).
+  if (!app.loggersPrefix) await loggersStatus();
+  if (!app.loggersPrefix) {
+    return { ok: false, error: "The app's /loggers endpoint isn't exposed (or is read-only)." };
+  }
+  const prefix = app.loggersPrefix;
+  try {
+    const res = await appPostCsrf(base, `${prefix}/loggers`, `${prefix}/loggers/${encodeURIComponent(name)}`, {
+      configuredLevel: lvl,
+    });
+    await res.text().catch(() => null);
+    if (!res.ok) {
+      const why =
+        res.status === 404
+          ? "The app's /loggers endpoint isn't exposed (or is read-only)."
+          : `Actuator returned ${res.status}.`;
+      return { ok: false, error: why, status: await loggersStatus() };
+    }
+    return { ok: true, name, level: lvl, status: await loggersStatus() };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Loopback HTTP server (iframe assets + SSE + control + metrics proxy)
 // ---------------------------------------------------------------------------
 
@@ -3632,6 +3751,16 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/loggers") {
+    sendJson(res, 200, await loggersStatus());
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/loggers") {
+    const body = await readBody(req);
+    sendJson(res, 200, await setLoggerLevel(body.name, body.level));
+    return;
+  }
+
   res.writeHead(404);
   res.end("Not found");
 });
@@ -3832,6 +3961,24 @@ function makeCanvas() {
           required: ["tool"],
         },
         handler: async (ctx) => mcpScan(ctx.input?.tool),
+      },
+      {
+        name: "set_log_level",
+        description:
+          "Change a logger's level at runtime on the running app via Spring Boot Actuator /loggers (no restart). Requires the app up with the loggers endpoint exposed. e.g. logger=com.example.service level=DEBUG. Omit level to reset the logger to its inherited default.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            logger: { type: "string", description: "Logger name, e.g. com.example.service or ROOT." },
+            level: {
+              type: "string",
+              enum: ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"],
+              description: "Level to set; omit to reset the logger to its default.",
+            },
+          },
+          required: ["logger"],
+        },
+        handler: async (ctx) => setLoggerLevel(ctx.input?.logger, ctx.input?.level || null),
       },
     ],
     open: async (ctx) => {
