@@ -206,6 +206,20 @@ function withJLineDumbFlag(args, bin) {
   return [JLINE_DUMB_FLAG, ...args];
 }
 
+/** Quote argv elements that contain whitespace for the Windows shell. spawnTool
+ * routes mvnw.cmd / gradlew.bat through cmd.exe (shell: true is required there —
+ * modern Node refuses to spawn .cmd/.bat directly), and the shell re-tokenizes the
+ * joined command line on spaces without quoting args for us. A single argv element
+ * that legitimately contains a space would therefore be split, e.g. the Spring Boot
+ * Maven debug string `-Dspring-boot.run.jvmArguments=<flag> <agent>` or a Gradle
+ * `--init-script <path>` whose temp dir has a space (C:\Users\John Doe\...). Wrap
+ * such args in double quotes. No-op on POSIX (shell: false preserves argv verbatim)
+ * and for already-quoted args. */
+function quoteWinShellArgs(args) {
+  if (!isWindows) return args;
+  return args.map((a) => (typeof a === "string" && /\s/.test(a) && !/^".*"$/.test(a) ? `"${a}"` : a));
+}
+
 /** Decide the build tool for a project root: Maven preferred, else Gradle, else null. */
 function detectBuildTool(root) {
   const has = (f) => existsSync(path.join(root, f));
@@ -1763,7 +1777,7 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
     lane.console = [];
     session.log(`[coffilot] ${lane.command}`, { level: "info", ephemeral: true });
 
-    const child = spawn(toolBin, withJLineDumbFlag(args, toolBin), {
+    const child = spawn(toolBin, quoteWinShellArgs(withJLineDumbFlag(args, toolBin)), {
       cwd: workspacePath,
       env: env || toolEnv(),
       // mvnw.cmd / mvnd.cmd / gradlew.bat are batch scripts; modern Node refuses
