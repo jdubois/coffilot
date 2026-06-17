@@ -340,11 +340,11 @@ select {
   grid-template-columns: 1fr 320px;
   gap: 0;
   height: calc(100vh - 130px);
+  position: relative;
 }
-@media (max-width: 760px) {
+@media (max-width: 819px) {
   #workspace {
     grid-template-columns: 1fr;
-    height: auto;
   }
 }
 #left {
@@ -352,12 +352,6 @@ select {
   overflow: hidden;
   min-width: 0;
   min-height: 0;
-}
-@media (max-width: 760px) {
-  #left {
-    height: auto;
-    overflow: visible;
-  }
 }
 /* Left column panes (Build / Test / Run) swap in place; the aside stays put. */
 .lpane {
@@ -378,14 +372,6 @@ select {
   display: flex;
   flex-direction: column;
 }
-@media (max-width: 760px) {
-  .lpane {
-    height: auto;
-  }
-  .lpane.col.active {
-    height: auto;
-  }
-}
 /* Shared console (build/test/run) styling. */
 .term {
   margin: 0;
@@ -403,11 +389,6 @@ select {
 #run-console {
   flex: 1 1 auto;
   min-height: 0;
-}
-@media (max-width: 760px) {
-  #run-console {
-    flex: none;
-  }
 }
 
 /* Test tab: Graphical / Console sub-toggle */
@@ -446,10 +427,11 @@ select {
 .tsub.active {
   display: block;
 }
-@media (max-width: 760px) {
-  .subpane-wrap {
-    min-height: 50vh;
-  }
+/* The console subview stacks its log-filter bar above the scrolling output. */
+#run-console-view.active {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* Run tab: browser controls bar */
@@ -679,10 +661,57 @@ select {
   overflow: auto;
   border-top: 1px solid var(--border-color-default, #d0d7de);
 }
+/* Run tab: live log filter bar (severity + text search) */
+.log-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--border-color-default, #d0d7de);
+  flex: 0 0 auto;
+}
+.log-level-label {
+  font-size: 12px;
+  color: var(--text-color-muted, #656d76);
+}
+.log-bar select {
+  font-size: 12px;
+  padding: 0.1rem 0.3rem;
+}
+.log-bar #in-log-search {
+  flex: 1 1 140px;
+  min-width: 100px;
+  font-size: 12px;
+  padding: 0.1rem 0.4rem;
+}
+.log-count {
+  font-size: 11px;
+  white-space: nowrap;
+}
+/* Per-severity coloring of run-console lines (level is tagged on append). */
+.term .lvl-error {
+  color: var(--true-color-red, #cf222e);
+}
+.term .lvl-warn {
+  color: var(--true-color-orange, #bc4c00);
+}
+.term .lvl-debug,
+.term .lvl-trace {
+  color: var(--text-color-muted, #656d76);
+}
 aside {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   border-left: 1px solid var(--border-color-default, #d0d7de);
-  padding: 0.75rem 1rem;
+  background: var(--background-color-default, #ffffff);
+}
+.aside-body {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
+  padding: 0.75rem 1rem;
 }
 aside h2 {
   font-size: 12px;
@@ -1353,8 +1382,10 @@ button.is-restarting .btn-spin::before {
 .aside-tabs {
   display: flex;
   gap: 0.25rem;
-  margin: 0 0 0.75rem;
+  margin: 0;
+  padding: 0.75rem 1rem 0.5rem;
   border-bottom: 1px solid var(--border-color-default, #d0d7de);
+  flex: 0 0 auto;
 }
 .atab {
   border: none;
@@ -1370,6 +1401,7 @@ button.is-restarting .btn-spin::before {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
+  white-space: nowrap;
   transition:
     color var(--dur-fast) var(--ease-out),
     border-color var(--dur) var(--ease-out);
@@ -1391,11 +1423,81 @@ button.is-restarting .btn-spin::before {
   color: var(--text-color-default, #1f2328);
   border-bottom-color: var(--true-color-blue, #0969da);
 }
+.aside-toggle {
+  border: none;
+  background: none;
+  color: var(--text-color-muted, #656d76);
+  padding: 0.25rem;
+  margin-left: auto;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.aside-toggle:hover {
+  color: var(--text-color-default, #1f2328);
+  background: var(--background-color-muted, #eaeef2);
+}
+.aside-toggle svg {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.15s ease;
+}
+#workspace:not(.aside-open) .aside-toggle svg {
+  transform: rotate(180deg);
+}
 .apane {
   display: none;
 }
 .apane.active {
   display: block;
+}
+
+/* Loggers tab: runtime log-level control */
+#loggers-controls #loggers-search {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 12px;
+  padding: 0.2rem 0.4rem;
+}
+.loggers-help {
+  margin-top: 0.4rem;
+}
+#loggers-list {
+  margin-top: 0.5rem;
+}
+.logger-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px dashed var(--border-color-muted, #d8dee4);
+}
+.logger-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, "Liberation Mono", monospace);
+  font-size: 12px;
+}
+.logger-level {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 0.1rem 0.3rem;
+  font-weight: 600;
+}
+.logger-level.lvl-error {
+  color: var(--true-color-red, #cf222e);
+}
+.logger-level.lvl-warn {
+  color: var(--true-color-orange, #bc4c00);
+}
+.logger-level.lvl-debug,
+.logger-level.lvl-trace {
+  color: var(--true-color-blue, #0969da);
 }
 
 /* Settings rows */
@@ -1453,6 +1555,94 @@ button.is-restarting .btn-spin::before {
   flex-wrap: wrap;
   margin: 0.4rem 0 0;
   padding: 0.45rem 0.6rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Collapsible right panel. The panel collapses to an IntelliJ-style vertical
+   icon rail — automatically on a narrow canvas, or on demand via the toggle
+   button on a wide one. #workspace.aside-open = expanded (pane body shown);
+   #workspace.aside-rail = render the rail (set by JS for narrow OR collapsed).
+   --------------------------------------------------------------------------- */
+#workspace.aside-rail aside {
+  flex-direction: row-reverse;
+}
+#workspace.aside-rail .aside-tabs {
+  flex-direction: column;
+  align-items: center;
+  width: 44px;
+  margin: 0;
+  padding: 0.5rem 0;
+  gap: 0.4rem;
+  border-bottom: none;
+}
+#workspace.aside-rail .atab {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+  border-bottom: none;
+  border-radius: 6px;
+}
+#workspace.aside-rail .atab svg {
+  width: 16px;
+  height: 16px;
+}
+#workspace.aside-rail .atab.active {
+  border-bottom: none;
+  background: var(--background-color-muted, #eaeef2);
+  color: var(--text-color-default, #1f2328);
+}
+#workspace.aside-rail .atab-label {
+  display: none;
+}
+#workspace.aside-rail .aside-toggle {
+  order: -1;
+  width: 32px;
+  height: 32px;
+  margin: 0 0 0.25rem;
+}
+#workspace.aside-rail .aside-body {
+  flex: 0 0 auto;
+  width: min(310px, 80vw);
+  border-left: 1px solid var(--border-color-default, #d0d7de);
+}
+#workspace.aside-rail:not(.aside-open) .aside-body {
+  display: none;
+}
+
+/* Wide canvas, voluntarily collapsed: the rail sits in-flow as a slim column so
+   the main panel simply widens (no overlay). */
+@media (min-width: 820px) {
+  #workspace.aside-rail {
+    grid-template-columns: 1fr max-content;
+  }
+}
+
+/* Narrow canvas: the panel floats over the main area as an overlay drawer, and
+   the main console keeps room for the rail on its right. */
+@media (max-width: 819px) {
+  #workspace {
+    grid-template-columns: 1fr;
+  }
+  #left {
+    box-sizing: border-box;
+    padding-right: 44px;
+  }
+  aside {
+    position: absolute;
+    top: 0;
+    right: 0;
+    height: 100%;
+    border-left: none;
+    padding: 0;
+    z-index: 20;
+  }
+  .aside-tabs {
+    border-left: 1px solid var(--border-color-default, #d0d7de);
+  }
+  #workspace.aside-open aside {
+    box-shadow: -10px 0 28px rgba(31, 35, 40, 0.18);
+  }
 }
 
 /* ───────────────────────────────────────────────────────────────────────────
@@ -1585,4 +1775,152 @@ button.is-restarting .btn-spin::before {
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Run tab: async-profiler flame graph
+--------------------------------------------------------------------------- */
+#run-flame {
+  display: none;
+  padding: 0.75rem;
+}
+#run-flame.active {
+  display: block;
+}
+.flame-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+.flame-ctl {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 12px;
+  color: var(--text-color-muted, #656d76);
+}
+.flame-ctl select {
+  font-size: 12px;
+  padding: 0.15rem 0.3rem;
+  border-radius: 5px;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  background: var(--background-color-default, #fff);
+  color: var(--text-color-default, #1f2328);
+}
+.flame-search {
+  font-size: 12px;
+  padding: 0.2rem 0.45rem;
+  border-radius: 5px;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  background: var(--background-color-default, #fff);
+  color: var(--text-color-default, #1f2328);
+  min-width: 9rem;
+}
+.flame-auto {
+  font-size: 12px;
+  color: var(--text-color-muted, #656d76);
+  gap: 0.35rem;
+}
+.muted.ok {
+  color: var(--true-color-green, #1a7f37);
+}
+.muted.err {
+  color: var(--true-color-red, #cf222e);
+}
+.flame-empty {
+  margin: 1rem 0;
+}
+.flame-info {
+  font-size: 11.5px;
+  color: var(--text-color-muted, #656d76);
+  min-height: 1.2em;
+  margin-bottom: 0.35rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.flame-info code {
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+  color: var(--text-color-default, #1f2328);
+}
+.flame-graph {
+  position: relative;
+  width: 100%;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  border-radius: 6px;
+  background: var(--background-color-muted, #f6f8fa);
+  overflow: hidden;
+}
+.flame-frame {
+  position: absolute;
+  height: 21px;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, #000 14%, transparent);
+  border-radius: 2px;
+  overflow: hidden;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 19px;
+  color: #1b1300;
+  transition: filter var(--dur-fast) var(--ease-out);
+}
+.flame-frame:hover {
+  filter: brightness(1.12);
+}
+.flame-frame > span {
+  display: block;
+  padding: 0 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.flame-frame.match {
+  outline: 2px solid var(--true-color-blue, #0969da);
+  outline-offset: -2px;
+}
+.flame-hotspots {
+  margin-top: 0.9rem;
+}
+.hot-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-color-muted, #656d76);
+  margin-bottom: 0.4rem;
+}
+.hot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0.4rem;
+  font-size: 12px;
+  border-radius: 4px;
+}
+.hot-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--true-color-orange, #bc4c00) 16%, transparent);
+  border-radius: 4px;
+  z-index: 0;
+}
+.hot-name {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+  color: var(--text-color-default, #1f2328);
+}
+.hot-pct {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  color: var(--text-color-muted, #656d76);
+  font-variant-numeric: tabular-nums;
 }

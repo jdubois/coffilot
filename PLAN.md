@@ -49,19 +49,29 @@ Shipped in the extension today:
   cross-platform detected.
 - Live JVM metrics tiered BootUI → Actuator → Quarkus Micrometer/health → process,
   with a source badge.
+- Live log viewer on the Run console (minimum-severity filter + text search, with
+  severity-colored lines and inherited levels for stack traces) and runtime log-level
+  control via Spring Boot Actuator `/loggers` (a Loggers side tab + the `set_log_level`
+  action), so loggers can be changed live without a restart.
+- On-demand CPU / allocation / wall-clock / lock-contention flame graph of the
+  running app via async-profiler (`asprof`), rendered interactively (zoom, hover,
+  search) in the Run tab with a top-hotspots list; an "Automatically record at
+  startup" toggle (off by default) records on each app start. Detected and degraded
+  gracefully when the profiler is absent (and unavailable on Windows).
 - "Fix with Copilot" for compile, package, test, plain-Java, Spring Boot and Quarkus
-  startup failures, and for BootUI advisor-scan findings.
+  startup failures, for flame-graph hotspots, and for BootUI advisor-scan findings.
 - BootUI MCP server toggle + advisor scans when the running app exposes BootUI.
 - Per-project persisted settings (warm JVM, Spring profiles, devtools, random port,
-  auto-open browser) and an always-visible Settings panel.
+  auto-open browser, auto-record flame graph at startup) and an always-visible
+  Settings panel.
 - `--enable-native-access=ALL-UNNAMED` applied to the build-tool JVM (via
   `MAVEN_OPTS` / `GRADLE_OPTS`) and, for Maven, the app JVM to silence JDK
   native-access warnings.
 - Agent-facing actions: `build_app`, `run_tests`, `package_app`, `start_app`,
-  `stop_app`, `get_status`, `get_metrics`, `fix_issue`, `run_scan`, plus the debug
-  actions `start_debug`, `stop_debug`, `set_breakpoint`, `remove_breakpoint`,
-  `debug_continue`, `debug_step`, `debug_stack`, `get_variables`, `debug_evaluate`
-  and `debug_status`.
+  `stop_app`, `get_status`, `get_metrics`, `profile_app`, `fix_issue`, `run_scan`,
+  `set_log_level`, plus the debug actions `start_debug`, `stop_debug`,
+  `set_breakpoint`, `remove_breakpoint`, `debug_continue`, `debug_step`,
+  `debug_stack`, `get_variables`, `debug_evaluate` and `debug_status`.
 
 ## Known limitations
 
@@ -82,6 +92,11 @@ Shipped in the extension today:
   Frame-local variables also require classes compiled with debug info (`-g`, the
   default for Maven/Gradle). The Quarkus-on-Gradle `-Ddebug` forwarding is
   best-effort and unverified.
+- **The flame graph needs async-profiler installed** and resolves the app JVM via
+  `lsof` on the detected HTTP port (falling back to the run lane's child for
+  plain-`java` runs), so a port-less app started through a forked wrapper can't be
+  attached to. On macOS the `cpu` event maps to `itimer` (no perf_events), and the
+  whole feature is unavailable on Windows (async-profiler has no Windows build).
 
 ## Roadmap
 

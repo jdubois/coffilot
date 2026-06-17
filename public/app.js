@@ -71,6 +71,7 @@ const devtoolsInput = document.getElementById("in-devtools");
 const setRandomport = document.getElementById("set-randomport");
 const randomportInput = document.getElementById("in-randomport");
 const openBrowserInput = document.getElementById("in-openbrowser");
+const autoProfileInput = document.getElementById("in-autoprofile");
 const btnOpenBrowser = document.getElementById("btn-open-browser");
 const btnFix = document.getElementById("btn-fix");
 const btnStopMaven = document.getElementById("btn-stop-maven");
@@ -100,6 +101,24 @@ const dbgEvalResult = document.getElementById("dbg-eval-result");
 const tabDebugBadge = document.getElementById("tab-debug-badge");
 let debugSnap = null;
 let dbgSelectedFrame = 0;
+// Run-tab flame graph (async-profiler) controls.
+const flameEvent = document.getElementById("flame-event");
+const flameDuration = document.getElementById("flame-duration");
+const btnProfile = document.getElementById("btn-profile");
+const btnProfileStop = document.getElementById("btn-profile-stop");
+const flameStatus = document.getElementById("flame-status");
+const flameSearch = document.getElementById("flame-search");
+const btnFlameReset = document.getElementById("btn-flame-reset");
+const btnFlameFix = document.getElementById("btn-flame-fix");
+const flameUnavailable = document.getElementById("flame-unavailable");
+const flameMsg = document.getElementById("flame-msg");
+const flameCmd = document.getElementById("flame-cmd");
+const flameCopied = document.getElementById("flame-copied");
+const flameDocs = document.getElementById("flame-docs");
+const flameEmpty = document.getElementById("flame-empty");
+const flameInfo = document.getElementById("flame-info");
+const flameGraph = document.getElementById("flame-graph");
+const flameHotspots = document.getElementById("flame-hotspots");
 // Running spinners on each trigger button and tab. The Test tab keeps its
 // badge/progress feedback too; the spinner shows only while the run is busy.
 const btnSpin = {
@@ -182,6 +201,22 @@ if (jdtlsCmd) {
   };
 }
 
+if (flameCmd) {
+  flameCmd.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(flameCmd.textContent.trim());
+      flameCopied.hidden = false;
+      setTimeout(() => (flameCopied.hidden = true), 1500);
+    } catch {
+      const r = document.createRange();
+      r.selectNodeContents(flameCmd);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+  };
+}
+
 // Click the status command to copy the full (untruncated) command.
 cmdEl.addEventListener("click", async () => {
   const text = cmdEl.dataset.copy;
@@ -225,19 +260,92 @@ document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => showTab(t.da
 
 // Test tab: Graphical / Console sub-toggle (graphical is the default).
 function showTestView(view) {
-  document.querySelectorAll(".subtab").forEach((t) => t.classList.toggle("active", t.dataset.tview === view));
+  document
+    .querySelectorAll(".subtab[data-tview]")
+    .forEach((t) => t.classList.toggle("active", t.dataset.tview === view));
   document.getElementById("tests").classList.toggle("active", view === "graphical");
   document.getElementById("test-console").classList.toggle("active", view === "console");
 }
-document.querySelectorAll(".subtab").forEach((t) => (t.onclick = () => showTestView(t.dataset.tview)));
+document.querySelectorAll(".subtab[data-tview]").forEach((t) => (t.onclick = () => showTestView(t.dataset.tview)));
 
-// Aside sub-tabs (Live JVM Metrics / Settings)
+// Run tab: Console / Flame graph sub-toggle (console is the default).
+function showRunView(view) {
+  document
+    .querySelectorAll(".subtab[data-rview]")
+    .forEach((t) => t.classList.toggle("active", t.dataset.rview === view));
+  document.getElementById("run-console-view").classList.toggle("active", view === "console");
+  document.getElementById("run-flame").classList.toggle("active", view === "flame");
+}
+document.querySelectorAll(".subtab[data-rview]").forEach((t) => (t.onclick = () => showRunView(t.dataset.rview)));
+
+// Aside sub-tabs (Live JVM Metrics / Loggers / Settings) and the collapsible
+// right panel. #workspace.aside-open = expanded (the pane body is shown);
+// #workspace.aside-rail = render the vertical icon rail instead of the docked
+// panel. The rail is used automatically on a narrow canvas, or on demand (via the
+// toggle button) on a wide one. See styles.css for the matching presentation.
+const workspaceEl = document.getElementById("workspace");
+const asideToggle = document.getElementById("aside-toggle");
+const asideDrawer = window.matchMedia("(max-width: 819px)");
+
+function activeAsideTab() {
+  const t = document.querySelector(".atab.active");
+  return t ? t.dataset.atab : null;
+}
+function syncLoggersPolling() {
+  if (loggersTabActive()) startLoggersPolling();
+  else stopLoggersPolling();
+}
+// Show the rail look whenever the canvas is narrow or the panel is collapsed.
+function syncAsideMode() {
+  const open = workspaceEl.classList.contains("aside-open");
+  workspaceEl.classList.toggle("aside-rail", asideDrawer.matches || !open);
+  if (asideToggle) {
+    asideToggle.setAttribute("aria-label", open ? "Hide panel" : "Show panel");
+    asideToggle.title = open ? "Hide panel" : "Show panel";
+  }
+}
+function setAsideOpen(open) {
+  workspaceEl.classList.toggle("aside-open", open);
+  syncAsideMode();
+  syncLoggersPolling();
+}
 function showAsideTab(name) {
   document.querySelectorAll(".atab").forEach((t) => t.classList.toggle("active", t.dataset.atab === name));
   document.getElementById("atab-metrics").classList.toggle("active", name === "metrics");
+  document.getElementById("atab-loggers").classList.toggle("active", name === "loggers");
   document.getElementById("atab-settings").classList.toggle("active", name === "settings");
+  syncLoggersPolling();
 }
-document.querySelectorAll(".atab").forEach((t) => (t.onclick = () => showAsideTab(t.dataset.atab)));
+// Tab click: when collapsed, open the panel to that pane; when already expanded,
+// switch panes, or collapse if you re-tap the pane that's already showing.
+function onAsideTabClick(name) {
+  if (!workspaceEl.classList.contains("aside-open")) {
+    showAsideTab(name);
+    setAsideOpen(true);
+    return;
+  }
+  if (activeAsideTab() === name) {
+    setAsideOpen(false);
+    return;
+  }
+  showAsideTab(name);
+}
+document.querySelectorAll(".atab").forEach((t) => (t.onclick = () => onAsideTabClick(t.dataset.atab)));
+if (asideToggle) asideToggle.onclick = () => setAsideOpen(!workspaceEl.classList.contains("aside-open"));
+// Esc collapses the overlay drawer on a narrow canvas.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && asideDrawer.matches && workspaceEl.classList.contains("aside-open")) {
+    setAsideOpen(false);
+  }
+});
+// Crossing the breakpoint resets to the natural default for that width: docked
+// and open when wide, collapsed to the rail when narrow.
+asideDrawer.addEventListener("change", () => setAsideOpen(!asideDrawer.matches));
+// Initial state: open on a wide canvas, collapsed on a narrow one. No loggers
+// sync here (it would touch state declared later in this module) — polling is
+// driven by tab activation and the metrics tab is the default.
+workspaceEl.classList.toggle("aside-open", !asideDrawer.matches);
+syncAsideMode();
 
 // Floating tooltip controller for [data-tip] elements (the settings info
 // icons). Native title tooltips don't render reliably in the canvas
@@ -282,12 +390,79 @@ document.addEventListener("focusout", hideTip);
 function appendLine(line, stream, op) {
   const el = consoleFor(op);
   const span = document.createElement("span");
-  if (stream === "stderr") span.className = "err";
+  let cls = stream === "stderr" ? "err" : "";
+  if (el === runConsoleEl) {
+    // Tag each run-console line with a severity (continuation/stack-trace lines
+    // inherit the previous line's level) so the log filter and per-level coloring
+    // can work without re-parsing.
+    let level = parseLogLevel(line);
+    if (level) lastRunLevel = level;
+    else level = lastRunLevel;
+    span.dataset.level = level;
+    span.dataset.text = line.toLowerCase();
+    cls = (cls ? cls + " " : "") + "lvl-" + level.toLowerCase();
+    if (!lineMatchesLogFilter(level, span.dataset.text)) span.hidden = true;
+  }
+  if (cls) span.className = cls;
   span.textContent = line + "\n";
   el.appendChild(span);
   while (el.childNodes.length > 2000) el.removeChild(el.firstChild);
   el.scrollTop = el.scrollHeight;
+  if (el === runConsoleEl) updateLogCount();
 }
+
+// ---- Run console log filtering -----------------------------------------
+// The Run console is the app's live log. A minimum-severity select and a text
+// search filter it client-side; nothing leaves the iframe.
+const logLevelSelect = document.getElementById("in-log-level");
+const logSearchInput = document.getElementById("in-log-search");
+const logCountEl = document.getElementById("log-count");
+const LOG_RANK = { TRACE: 0, DEBUG: 1, INFO: 2, WARN: 3, ERROR: 4 };
+let runMinLevel = ""; // "" = show all severities
+let runSearch = "";
+let lastRunLevel = "INFO"; // inherited level for lines without their own
+
+function parseLogLevel(line) {
+  const m = line.match(/\b(TRACE|DEBUG|INFO|WARN(?:ING)?|ERROR|SEVERE|FATAL)\b/);
+  if (!m) return null;
+  const t = m[1];
+  if (t === "WARNING") return "WARN";
+  if (t === "SEVERE" || t === "FATAL") return "ERROR";
+  return t;
+}
+
+function lineMatchesLogFilter(level, lowerText) {
+  if (runMinLevel && (LOG_RANK[level] ?? 2) < LOG_RANK[runMinLevel]) return false;
+  if (runSearch && !lowerText.includes(runSearch)) return false;
+  return true;
+}
+
+function applyLogFilter() {
+  runMinLevel = logLevelSelect ? logLevelSelect.value : "";
+  runSearch = logSearchInput ? logSearchInput.value.trim().toLowerCase() : "";
+  for (const span of runConsoleEl.childNodes) {
+    if (span.nodeType !== 1) continue;
+    span.hidden = !lineMatchesLogFilter(span.dataset.level || "INFO", span.dataset.text || "");
+  }
+  updateLogCount();
+}
+
+function updateLogCount() {
+  if (!logCountEl) return;
+  if (!runMinLevel && !runSearch) {
+    logCountEl.textContent = "";
+    return;
+  }
+  const spans = runConsoleEl.querySelectorAll("span");
+  let shown = 0;
+  spans.forEach((s) => {
+    if (!s.hidden) shown++;
+  });
+  logCountEl.textContent = spans.length ? `showing ${shown} / ${spans.length}` : "";
+}
+
+if (logLevelSelect) logLevelSelect.addEventListener("change", applyLogFilter);
+if (logSearchInput) logSearchInput.addEventListener("input", applyLogFilter);
 
 // Last status snapshot ({ build, test, package, run, reload }).
 // (declared above, near activeTab, so showTab can read it)
@@ -414,6 +589,10 @@ function renderStatus(s) {
   btnOpenBrowser.title = run.appPort
     ? `Open http://127.0.0.1:${run.appPort} in your browser`
     : "The app isn't running yet";
+  // The flame-graph Record button needs both async-profiler installed and the
+  // app actually running (the run lane busy).
+  runActive = !!(run.busy || run.appPort);
+  updateProfileButton();
   // The two grouped Stop buttons are global, not tied to the active tab:
   // the Maven Stop covers build/test/package; the Run Stop covers run.
   const mvnBusy = laneActive(s, "build") || laneActive(s, "test") || laneActive(s, "package");
@@ -455,27 +634,27 @@ function renderStatus(s) {
   // Run and Debug share the single app slot, so they're mutually exclusive:
   // each trigger restarts its own lane but is locked out while the other owns
   // the app.
-  const runActive = laneActive(s, "run");
-  const debugActive = laneActive(s, "debug");
+  const runLaneActive = laneActive(s, "run");
+  const debugLaneActive = laneActive(s, "debug");
   if (!toolPresent) btnRun.disabled = true;
-  else btnRun.disabled = !!restarting.run || debugActive;
+  else btnRun.disabled = !!restarting.run || debugLaneActive;
   if (toolPresent) {
     btnRun.title = restarting.run
       ? "Restarting\u2026"
-      : debugActive
+      : debugLaneActive
         ? "Stop the debugger first"
-        : runActive
+        : runLaneActive
           ? "Restart the running app"
           : "";
   }
   if (!toolPresent) btnDebug.disabled = true;
-  else btnDebug.disabled = !!restarting.debug || runActive;
+  else btnDebug.disabled = !!restarting.debug || runLaneActive;
   if (toolPresent) {
     btnDebug.title = restarting.debug
       ? "Restarting\u2026"
-      : runActive
+      : runLaneActive
         ? "Stop the running app first"
-        : debugActive
+        : debugLaneActive
           ? "Restart the debug session"
           : "";
   }
@@ -702,14 +881,19 @@ async function refreshVars() {
 // value on the next frame, letting the CSS width transition animate smoothly.
 let lastHeapPct = 0;
 function renderMetrics(m) {
+  const nowUp = !!(m && m.appUp);
+  if (nowUp !== appRunning) {
+    appRunning = nowUp;
+    // Reflect the app coming up / going down in the Loggers tab if it's open.
+    if (loggersTabActive()) loadLoggers();
+  }
   if (!m || !m.appUp) {
     lastHeapPct = 0;
     metricsSrc.hidden = true;
     renderMcp(null);
-    metricsEl.innerHTML =
-      '<p class="muted">App not running. Click <strong>Run</strong> to start it (Spring\u2019s <code>dev</code> profile activates BootUI).</p>';
+    metricsEl.innerHTML = '<p class="muted">Application isn\u2019t running or doesn\u2019t expose metrics.</p>';
     metricsHint.innerHTML =
-      "Run a Spring Boot app with the <code>dev</code> profile for rich BootUI metrics, a Quarkus app for Micrometer metrics, or anything exposing Actuator for a subset.";
+      'To get metrics, add <strong>Spring Boot Actuator</strong> or <strong>Quarkus Micrometer/health</strong>. For even richer metrics with Spring Boot, add <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a>.';
     return;
   }
   const tier = m.metricsTier || "process";
@@ -891,6 +1075,139 @@ async function runScan(tool) {
     };
 }
 let lastScan = null;
+
+// ---- Runtime log levels (Loggers aside tab) ----------------------------
+// Lists the running app's loggers from Spring Boot Actuator /loggers and lets
+// you change a level live (no restart). Self-describes by capability: degrades to
+// a hint when the app is down or exposes no /loggers endpoint.
+const loggersListEl = document.getElementById("loggers-list");
+const loggersControls = document.getElementById("loggers-controls");
+const loggersSearch = document.getElementById("loggers-search");
+const loggersSrc = document.getElementById("loggers-src");
+const LOGGER_LEVELS = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
+let appRunning = false;
+let loggersData = null;
+let loggersTimer = null;
+
+function loggersTabActive() {
+  const pane = document.getElementById("atab-loggers");
+  // offsetParent is null when the pane (or its collapsed drawer) is display:none,
+  // so this also stops polling when the narrow-canvas rail is collapsed.
+  return !!(pane && pane.classList.contains("active") && pane.offsetParent !== null);
+}
+
+function startLoggersPolling() {
+  loadLoggers();
+  if (loggersTimer) return;
+  // Light refresh so externally-changed levels (or the app starting/stopping)
+  // are reflected while the tab is open.
+  loggersTimer = setInterval(loadLoggers, 5000);
+}
+
+function stopLoggersPolling() {
+  if (loggersTimer) {
+    clearInterval(loggersTimer);
+    loggersTimer = null;
+  }
+}
+
+async function loadLoggers() {
+  if (!appRunning) {
+    renderLoggers({ available: false, appDown: true });
+    return;
+  }
+  renderLoggers(await getJson("/api/loggers"));
+}
+
+function renderLoggers(data, force) {
+  if (!data || data.appDown || (!data.available && !appRunning)) {
+    loggersSrc.hidden = true;
+    loggersControls.hidden = true;
+    loggersListEl.innerHTML =
+      '<p class="muted">App not running. Click <strong>Run</strong> to control its log levels.</p>';
+    loggersData = null;
+    return;
+  }
+  if (!data.available) {
+    loggersSrc.hidden = true;
+    loggersControls.hidden = true;
+    loggersListEl.innerHTML =
+      '<p class="muted">No Spring Boot Actuator <code>/loggers</code> endpoint is exposed on the running app, so log ' +
+      "levels can\u2019t be changed here. Add <code>spring-boot-starter-actuator</code> and expose it " +
+      "(<code>management.endpoints.web.exposure.include=loggers</code>).</p>";
+    loggersData = null;
+    return;
+  }
+  loggersData = data;
+  loggersSrc.hidden = false;
+  loggersSrc.className = "src actuator";
+  loggersSrc.textContent = "Actuator";
+  loggersControls.hidden = false;
+  // Don't rebuild the list out from under the user while they're using it
+  // (an open select or focused search box) unless explicitly forced.
+  if (!force && loggersListEl.contains(document.activeElement)) return;
+  renderLoggersList();
+}
+
+function renderLoggersList() {
+  if (!loggersData || !loggersData.available) return;
+  const levels = loggersData.levels && loggersData.levels.length ? loggersData.levels : LOGGER_LEVELS;
+  const term = (loggersSearch.value || "").trim().toLowerCase();
+  // No search: show ROOT plus loggers with an explicit level (the interesting
+  // ones). With a search: reveal any matching package/class so its level can be set.
+  let list = term
+    ? loggersData.loggers.filter((l) => l.name.toLowerCase().includes(term))
+    : loggersData.loggers.filter((l) => l.name === "ROOT" || l.configuredLevel);
+  const CAP = 200;
+  const extra = list.length - CAP;
+  if (extra > 0) list = list.slice(0, CAP);
+  if (!list.length) {
+    loggersListEl.innerHTML = `<p class="muted">${
+      term
+        ? "No loggers match \u201C" + esc(term) + "\u201D."
+        : "No explicitly-configured loggers. Search to set a level on any package."
+    }</p>`;
+    return;
+  }
+  const note = extra > 0 ? `<p class="hint">${extra} more match \u2014 refine your search.</p>` : "";
+  loggersListEl.innerHTML = list.map((l) => loggerRow(l, levels)).join("") + note;
+  loggersListEl.querySelectorAll("select[data-logger]").forEach((sel) => {
+    sel.addEventListener("change", () => changeLoggerLevel(sel.dataset.logger, sel.value));
+  });
+}
+
+function loggerRow(l, levels) {
+  const cur = l.configuredLevel || "";
+  const inheritLabel = l.configuredLevel ? "Inherit" : `Inherit (${esc(l.effectiveLevel || "?")})`;
+  const opts =
+    `<option value="">${inheritLabel}</option>` +
+    levels.map((lv) => `<option value="${lv}"${lv === cur ? " selected" : ""}>${lv}</option>`).join("");
+  const eff = (l.configuredLevel || l.effectiveLevel || "").toLowerCase();
+  const name = l.name === "ROOT" ? "ROOT" : esc(l.name);
+  return (
+    `<div class="logger-row"><span class="logger-name" title="${esc(l.name)}">${name}</span>` +
+    `<select class="logger-level lvl-${eff}" data-logger="${esc(l.name)}">${opts}</select></div>`
+  );
+}
+
+async function changeLoggerLevel(name, level) {
+  const r = await postJson("/api/loggers", { name, level: level || null });
+  if (!r || r.ok === false) {
+    appendLine(
+      `[canvas] couldn't set ${name} \u2192 ${level || "inherit"}: ${(r && r.error) || "request failed"}`,
+      "stderr",
+      "run",
+    );
+  }
+  if (r && r.status) {
+    loggersData = r.status;
+    renderLoggersList();
+  } else {
+    loadLoggers();
+  }
+}
+
+if (loggersSearch) loggersSearch.addEventListener("input", () => renderLoggersList());
 
 function statusDot(st) {
   return `<span class="dot ${st}"></span>`;
@@ -1172,6 +1489,14 @@ function applySettingsState(s) {
   devtoolsInput.checked = s.devtools === true;
   randomportInput.checked = s.randomPort === true;
   openBrowserInput.checked = s.openBrowser === true;
+  if (autoProfileInput) autoProfileInput.checked = s.autoProfile === true;
+  if (flameEvent && typeof s.autoProfileEvent === "string" && document.activeElement !== flameEvent) {
+    flameEvent.value = s.autoProfileEvent;
+  }
+  if (flameDuration && s.autoProfileDuration != null && document.activeElement !== flameDuration) {
+    const want = String(s.autoProfileDuration);
+    if ([...flameDuration.options].some((o) => o.value === want)) flameDuration.value = want;
+  }
   if (document.activeElement !== springInput && typeof s.springProfiles === "string") {
     springInput.value = s.springProfiles;
   }
@@ -1236,6 +1561,7 @@ function applyEnv(env) {
     warmDocs.href = install.url || "https://github.com/apache/maven-mvnd";
   }
   applySettingsState(env && env.settings);
+  applyProfilerEnv(env && env.profiler);
 }
 
 async function post(path, body) {
@@ -1555,6 +1881,9 @@ function saveSettings() {
     devtools: devtoolsInput.checked,
     randomPort: randomportInput.checked,
     openBrowser: openBrowserInput.checked,
+    autoProfile: autoProfileInput ? autoProfileInput.checked : false,
+    autoProfileEvent: flameEvent ? flameEvent.value : "cpu",
+    autoProfileDuration: flameDuration ? Number(flameDuration.value) : 30,
   });
 }
 warmInput.addEventListener("change", saveSettings);
@@ -1562,6 +1891,9 @@ devtoolsInput.addEventListener("change", saveSettings);
 randomportInput.addEventListener("change", saveSettings);
 openBrowserInput.addEventListener("change", saveSettings);
 springInput.addEventListener("change", saveSettings);
+if (autoProfileInput) autoProfileInput.addEventListener("change", saveSettings);
+if (flameEvent) flameEvent.addEventListener("change", saveSettings);
+if (flameDuration) flameDuration.addEventListener("change", saveSettings);
 
 btnFix.onclick = async () => {
   const kind = btnFix.dataset.kind;
@@ -1623,6 +1955,7 @@ es.addEventListener("debug", (e) => {
   debugSnap = JSON.parse(e.data);
   renderDebug(debugSnap, statusSnap);
 });
+es.addEventListener("profile", (e) => renderProfileState(JSON.parse(e.data)));
 es.addEventListener("test-progress", (e) => {
   renderTestProgress(JSON.parse(e.data));
 });
@@ -1644,6 +1977,10 @@ es.addEventListener("reset", (e) => {
   } catch {}
   const el = consoles[op];
   if (el) el.innerHTML = "";
+  if (op === "run") {
+    lastRunLevel = "INFO";
+    updateLogCount();
+  }
 });
 
 // Full-cover loading overlay: dismissed once the first /api/state lands (or a
@@ -1667,6 +2004,7 @@ fetch(`/api/state?${qs}`)
     renderMetrics(s.metrics);
     applyEnv(s.env);
     renderDebug(debugSnap, s.status);
+    if (s.profile) renderProfileState(s.profile);
     if (s.status && s.status.test) lastRunnerLabel = s.status.test.runnerLabel;
     renderTests(s.tests, { runnerLabel: lastRunnerLabel });
     for (const l of s.console || []) appendLine(l.line, l.stream, l.op);
@@ -1739,3 +2077,231 @@ document.addEventListener("click", (e) => {
   e.preventDefault();
   post("/api/open-url", { url: a.href });
 });
+
+// ---------------------------------------------------------------------------
+// Run tab: async-profiler flame graph
+// ---------------------------------------------------------------------------
+let profilerEnv = null; // env.profiler capability snapshot
+let runActive = false; // app currently running (run lane busy / has a port)
+let profileState = { status: "idle" };
+let lastFlameFinishedAt = 0;
+let flameRootNode = null; // full tree root from the last run
+let flameZoomNode = null; // currently displayed (zoomed) subtree root
+let flameTotal = 0; // grand-total samples (for absolute %)
+const profileSpin = btnProfile && btnProfile.querySelector(".btn-spin");
+
+const EVENT_LABELS = { cpu: "CPU", alloc: "allocations", wall: "wall clock", lock: "lock contention" };
+const eventLabel = (e) => EVENT_LABELS[e] || e || "CPU";
+const fmtInt = (n) => Number(n || 0).toLocaleString();
+
+// Enable Record only when async-profiler is available AND the app is running AND
+// no run is already in flight.
+function updateProfileButton() {
+  if (!btnProfile) return;
+  const avail = !!(profilerEnv && profilerEnv.available && profilerEnv.supported);
+  const running = profileState.status === "running";
+  btnProfile.disabled = !avail || !runActive || running;
+  btnProfile.title = !avail
+    ? "async-profiler isn't available"
+    : !runActive
+      ? "Start the app with Run before recording a flame graph"
+      : running
+        ? "A profiling run is already in progress"
+        : "Record a flame graph from the running app";
+}
+
+// Show / hide the install banner and gate the controls on the profiler snapshot.
+function applyProfilerEnv(p) {
+  profilerEnv = p || null;
+  const supported = !!(p && p.supported);
+  const available = !!(p && p.available);
+  if (flameUnavailable) {
+    if (!supported) {
+      flameUnavailable.hidden = false;
+      flameMsg.textContent = "async-profiler has no Windows build, so flame graphs aren't available on this platform.";
+      flameCmd.hidden = true;
+      flameDocs.href = (p && p.install && p.install.url) || "https://github.com/async-profiler/async-profiler";
+    } else if (!available) {
+      flameUnavailable.hidden = false;
+      const inst = (p && p.install) || {};
+      const os = inst.os ? ` on ${inst.os}` : "";
+      flameMsg.innerHTML =
+        `<strong>async-profiler</strong> isn't installed${os}, so flame graphs are disabled. ` +
+        (inst.cmd ? "Install it to enable them:" : "Install it (and reopen the canvas) to enable them:");
+      if (inst.cmd) {
+        flameCmd.textContent = inst.cmd;
+        flameCmd.hidden = false;
+      } else {
+        flameCmd.hidden = true;
+      }
+      flameDocs.href = inst.url || "https://github.com/async-profiler/async-profiler";
+    } else {
+      flameUnavailable.hidden = true;
+    }
+  }
+  updateProfileButton();
+}
+
+// Apply a profile-state snapshot (from SSE `profile` or /api/state). Drives the
+// status line, the Stop button, the Record spinner, and triggers a data fetch
+// when a run completes.
+function renderProfileState(p) {
+  if (!p) return;
+  profileState = p;
+  const running = p.status === "running";
+  if (btnProfileStop) btnProfileStop.hidden = !running;
+  if (profileSpin) profileSpin.hidden = !running;
+  if (flameStatus) {
+    if (running) {
+      flameStatus.textContent = `Sampling ${eventLabel(p.event)}${p.pid ? ` (pid ${p.pid})` : ""} for ${p.duration}s\u2026`;
+      flameStatus.className = "muted";
+    } else if (p.status === "done") {
+      flameStatus.textContent = `${fmtInt(p.total)} samples \u00b7 ${eventLabel(p.event)} \u00b7 ${p.duration}s`;
+      flameStatus.className = "muted ok";
+    } else if (p.status === "error") {
+      flameStatus.textContent = p.error || "Profiling failed.";
+      flameStatus.className = "muted err";
+    } else {
+      flameStatus.textContent = "";
+      flameStatus.className = "muted";
+    }
+  }
+  updateProfileButton();
+  if (p.status === "done" && p.hasGraph && p.finishedAt && p.finishedAt !== lastFlameFinishedAt) {
+    lastFlameFinishedAt = p.finishedAt;
+    fetchFlameData();
+  }
+}
+
+async function fetchFlameData() {
+  try {
+    const r = await fetch(`/api/profile/data?${qs}`);
+    const d = await r.json();
+    if (d && d.flame) renderFlameData(d);
+  } catch {
+    /* leave the previous graph in place */
+  }
+}
+
+function renderFlameData(d) {
+  flameRootNode = d.flame;
+  flameZoomNode = flameRootNode;
+  flameTotal = d.total || (d.flame && d.flame.v) || 0;
+  if (flameEmpty) flameEmpty.hidden = true;
+  if (flameGraph) flameGraph.hidden = false;
+  if (flameSearch) flameSearch.hidden = false;
+  if (btnFlameReset) btnFlameReset.hidden = false;
+  if (btnFlameFix) btnFlameFix.hidden = false;
+  renderFlame();
+  renderHotspots(d.top || []);
+}
+
+// Warm-hued, stable per-frame colour (orange→yellow) derived from the name hash.
+function frameColor(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  const hue = 12 + (h % 42); // 12..53: reds → oranges → yellows
+  const sat = 72 + (h % 14); // 72..85%
+  const lig = 48 + (h % 12); // 48..59%
+  return `hsl(${hue} ${sat}% ${lig}%)`;
+}
+
+const FLAME_ROW = 22;
+// Lay out the current (zoom) subtree as absolutely-positioned divs: width is the
+// fraction of the zoom root's samples, top is depth * row height.
+function renderFlame() {
+  if (!flameZoomNode || !flameGraph) return;
+  const total = flameZoomNode.v || 1;
+  const q = (flameSearch && flameSearch.value.trim().toLowerCase()) || "";
+  const rows = [];
+  let maxDepth = 0;
+  (function layout(node, depth, x0) {
+    if (depth > maxDepth) maxDepth = depth;
+    rows.push({ node, depth, x: x0, w: node.v / total });
+    let cx = x0;
+    for (const ch of node.c || []) {
+      layout(ch, depth + 1, cx);
+      cx += ch.v / total;
+    }
+  })(flameZoomNode, 0, 0);
+  flameGraph.style.height = (maxDepth + 1) * FLAME_ROW + "px";
+  const frag = document.createDocumentFragment();
+  for (const f of rows) {
+    const div = document.createElement("div");
+    div.className = "flame-frame";
+    div.style.left = (f.x * 100).toFixed(4) + "%";
+    div.style.width = Math.max(0, f.w * 100).toFixed(4) + "%";
+    div.style.top = f.depth * FLAME_ROW + "px";
+    div.style.background = frameColor(f.node.n);
+    if (q && f.node.n.toLowerCase().includes(q)) div.classList.add("match");
+    const span = document.createElement("span");
+    span.textContent = f.node.n;
+    div.appendChild(span);
+    div.title = f.node.n;
+    div.onclick = () => {
+      flameZoomNode = f.node;
+      renderFlame();
+    };
+    div.onmouseenter = () => showFrameInfo(f.node);
+    frag.appendChild(div);
+  }
+  flameGraph.replaceChildren(frag);
+}
+
+function showFrameInfo(node) {
+  if (!flameInfo) return;
+  flameInfo.hidden = false;
+  const pct = flameTotal ? (node.v / flameTotal) * 100 : 0;
+  flameInfo.innerHTML = `<code>${esc(node.n)}</code> &middot; ${fmtInt(node.v)} samples (${pct.toFixed(2)}%)`;
+}
+
+function renderHotspots(top) {
+  if (!flameHotspots) return;
+  if (!top.length) {
+    flameHotspots.innerHTML = "";
+    return;
+  }
+  const rows = top
+    .map((h) => {
+      const pct = (h.pct * 100).toFixed(1);
+      const bar = Math.min(100, h.pct * 100).toFixed(1);
+      return (
+        `<div class="hot"><span class="hot-bar" style="width:${bar}%"></span>` +
+        `<span class="hot-name" title="${esc(h.name)}">${esc(h.name)}</span>` +
+        `<span class="hot-pct">${pct}%</span></div>`
+      );
+    })
+    .join("");
+  flameHotspots.innerHTML = `<div class="hot-head">Top self-time hotspots</div>${rows}`;
+}
+
+// Start a profiling run using the currently-selected event + duration (the manual
+// Record button). Auto-record at startup is handled by the backend.
+async function startProfileRun() {
+  const event = flameEvent ? flameEvent.value : "cpu";
+  const duration = (flameDuration && Number(flameDuration.value)) || 30;
+  if (flameStatus) {
+    flameStatus.textContent = "Starting\u2026";
+    flameStatus.className = "muted";
+  }
+  const r = await postJson("/api/profile", { event, duration });
+  if (r && r.ok === false && r.error && flameStatus) {
+    flameStatus.textContent = r.error;
+    flameStatus.className = "muted err";
+  }
+}
+
+if (btnProfile) btnProfile.onclick = () => startProfileRun();
+if (btnProfileStop) btnProfileStop.onclick = () => post("/api/profile/stop", {});
+if (btnFlameReset)
+  btnFlameReset.onclick = () => {
+    if (!flameRootNode) return;
+    flameZoomNode = flameRootNode;
+    renderFlame();
+  };
+if (flameSearch) flameSearch.oninput = () => renderFlame();
+if (btnFlameFix)
+  btnFlameFix.onclick = () => {
+    post("/api/fix", { kind: "profile" });
+    appendLine("[canvas] asked Copilot to analyze the flame-graph hotspots.", "stdout", "run");
+  };

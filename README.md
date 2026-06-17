@@ -55,9 +55,31 @@ wins; when neither is found the console says so and stays disabled until one is 
 - **Live JVM metrics** &mdash; once the app is up, the panel shows heap / non-heap,
   threads, health, profiles and startup info, sourced from the richest endpoint
   available (BootUI → Actuator → Quarkus Micrometer/health → process).
+- **Live logs &amp; log levels** &mdash; the Run console doubles as a log viewer with a
+  minimum-severity filter and text search (stack-trace lines inherit their parent
+  level, and lines are colored by severity). A **Loggers** side tab lists the running
+  app's loggers from Spring Boot Actuator <code>/loggers</code> and lets you change any
+  level live &mdash; no restart &mdash; so you can flip a package to <code>DEBUG</code>,
+  reproduce, and dial it back.
+- **Flame graph (with async-profiler)** &mdash; when [async-profiler](https://github.com/async-profiler/async-profiler)
+  (`asprof`) is installed, the Run tab's **Flame graph** view records an on-demand
+  CPU / allocation / wall-clock / lock-contention profile of the running app's JVM
+  and renders an interactive flame graph (zoom, hover, search) plus a **Top
+  hotspots** list. An **Analyze hotspots with Copilot** button sends the hottest
+  methods to the agent. An **Automatically record at startup** toggle (off by
+  default) kicks off a recording on its own each time the app becomes reachable.
+  Degrades gracefully with an install hint when the profiler
+  is missing (and is unavailable on Windows, which async-profiler does not support).
 - **Fix with Copilot** &mdash; on a compile error, failing tests, or a startup
   crash, a button pushes a context-rich request back into the chat so the agent
   can diagnose and fix it.
+- **Responsive layout** &mdash; on a wide canvas the **Live JVM / Loggers / Settings**
+  panel is docked on the right; as the canvas narrows it collapses to an icon rail on
+  the right edge, and tapping an icon slides that pane out as an overlay over the main
+  console. A toggle button (the chevron in the panel's tab bar / rail) hides or shows
+  the panel on demand in any layout &mdash; even when docked &mdash; so you can give the
+  console the full width (tap a rail icon, the chevron, or press <kbd>Esc</kbd> to
+  bring it back).
 - **Keep the JVM warm** &mdash; optionally use the [Maven Daemon (`mvnd`)](https://github.com/apache/maven-mvnd)
   (Maven) or the always-on **Gradle daemon** for Build / Test / Package so repeat runs
   skip JVM startup and JIT warmup.
@@ -79,7 +101,7 @@ The console adapts to whatever the project provides, detected from the build fil
 | **Java** (base)               | `pom.xml` / `mvnw` or `build.gradle` / `gradlew`  | Build, Test (graphical JUnit report), Package                                                                                                                                                                                           |
 | **Spring Boot**               | Spring Boot Maven plugin / Gradle plugin          | Run via `spring-boot:run` (Maven) or `bootRun` (Gradle) + editable Spring profiles. (No Spring Boot ⇒ the generic runner uses the Gradle `application` plugin, an executable `java -jar`, or the configured main class via `java -cp`.) |
 | **Quarkus**                   | Quarkus Maven plugin / `io.quarkus` Gradle plugin | Run via `quarkus:dev` (Maven) or `quarkusDev` (Gradle) — dev mode with built-in live reload — + editable Quarkus profile                                                                                                                |
-| **Actuator** (runtime)        | `/actuator/*` or `/management/*` answers          | Live metrics normalized from Actuator — JSON `/metrics` endpoint or the Prometheus scrape (heap, threads, health, uptime)                                                                                                               |
+| **Actuator** (runtime)        | `/actuator/*` or `/management/*` answers          | Live metrics normalized from Actuator — JSON `/metrics` endpoint or the Prometheus scrape (heap, threads, health, uptime) — plus runtime log-level control when `/loggers` is exposed                                                   |
 | **Quarkus metrics** (runtime) | `/q/metrics` / `/q/health` answer                 | Live metrics normalized from Quarkus Micrometer (Prometheus) + SmallRye Health                                                                                                                                                          |
 | **BootUI** (runtime)          | `/bootui/api/*` answers                           | Rich BootUI metrics **and** the MCP advisor-scan panel                                                                                                                                                                                  |
 
@@ -153,10 +175,11 @@ In a Copilot app session on a Maven or Gradle project, open the **Coffilot** can
 6. **Stop** when done.
 
 The agent can drive the same flow with the `build_app`, `run_tests`,
-`package_app`, `start_app`, `stop_app`, `get_status`, `get_metrics`, `fix_issue`
-and `run_scan` actions, plus the debug actions `start_debug`, `stop_debug`,
-`set_breakpoint`, `remove_breakpoint`, `debug_continue`, `debug_step`,
-`debug_stack`, `get_variables`, `debug_evaluate` and `debug_status`.
+`package_app`, `start_app`, `stop_app`, `get_status`, `get_metrics`, `profile_app`,
+`fix_issue`, `run_scan` and `set_log_level` actions, plus the debug actions
+`start_debug`, `stop_debug`, `set_breakpoint`, `remove_breakpoint`,
+`debug_continue`, `debug_step`, `debug_stack`, `get_variables`, `debug_evaluate`
+and `debug_status`.
 
 ## How it works
 
@@ -177,6 +200,8 @@ Coffilot is a Node process (the extension) that:
   for Spring/app Gradle, or Quarkus's built-in `-Ddebug` for Quarkus) and attaches a
   self-contained JDWP client (`jdwp.mjs`, loopback only) that the UI and agent
   actions drive;
+- proxies Spring Boot Actuator `/loggers` so the canvas can read and change logger
+  levels on the running app without a restart;
 - pushes contextual "fix this" turns back into the chat through the Copilot SDK.
 
 The loopback HTTP server that backs the iframe binds to `127.0.0.1` only. See
