@@ -812,6 +812,21 @@ function renderTests(report, opts) {
     return;
   }
   const s = report.summary;
+  // A non-zero exit with no executed tests means the build failed before any test
+  // ran — almost always a compile error. Show that plainly instead of a misleading
+  // "0 tests / no reports" view, and point at the console + Fix button. (A Stop
+  // leaves buildExit null, so an interrupted run never shows as a build failure.)
+  if (report.buildExit != null && report.buildExit !== 0 && s.tests === 0) {
+    testsEl.innerHTML =
+      '<p class="empty bad">Build failed (exit ' +
+      report.buildExit +
+      ") before any tests ran \u2014 check the Maven console above for the error" +
+      ", or click <strong>Fix with Copilot</strong>.</p>";
+    tabBadge.hidden = false;
+    tabBadge.textContent = "!";
+    tabBadge.className = "badge bad";
+    return;
+  }
   const failed = s.failures + s.errors;
   // Tab badge
   tabBadge.hidden = false;
@@ -1423,11 +1438,20 @@ fullbuildInput.addEventListener("change", () => {
   fullBuildSetting = fullbuildInput.checked === true;
   saveSettings();
 });
-// "Continuous testing" starts/stops the server-side watch loop. The server
-// echoes the new state via the status SSE, which reflectTestToggles() applies.
-continuousInput.addEventListener("change", () => {
+// "Continuous testing" starts/stops the server-side watch loop. The endpoint
+// returns the authoritative continuous state; apply it immediately (don't wait
+// for the status SSE) so the Full build toggle re-enables and the Test button's
+// affected/full decision is correct the instant the loop stops.
+continuousInput.addEventListener("change", async () => {
   if (continuousInput.disabled) return;
-  post("/api/test/continuous", { enabled: continuousInput.checked, mavenProfiles: mvnProfiles() });
+  const res = await postJson("/api/test/continuous", {
+    enabled: continuousInput.checked,
+    mavenProfiles: mvnProfiles(),
+  });
+  if (res && res.continuous && statusSnap) {
+    statusSnap.continuous = res.continuous;
+    reflectTestToggles();
+  }
 });
 
 btnFix.onclick = async () => {

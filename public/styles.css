@@ -920,6 +920,9 @@ aside h2 {
   padding: 2rem 0;
   text-align: center;
 }
+.empty.bad {
+  color: var(--true-color-red, #cf222e);
+}
 /* Live test progress (class-by-class, while the run is in flight). */
 .suite-row {
   display: flex;

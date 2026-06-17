@@ -1566,6 +1566,7 @@ let continuousPending = false;
 let continuousDebounce = null;
 let continuousProfiles = undefined; // Maven profiles captured when the mode was enabled
 let continuousSuspendDepth = 0; // >0 while a manual/agent build-group op holds priority
+let agentTurnSuspended = false; // true while the suspend gate is held for an in-flight agent turn
 
 function continuousStatus() {
   return { enabled: !!continuousWatcher, busy: continuousBusy };
@@ -1580,8 +1581,8 @@ function sourceWatchRoots() {
   return [...new Set(bases)].filter((d) => existsSync(d));
 }
 
-function startContinuousTesting(mavenProfiles) {
-  stopContinuousTesting({ silent: true });
+async function startContinuousTesting(mavenProfiles) {
+  await stopContinuousTesting({ silent: true });
   const roots = sourceWatchRoots();
   if (!roots.length) {
     pushConsole("[continuous] no src directory to watch; continuous testing not started.", "stderr", "test");
@@ -1616,11 +1617,15 @@ function startContinuousTesting(mavenProfiles) {
   return { ok: true, continuous: continuousStatus() };
 }
 
-function stopContinuousTesting({ silent = false } = {}) {
+async function stopContinuousTesting({ silent = false } = {}) {
   if (continuousDebounce) {
     clearTimeout(continuousDebounce);
     continuousDebounce = null;
   }
+  // Drop any deferred re-run so turning continuous off fully quiets the loop —
+  // otherwise a pending flag could re-arm a run after we've stopped.
+  continuousPending = false;
+  const wasOn = !!continuousWatcher;
   if (continuousWatcher) {
     try {
       continuousWatcher.close();
@@ -1628,6 +1633,17 @@ function stopContinuousTesting({ silent = false } = {}) {
       /* ignore */
     }
     continuousWatcher = null;
+  }
+  // If an automatic run is in flight, pre-empt it so turning continuous off
+  // immediately frees the shared Maven lane. Otherwise the in-flight run keeps the
+  // lane busy and the next manual Build/Test/Package is rejected as "already
+  // running" and silently no-ops — the canvas then looks stuck/empty.
+  if (continuousBusy) {
+    stopApp("maven");
+    await waitForLaneIdle(mvnLaneBusy, 8000);
+    continuousBusy = false;
+  }
+  if (wasOn) {
     if (!silent) pushConsole("[continuous] stopped.", "stdout", "test");
     broadcast("status", statusSnapshot());
   }
@@ -1692,6 +1708,42 @@ async function preemptContinuous() {
   stopApp("maven");
   await waitForLaneIdle(mvnLaneBusy, 8000);
 }
+
+// Pause continuous testing for the whole time the agent is working a request.
+// The agent mutates the working tree directly — editing files, reverting via
+// `git checkout`, the Fix-with-Copilot flow — outside any agent action, so those
+// raw changes would otherwise fire the src watcher and start a continuous run that
+// races (and can hang) Maven against files being rewritten/reverted underneath it.
+// We suspend on the first assistant turn and lift the gate once when the session
+// goes idle (the whole agentic loop, including tool calls and git ops, has
+// settled), so continuous testing re-runs exactly once against the agent's final
+// state instead of racing every intermediate edit. `assistant.turn_start` fires
+// per assistant turn (several times within one request), so a flag collapses the
+// many turn_starts into a single suspend that the idle event balances.
+function suspendContinuousForAgentTurn() {
+  if (agentTurnSuspended) return;
+  agentTurnSuspended = true;
+  if (continuousWatcher) {
+    pushConsole(
+      "[continuous] paused while Copilot works on your request; will re-run once it finishes.",
+      "stdout",
+      "test",
+    );
+  }
+  suspendContinuous().catch((e) =>
+    session.log(`[coffilot] agent-turn suspend failed: ${e.message}`, { level: "warn" }),
+  );
+}
+
+function resumeContinuousAfterAgentTurn() {
+  if (!agentTurnSuspended) return;
+  agentTurnSuspended = false;
+  if (continuousWatcher) pushConsole("[continuous] resuming now that Copilot has finished.", "stdout", "test");
+  resumeContinuous();
+}
+
+session.on("assistant.turn_start", suspendContinuousForAgentTurn);
+session.on("session.idle", resumeContinuousAfterAgentTurn);
 
 // Start the live-reload watcher if DevTools is enabled and a Spring app with the
 // DevTools dependency is currently running. Safe to call repeatedly. (Quarkus dev
@@ -2535,7 +2587,14 @@ async function test(extraArgs, warm, mavenProfiles, opts = {}) {
   const gated = !opts.fromContinuous;
   if (gated) await suspendContinuous();
   try {
-    if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
+    if (mvnLaneBusy()) {
+      pushConsole(
+        "[coffilot] A build, test or package is already running — stop it first, then click Test again.",
+        "stderr",
+        "test",
+      );
+      return { ok: false, error: "A build, test or package is already running. Stop it first." };
+    }
     const r = resolveRunner(warm);
     const base = extraArgs && extraArgs.length ? extraArgs : defaultTestArgs(r.warm);
     const args = withMavenProfiles(base, mavenProfiles);
@@ -2566,6 +2625,11 @@ async function test(extraArgs, warm, mavenProfiles, opts = {}) {
       broadcastTestProgress();
     }
     const report = await collectSurefireReport(testRunStartedAt);
+    // Tag the report with the tool's exit code so the graphical view can tell a
+    // genuine "no tests" run apart from a build/compile failure (non-zero exit with
+    // no Surefire reports), which otherwise looks like Coffilot ran nothing. null =
+    // killed/stopped, which must not be shown as a build failure.
+    report.buildExit = code;
     lastTestReport = report;
     lastTest = report.summary;
     // Persist the total only when the tool exited on its own (code is a number)
@@ -2652,69 +2716,107 @@ async function runAffectedTests(warm, mavenProfiles, opts = {}) {
 }
 
 async function runAffectedTestsCore(warm, mavenProfiles, opts = {}) {
-  if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
-
-  // Continuous mode compiles the changed sources first so the selection below sees
-  // the just-saved edit (new classes / new dependency edges land in the .class index
-  // the graph is built from). A compile failure surfaces in the Test console and
-  // stops the run — the tests couldn't have compiled anyway, and it re-runs on the
-  // next save. Manual / agent affected runs skip this and stay fast.
-  if (opts.fromContinuous) {
-    const code = await compileForSelection(warm, mavenProfiles);
-    if (code === null) return { ok: false, error: "Interrupted." };
-    if (code !== 0) {
+  if (mvnLaneBusy()) {
+    if (!opts.fromContinuous) {
       pushConsole(
-        "[continuous] compilation failed — fix the errors above; tests re-run on the next save.",
+        "[coffilot] A build, test or package is already running — stop it first, then click Test again.",
         "stderr",
         "test",
       );
-      return { ok: false, error: "Compilation failed.", compileFailed: true };
     }
+    return { ok: false, error: "A build, test or package is already running. Stop it first." };
   }
 
-  const sel = computeAffectedTests();
-  broadcast("tests-selection", sel);
+  // Only test() refreshes the graphical test view (it broadcasts a "tests" event).
+  // In continuous mode, compileForSelection below runs on the test lane in phase
+  // "testing", which makes followLaneActivity show the "Running tests…" placeholder.
+  // If we flash that placeholder but then exit early (interrupted, compile failure, or
+  // no affected tests after compiling) without handing off to test(), the finally
+  // re-broadcasts the last report so the placeholder clears. When we never touch the
+  // lane (e.g. nothing changed vs HEAD) we leave the view as it is — blanking it to
+  // "No test run yet" would look broken.
+  let suiteRan = false;
+  let flashedLane = false;
+  try {
+    // Continuous mode compiles the changed sources first so the selection below sees
+    // the just-saved edit (new classes / new dependency edges land in the .class index
+    // the graph is built from). A compile failure surfaces in the Test console and
+    // stops the run — the tests couldn't have compiled anyway, and it re-runs on the
+    // next save. Manual / agent affected runs skip this and stay fast.
+    if (opts.fromContinuous) {
+      // Skip the compile entirely when nothing changed vs HEAD (e.g. the agent
+      // reverted the edit via git): there's nothing to compile or test, and a no-op
+      // compile would needlessly flash the test lane through its "testing" phase.
+      const git = gitChangedFiles();
+      const hasChangedSource = git.ok && git.files.some((f) => sourceFileToClass(f));
+      if (hasChangedSource) {
+        flashedLane = true;
+        const code = await compileForSelection(warm, mavenProfiles);
+        if (code === null) return { ok: false, error: "Interrupted." };
+        if (code !== 0) {
+          pushConsole(
+            "[continuous] compilation failed — fix the errors above; tests re-run on the next save.",
+            "stderr",
+            "test",
+          );
+          return { ok: false, error: "Compilation failed.", compileFailed: true };
+        }
+      }
+    }
 
-  if (!sel.ok) {
-    pushConsole(`[coffilot] Affected tests: ${sel.message}`, "stderr", "test");
-    return { ok: false, error: sel.message };
-  }
-  if (!sel.sources.length) {
-    const msg = sel.changedFiles.length
-      ? "No changed Java/Kotlin sources vs HEAD — nothing to test."
-      : "No uncommitted changes vs HEAD — nothing to test.";
-    pushConsole(`[coffilot] ${msg}`, "stdout", "test");
-    return { ok: true, skipped: true, selection: sel, message: msg };
-  }
-  if (!sel.tests.length) {
-    pushConsole(
-      `[coffilot] ${sel.sources.length} changed source(s) but no affected tests were found.`,
-      "stdout",
-      "test",
-    );
-    if (sel.fallback) {
+    const sel = computeAffectedTests();
+    broadcast("tests-selection", sel);
+
+    if (!sel.ok) {
+      pushConsole(`[coffilot] Affected tests: ${sel.message}`, "stderr", "test");
+      return { ok: false, error: sel.message };
+    }
+    if (!sel.sources.length) {
+      const msg = sel.changedFiles.length
+        ? "No changed Java/Kotlin sources vs HEAD — nothing to test."
+        : "No uncommitted changes vs HEAD — nothing to test.";
+      pushConsole(`[coffilot] ${msg}`, "stdout", "test");
+      return { ok: true, skipped: true, selection: sel, message: msg };
+    }
+    if (!sel.tests.length) {
       pushConsole(
-        "[coffilot] Compiled classes not found — run Build for dependency-accurate selection.",
+        `[coffilot] ${sel.sources.length} changed source(s) but no affected tests were found.`,
         "stdout",
         "test",
       );
+      if (sel.fallback) {
+        pushConsole(
+          "[coffilot] Compiled classes not found — run Build for dependency-accurate selection.",
+          "stdout",
+          "test",
+        );
+      }
+      return { ok: true, skipped: true, selection: sel };
     }
-    return { ok: true, skipped: true, selection: sel };
+
+    pushConsole(
+      `[coffilot] Affected-test selection: ${sel.tests.length} test class(es) affected by ${sel.sources.length} changed source(s)${sel.fallback ? " (name-based fallback — run Build for accurate selection)" : ""}.`,
+      "stdout",
+      "test",
+    );
+    for (const t of sel.tests) pushConsole(`  • ${t.fqcn}`, "stdout", "test");
+
+    const args = withMavenProfiles(affectedTestArgs(sel.tests, warm), mavenProfiles);
+    const result = await test(args, warm, mavenProfiles, {
+      affected: true,
+      fromContinuous: opts.fromContinuous === true,
+    });
+    // test() only refreshes the view when it actually spawned the suite (its result
+    // carries an exitCode); if it bailed early — e.g. the lane was grabbed during the
+    // await above — fall through to the finally so the view still recovers.
+    suiteRan = result != null && "exitCode" in result;
+    return { ...result, selection: sel };
+  } finally {
+    // Only recover the view if we actually flashed the "Running tests…" placeholder
+    // (a continuous compile) but never handed off to test(); otherwise leave whatever
+    // the view was showing so a no-op run never blanks the last results.
+    if (flashedLane && !suiteRan) broadcast("tests", lastTestReport);
   }
-
-  pushConsole(
-    `[coffilot] Affected-test selection: ${sel.tests.length} test class(es) affected by ${sel.sources.length} changed source(s)${sel.fallback ? " (name-based fallback — run Build for accurate selection)" : ""}.`,
-    "stdout",
-    "test",
-  );
-  for (const t of sel.tests) pushConsole(`  • ${t.fqcn}`, "stdout", "test");
-
-  const args = withMavenProfiles(affectedTestArgs(sel.tests, warm), mavenProfiles);
-  const result = await test(args, warm, mavenProfiles, {
-    affected: true,
-    fromContinuous: opts.fromContinuous === true,
-  });
-  return { ...result, selection: sel };
 }
 
 async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
@@ -4721,7 +4823,8 @@ const server = createServer(async (req, res) => {
     // Toggle the continuous-testing watcher: on saves it re-runs the affected
     // tests. Always uses affected selection (the Full build toggle is disabled
     // in the UI while this is on).
-    const result = body.enabled === true ? startContinuousTesting(body.mavenProfiles) : stopContinuousTesting();
+    const result =
+      body.enabled === true ? await startContinuousTesting(body.mavenProfiles) : await stopContinuousTesting();
     sendJson(res, 200, result);
     return;
   }
