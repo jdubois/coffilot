@@ -238,18 +238,79 @@ function showRunView(view) {
   document
     .querySelectorAll(".subtab[data-rview]")
     .forEach((t) => t.classList.toggle("active", t.dataset.rview === view));
-  document.getElementById("run-console").classList.toggle("active", view === "console");
+  document.getElementById("run-console-view").classList.toggle("active", view === "console");
   document.getElementById("run-flame").classList.toggle("active", view === "flame");
 }
 document.querySelectorAll(".subtab[data-rview]").forEach((t) => (t.onclick = () => showRunView(t.dataset.rview)));
 
-// Aside sub-tabs (Live JVM Metrics / Settings)
+// Aside sub-tabs (Live JVM Metrics / Loggers / Settings) and the collapsible
+// right panel. #workspace.aside-open = expanded (the pane body is shown);
+// #workspace.aside-rail = render the vertical icon rail instead of the docked
+// panel. The rail is used automatically on a narrow canvas, or on demand (via the
+// toggle button) on a wide one. See styles.css for the matching presentation.
+const workspaceEl = document.getElementById("workspace");
+const asideToggle = document.getElementById("aside-toggle");
+const asideDrawer = window.matchMedia("(max-width: 819px)");
+
+function activeAsideTab() {
+  const t = document.querySelector(".atab.active");
+  return t ? t.dataset.atab : null;
+}
+function syncLoggersPolling() {
+  if (loggersTabActive()) startLoggersPolling();
+  else stopLoggersPolling();
+}
+// Show the rail look whenever the canvas is narrow or the panel is collapsed.
+function syncAsideMode() {
+  const open = workspaceEl.classList.contains("aside-open");
+  workspaceEl.classList.toggle("aside-rail", asideDrawer.matches || !open);
+  if (asideToggle) {
+    asideToggle.setAttribute("aria-label", open ? "Hide panel" : "Show panel");
+    asideToggle.title = open ? "Hide panel" : "Show panel";
+  }
+}
+function setAsideOpen(open) {
+  workspaceEl.classList.toggle("aside-open", open);
+  syncAsideMode();
+  syncLoggersPolling();
+}
 function showAsideTab(name) {
   document.querySelectorAll(".atab").forEach((t) => t.classList.toggle("active", t.dataset.atab === name));
   document.getElementById("atab-metrics").classList.toggle("active", name === "metrics");
+  document.getElementById("atab-loggers").classList.toggle("active", name === "loggers");
   document.getElementById("atab-settings").classList.toggle("active", name === "settings");
+  syncLoggersPolling();
 }
-document.querySelectorAll(".atab").forEach((t) => (t.onclick = () => showAsideTab(t.dataset.atab)));
+// Tab click: when collapsed, open the panel to that pane; when already expanded,
+// switch panes, or collapse if you re-tap the pane that's already showing.
+function onAsideTabClick(name) {
+  if (!workspaceEl.classList.contains("aside-open")) {
+    showAsideTab(name);
+    setAsideOpen(true);
+    return;
+  }
+  if (activeAsideTab() === name) {
+    setAsideOpen(false);
+    return;
+  }
+  showAsideTab(name);
+}
+document.querySelectorAll(".atab").forEach((t) => (t.onclick = () => onAsideTabClick(t.dataset.atab)));
+if (asideToggle) asideToggle.onclick = () => setAsideOpen(!workspaceEl.classList.contains("aside-open"));
+// Esc collapses the overlay drawer on a narrow canvas.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && asideDrawer.matches && workspaceEl.classList.contains("aside-open")) {
+    setAsideOpen(false);
+  }
+});
+// Crossing the breakpoint resets to the natural default for that width: docked
+// and open when wide, collapsed to the rail when narrow.
+asideDrawer.addEventListener("change", () => setAsideOpen(!asideDrawer.matches));
+// Initial state: open on a wide canvas, collapsed on a narrow one. No loggers
+// sync here (it would touch state declared later in this module) — polling is
+// driven by tab activation and the metrics tab is the default.
+workspaceEl.classList.toggle("aside-open", !asideDrawer.matches);
+syncAsideMode();
 
 // Floating tooltip controller for [data-tip] elements (the settings info
 // icons). Native title tooltips don't render reliably in the canvas
@@ -294,12 +355,79 @@ document.addEventListener("focusout", hideTip);
 function appendLine(line, stream, op) {
   const el = consoleFor(op);
   const span = document.createElement("span");
-  if (stream === "stderr") span.className = "err";
+  let cls = stream === "stderr" ? "err" : "";
+  if (el === runConsoleEl) {
+    // Tag each run-console line with a severity (continuation/stack-trace lines
+    // inherit the previous line's level) so the log filter and per-level coloring
+    // can work without re-parsing.
+    let level = parseLogLevel(line);
+    if (level) lastRunLevel = level;
+    else level = lastRunLevel;
+    span.dataset.level = level;
+    span.dataset.text = line.toLowerCase();
+    cls = (cls ? cls + " " : "") + "lvl-" + level.toLowerCase();
+    if (!lineMatchesLogFilter(level, span.dataset.text)) span.hidden = true;
+  }
+  if (cls) span.className = cls;
   span.textContent = line + "\n";
   el.appendChild(span);
   while (el.childNodes.length > 2000) el.removeChild(el.firstChild);
   el.scrollTop = el.scrollHeight;
+  if (el === runConsoleEl) updateLogCount();
 }
+
+// ---- Run console log filtering -----------------------------------------
+// The Run console is the app's live log. A minimum-severity select and a text
+// search filter it client-side; nothing leaves the iframe.
+const logLevelSelect = document.getElementById("in-log-level");
+const logSearchInput = document.getElementById("in-log-search");
+const logCountEl = document.getElementById("log-count");
+const LOG_RANK = { TRACE: 0, DEBUG: 1, INFO: 2, WARN: 3, ERROR: 4 };
+let runMinLevel = ""; // "" = show all severities
+let runSearch = "";
+let lastRunLevel = "INFO"; // inherited level for lines without their own
+
+function parseLogLevel(line) {
+  const m = line.match(/\b(TRACE|DEBUG|INFO|WARN(?:ING)?|ERROR|SEVERE|FATAL)\b/);
+  if (!m) return null;
+  const t = m[1];
+  if (t === "WARNING") return "WARN";
+  if (t === "SEVERE" || t === "FATAL") return "ERROR";
+  return t;
+}
+
+function lineMatchesLogFilter(level, lowerText) {
+  if (runMinLevel && (LOG_RANK[level] ?? 2) < LOG_RANK[runMinLevel]) return false;
+  if (runSearch && !lowerText.includes(runSearch)) return false;
+  return true;
+}
+
+function applyLogFilter() {
+  runMinLevel = logLevelSelect ? logLevelSelect.value : "";
+  runSearch = logSearchInput ? logSearchInput.value.trim().toLowerCase() : "";
+  for (const span of runConsoleEl.childNodes) {
+    if (span.nodeType !== 1) continue;
+    span.hidden = !lineMatchesLogFilter(span.dataset.level || "INFO", span.dataset.text || "");
+  }
+  updateLogCount();
+}
+
+function updateLogCount() {
+  if (!logCountEl) return;
+  if (!runMinLevel && !runSearch) {
+    logCountEl.textContent = "";
+    return;
+  }
+  const spans = runConsoleEl.querySelectorAll("span");
+  let shown = 0;
+  spans.forEach((s) => {
+    if (!s.hidden) shown++;
+  });
+  logCountEl.textContent = spans.length ? `showing ${shown} / ${spans.length}` : "";
+}
+
+if (logLevelSelect) logLevelSelect.addEventListener("change", applyLogFilter);
+if (logSearchInput) logSearchInput.addEventListener("input", applyLogFilter);
 
 // Last status snapshot ({ build, test, package, run, reload }).
 // (declared above, near activeTab, so showTab can read it)
@@ -528,14 +656,19 @@ function row(k, v) {
 // value on the next frame, letting the CSS width transition animate smoothly.
 let lastHeapPct = 0;
 function renderMetrics(m) {
+  const nowUp = !!(m && m.appUp);
+  if (nowUp !== appRunning) {
+    appRunning = nowUp;
+    // Reflect the app coming up / going down in the Loggers tab if it's open.
+    if (loggersTabActive()) loadLoggers();
+  }
   if (!m || !m.appUp) {
     lastHeapPct = 0;
     metricsSrc.hidden = true;
     renderMcp(null);
-    metricsEl.innerHTML =
-      '<p class="muted">App not running. Click <strong>Run</strong> to start it (Spring\u2019s <code>dev</code> profile activates BootUI).</p>';
+    metricsEl.innerHTML = '<p class="muted">Application isn\u2019t running or doesn\u2019t expose metrics.</p>';
     metricsHint.innerHTML =
-      "Run a Spring Boot app with the <code>dev</code> profile for rich BootUI metrics, a Quarkus app for Micrometer metrics, or anything exposing Actuator for a subset.";
+      'To get metrics, add <strong>Spring Boot Actuator</strong> or <strong>Quarkus Micrometer/health</strong>. For even richer metrics with Spring Boot, add <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a>.';
     return;
   }
   const tier = m.metricsTier || "process";
@@ -717,6 +850,139 @@ async function runScan(tool) {
     };
 }
 let lastScan = null;
+
+// ---- Runtime log levels (Loggers aside tab) ----------------------------
+// Lists the running app's loggers from Spring Boot Actuator /loggers and lets
+// you change a level live (no restart). Self-describes by capability: degrades to
+// a hint when the app is down or exposes no /loggers endpoint.
+const loggersListEl = document.getElementById("loggers-list");
+const loggersControls = document.getElementById("loggers-controls");
+const loggersSearch = document.getElementById("loggers-search");
+const loggersSrc = document.getElementById("loggers-src");
+const LOGGER_LEVELS = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
+let appRunning = false;
+let loggersData = null;
+let loggersTimer = null;
+
+function loggersTabActive() {
+  const pane = document.getElementById("atab-loggers");
+  // offsetParent is null when the pane (or its collapsed drawer) is display:none,
+  // so this also stops polling when the narrow-canvas rail is collapsed.
+  return !!(pane && pane.classList.contains("active") && pane.offsetParent !== null);
+}
+
+function startLoggersPolling() {
+  loadLoggers();
+  if (loggersTimer) return;
+  // Light refresh so externally-changed levels (or the app starting/stopping)
+  // are reflected while the tab is open.
+  loggersTimer = setInterval(loadLoggers, 5000);
+}
+
+function stopLoggersPolling() {
+  if (loggersTimer) {
+    clearInterval(loggersTimer);
+    loggersTimer = null;
+  }
+}
+
+async function loadLoggers() {
+  if (!appRunning) {
+    renderLoggers({ available: false, appDown: true });
+    return;
+  }
+  renderLoggers(await getJson("/api/loggers"));
+}
+
+function renderLoggers(data, force) {
+  if (!data || data.appDown || (!data.available && !appRunning)) {
+    loggersSrc.hidden = true;
+    loggersControls.hidden = true;
+    loggersListEl.innerHTML =
+      '<p class="muted">App not running. Click <strong>Run</strong> to control its log levels.</p>';
+    loggersData = null;
+    return;
+  }
+  if (!data.available) {
+    loggersSrc.hidden = true;
+    loggersControls.hidden = true;
+    loggersListEl.innerHTML =
+      '<p class="muted">No Spring Boot Actuator <code>/loggers</code> endpoint is exposed on the running app, so log ' +
+      "levels can\u2019t be changed here. Add <code>spring-boot-starter-actuator</code> and expose it " +
+      "(<code>management.endpoints.web.exposure.include=loggers</code>).</p>";
+    loggersData = null;
+    return;
+  }
+  loggersData = data;
+  loggersSrc.hidden = false;
+  loggersSrc.className = "src actuator";
+  loggersSrc.textContent = "Actuator";
+  loggersControls.hidden = false;
+  // Don't rebuild the list out from under the user while they're using it
+  // (an open select or focused search box) unless explicitly forced.
+  if (!force && loggersListEl.contains(document.activeElement)) return;
+  renderLoggersList();
+}
+
+function renderLoggersList() {
+  if (!loggersData || !loggersData.available) return;
+  const levels = loggersData.levels && loggersData.levels.length ? loggersData.levels : LOGGER_LEVELS;
+  const term = (loggersSearch.value || "").trim().toLowerCase();
+  // No search: show ROOT plus loggers with an explicit level (the interesting
+  // ones). With a search: reveal any matching package/class so its level can be set.
+  let list = term
+    ? loggersData.loggers.filter((l) => l.name.toLowerCase().includes(term))
+    : loggersData.loggers.filter((l) => l.name === "ROOT" || l.configuredLevel);
+  const CAP = 200;
+  const extra = list.length - CAP;
+  if (extra > 0) list = list.slice(0, CAP);
+  if (!list.length) {
+    loggersListEl.innerHTML = `<p class="muted">${
+      term
+        ? "No loggers match \u201C" + esc(term) + "\u201D."
+        : "No explicitly-configured loggers. Search to set a level on any package."
+    }</p>`;
+    return;
+  }
+  const note = extra > 0 ? `<p class="hint">${extra} more match \u2014 refine your search.</p>` : "";
+  loggersListEl.innerHTML = list.map((l) => loggerRow(l, levels)).join("") + note;
+  loggersListEl.querySelectorAll("select[data-logger]").forEach((sel) => {
+    sel.addEventListener("change", () => changeLoggerLevel(sel.dataset.logger, sel.value));
+  });
+}
+
+function loggerRow(l, levels) {
+  const cur = l.configuredLevel || "";
+  const inheritLabel = l.configuredLevel ? "Inherit" : `Inherit (${esc(l.effectiveLevel || "?")})`;
+  const opts =
+    `<option value="">${inheritLabel}</option>` +
+    levels.map((lv) => `<option value="${lv}"${lv === cur ? " selected" : ""}>${lv}</option>`).join("");
+  const eff = (l.configuredLevel || l.effectiveLevel || "").toLowerCase();
+  const name = l.name === "ROOT" ? "ROOT" : esc(l.name);
+  return (
+    `<div class="logger-row"><span class="logger-name" title="${esc(l.name)}">${name}</span>` +
+    `<select class="logger-level lvl-${eff}" data-logger="${esc(l.name)}">${opts}</select></div>`
+  );
+}
+
+async function changeLoggerLevel(name, level) {
+  const r = await postJson("/api/loggers", { name, level: level || null });
+  if (!r || r.ok === false) {
+    appendLine(
+      `[canvas] couldn't set ${name} \u2192 ${level || "inherit"}: ${(r && r.error) || "request failed"}`,
+      "stderr",
+      "run",
+    );
+  }
+  if (r && r.status) {
+    loggersData = r.status;
+    renderLoggersList();
+  } else {
+    loadLoggers();
+  }
+}
+
+if (loggersSearch) loggersSearch.addEventListener("input", () => renderLoggersList());
 
 function statusDot(st) {
   return `<span class="dot ${st}"></span>`;
@@ -1419,6 +1685,10 @@ es.addEventListener("reset", (e) => {
   } catch {}
   const el = consoles[op];
   if (el) el.innerHTML = "";
+  if (op === "run") {
+    lastRunLevel = "INFO";
+    updateLogCount();
+  }
 });
 
 // Full-cover loading overlay: dismissed once the first /api/state lands (or a
