@@ -90,6 +90,15 @@ const mvnButtons = {
   test: document.getElementById("btn-test"),
   package: document.getElementById("btn-package"),
 };
+// While a lane is restarting, the trigger keeps its label (no width change) and
+// shows a rotating restart glyph in the spinner slot; this maps op -> button so
+// we can toggle that state class.
+const triggerButton = {
+  build: mvnButtons.build,
+  test: mvnButtons.test,
+  package: mvnButtons.package,
+  run: btnRun,
+};
 const capsEl = document.getElementById("caps");
 const metricsSrc = document.getElementById("metrics-src");
 const metricsHint = document.getElementById("metrics-hint");
@@ -296,9 +305,63 @@ function applyStopButton(btn, which, busy) {
   }
 }
 
+// Optimistic "restarting" state for the trigger buttons. Clicking a trigger
+// while its lane is busy stops the running process and relaunches it; the lane
+// briefly reports idle/failed between the two, so we mask that transition until
+// the new run reports busy. Two phases: "stopping" (waiting for the old process
+// to exit) flips to "starting" the first time the lane reports not-busy, then
+// clears once the relaunch reports busy. A safety timeout is the backstop in
+// case the restart never starts (e.g. it timed out server-side).
+const restarting = { build: false, test: false, package: false, run: false };
+const restartTimers = { build: null, test: null, package: null, run: null };
+
+function markRestarting(op) {
+  if (restarting[op]) return;
+  restarting[op] = "stopping";
+  appendLine("[canvas] restarting\u2026", "stdout", op);
+  clearTimeout(restartTimers[op]);
+  // Backstop: if the relaunch never reports busy again (e.g. the server-side
+  // restart timed out or failed), clear the mask and re-render so the trigger
+  // doesn't stay stuck disabled/"Restarting…" — mirrors the Stop backstop.
+  restartTimers[op] = setTimeout(() => {
+    if (!restarting[op]) return;
+    clearRestarting(op);
+    if (statusSnap) renderStatus(statusSnap);
+  }, 20000);
+}
+
+function clearRestarting(op) {
+  restarting[op] = false;
+  clearTimeout(restartTimers[op]);
+  restartTimers[op] = null;
+}
+
+// Advance the restart state machine from the raw (server-reported) busy flags,
+// so the mask drops exactly when the relaunched process is up.
+function syncRestarting(s) {
+  for (const op of ["build", "test", "package", "run"]) {
+    const busy = !!(s[op] && s[op].busy);
+    if (restarting[op] === "stopping" && !busy) restarting[op] = "starting";
+    else if (restarting[op] === "starting" && busy) clearRestarting(op);
+  }
+}
+
+// True while the lane is genuinely busy OR mid-restart, so the toolbar stays
+// stable (siblings disabled, Stop active, spinner on) across the brief gap.
+function laneActive(s, op) {
+  return !!(s && s[op] && s[op].busy) || !!restarting[op];
+}
+
+// Raw server-reported busy for one lane (no restart masking) — used to decide
+// whether a trigger click should start the lane or restart it.
+const laneBusy = (op) => !!(statusSnap && statusSnap[op] && statusSnap[op].busy);
+
 function renderStatus(s) {
   if (!s) return;
   statusSnap = s;
+  // Advance any in-flight restart before rendering so the toolbar uses the
+  // masked "active" state across the stop→start gap.
+  syncRestarting(s);
   // Live reload pill is global, not per-tab.
   const reload = s.reload;
   if (reload && reload.active) {
@@ -316,33 +379,55 @@ function renderStatus(s) {
     : "The app isn't running yet";
   // The two grouped Stop buttons are global, not tied to the active tab:
   // the Maven Stop covers build/test/package; the Run Stop covers run.
-  const mvnBusy = (s.build && s.build.busy) || (s.test && s.test.busy) || (s.package && s.package.busy);
+  const mvnBusy = laneActive(s, "build") || laneActive(s, "test") || laneActive(s, "package");
   applyStopButton(btnStopMaven, "maven", mvnBusy);
-  applyStopButton(btnStopRun, "run", !!(run && run.busy));
-  // Per-lane running spinners on the trigger buttons and tabs (global, so
-  // they reflect activity regardless of which tab is showing).
+  applyStopButton(btnStopRun, "run", laneActive(s, "run"));
+  // Per-lane spinners on the trigger buttons and tabs (global, so they reflect
+  // activity regardless of which tab is showing). The `is-restarting` class
+  // turns the trigger's spinner into a rotating restart glyph without touching
+  // the label, so the button keeps its width.
   for (const op of ["build", "test", "package", "run"]) {
-    const busy = !!(s[op] && s[op].busy);
-    if (btnSpin[op]) btnSpin[op].hidden = !busy;
-    if (tabSpin[op]) tabSpin[op].hidden = !busy;
+    const active = laneActive(s, op);
+    if (btnSpin[op]) btnSpin[op].hidden = !active;
+    if (tabSpin[op]) tabSpin[op].hidden = !active;
+    if (triggerButton[op]) {
+      triggerButton[op].classList.toggle("is-restarting", !!restarting[op]);
+    }
   }
   // While a build op runs the lane is serialized, so grey out the other
-  // Build/Test/Package buttons (the running one stays active with its spinner).
-  // Everything is also disabled when no build tool is present (degraded mode).
-  const busyMvnOp = ["build", "test", "package"].find((op) => s[op] && s[op].busy);
+  // Build/Test/Package buttons (the running one stays active — click it again
+  // to restart). Everything is disabled when no build tool is present.
+  const busyMvnOp = ["build", "test", "package"].find((op) => laneActive(s, op));
   for (const op of ["build", "test", "package"]) {
     const btn = mvnButtons[op];
     if (!btn) continue;
-    btn.disabled = !toolPresent || (!!busyMvnOp && op !== busyMvnOp);
+    // The running op stays clickable (to restart); idle siblings are greyed out
+    // until it stops, and the op itself is locked while its restart is in flight.
+    btn.disabled = !toolPresent || (!!busyMvnOp && op !== busyMvnOp) || !!restarting[op];
     btn.title = !toolPresent
       ? "Coffilot needs a Maven or Gradle project."
-      : btn.disabled
-        ? `Stop the running ${busyMvnOp} first`
-        : "";
+      : restarting[op]
+        ? "Restarting\u2026"
+        : op === busyMvnOp
+          ? `Restart the running ${op}`
+          : btn.disabled
+            ? `Stop the running ${busyMvnOp} first`
+            : "";
   }
   if (!toolPresent) btnRun.disabled = true;
-  // Header (phase / command / exit / fix) follows the active tab.
-  renderLaneHeader(s[activeTab] || {});
+  else btnRun.disabled = !!restarting.run;
+  if (toolPresent) {
+    btnRun.title = restarting.run ? "Restarting\u2026" : laneActive(s, "run") ? "Restart the running app" : "";
+  }
+  // Header (phase / command / exit / fix) follows the active tab; while the
+  // active tab's lane is restarting, show a steady "restarting" phase instead of
+  // the momentary failed/idle flicker (and no stale Fix button).
+  const activeLane = s[activeTab] || {};
+  if (restarting[activeTab]) {
+    renderLaneHeader({ phase: "restarting", command: activeLane.command });
+  } else {
+    renderLaneHeader(activeLane);
+  }
 }
 
 // Render the per-lane header bits for one op (build | test | package | run).
@@ -1060,21 +1145,47 @@ const mvnProfiles = () => mvnProfilesInput.value.trim();
 setupCombo(springInput, springMenu, () => profileItems);
 setupCombo(mvnProfilesInput, mavenMenu, () => mavenItems);
 
+// Each trigger button starts its lane, or — if that lane is already busy —
+// restarts it (stop the current process, then relaunch with the same inputs).
+function triggerLane(op, startPath, body) {
+  if (restarting[op]) return; // a restart is already in flight (either phase)
+  const busy = op === "run" ? laneBusy("run") : laneBusy("build") || laneBusy("test") || laneBusy("package");
+  if (busy) {
+    markRestarting(op);
+    if (statusSnap) renderStatus(statusSnap); // reflect "Restarting…" without waiting for the next event
+    restartLane(op, body);
+  } else {
+    post(startPath, body);
+  }
+}
+
+async function restartLane(op, body) {
+  const res = await postJson("/api/restart", { op, ...body });
+  // On success the relaunch is in flight and syncRestarting clears the mask when
+  // it reports busy. On failure (e.g. the stop timed out), drop the mask now
+  // instead of leaving the trigger stuck until the 20s backstop.
+  if (res && res.ok === false) {
+    appendLine("[canvas] restart failed: " + (res.error || "unknown error"), "stderr", op);
+    clearRestarting(op);
+    if (statusSnap) renderStatus(statusSnap);
+  }
+}
+
 document.getElementById("btn-build").onclick = () => {
   showTab("build");
-  post("/api/build", { warm: warm(), mavenProfiles: mvnProfiles() });
+  triggerLane("build", "/api/build", { warm: warm(), mavenProfiles: mvnProfiles() });
 };
 document.getElementById("btn-test").onclick = () => {
   showTab("test");
-  post("/api/test", { warm: warm(), mavenProfiles: mvnProfiles() });
+  triggerLane("test", "/api/test", { warm: warm(), mavenProfiles: mvnProfiles() });
 };
 document.getElementById("btn-package").onclick = () => {
   showTab("package");
-  post("/api/package", { warm: warm(), mavenProfiles: mvnProfiles() });
+  triggerLane("package", "/api/package", { warm: warm(), mavenProfiles: mvnProfiles() });
 };
 document.getElementById("btn-run").onclick = () => {
   showTab("run");
-  post("/api/run", {
+  triggerLane("run", "/api/run", {
     module: document.getElementById("in-module").value.trim(),
     profiles: document.getElementById("in-profiles").value.trim(),
     mavenProfiles: mvnProfiles(),
@@ -1087,11 +1198,14 @@ btnStopMaven.onclick = () => {
   if (btnStopMaven.disabled) return;
   const s = statusSnap || {};
   const op = ["build", "test", "package"].find((o) => s[o] && s[o].busy) || activeTab;
+  // A Stop wins over any in-flight restart of the build group.
+  ["build", "test", "package"].forEach(clearRestarting);
   markStopping("maven", op);
   post("/api/stop", { op: "maven" });
 };
 btnStopRun.onclick = () => {
   if (btnStopRun.disabled) return;
+  clearRestarting("run");
   markStopping("run", "run");
   post("/api/stop", { op: "run" });
 };

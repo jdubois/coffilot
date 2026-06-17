@@ -2381,6 +2381,58 @@ function stopApp(op) {
   return stopped ? { ok: true, stopped: true } : { ok: true, stopped: false, note: "Nothing was running." };
 }
 
+// Resolve once `predicate()` is false — i.e. the lane's child has fully exited.
+// Restart relies on this because the start functions guard on `lane.child !==
+// null`: relaunching before the old process is gone would be rejected as "already
+// running". Resolves false if the wait exceeds `timeoutMs` (the SIGTERM→SIGKILL
+// escalation in killChild is 5s, so 15s leaves ample headroom).
+function waitForLaneIdle(predicate, timeoutMs = 15000) {
+  if (!predicate()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const tick = () => {
+      if (!predicate()) return resolve(true);
+      if (Date.now() - startedAt >= timeoutMs) return resolve(false);
+      setTimeout(tick, 100);
+    };
+    tick();
+  });
+}
+
+/**
+ * Stop a lane's current process and relaunch it once it has fully exited — the
+ * "click the trigger again to restart" path. `op` is "build" | "test" |
+ * "package" | "run", and `params` carries the same inputs the start endpoints
+ * accept (warm/mavenProfiles for the build group; module/profiles/mavenProfiles/
+ * mode for run). Build/test/package share one lane, so restarting any of them
+ * stops whatever build-group process is live before starting the requested op.
+ */
+async function restart(op, params = {}) {
+  if (!buildTool) {
+    pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", op === "run" ? "run" : op || "build");
+    return noToolResult();
+  }
+  if (op === "run") {
+    stopApp("run");
+    if (!(await waitForLaneIdle(runLaneBusy))) {
+      return { ok: false, error: "Timed out stopping the app; press Stop, then Run." };
+    }
+    return startApp(params);
+  }
+  if (!["build", "test", "package"].includes(op)) {
+    return { ok: false, error: `Cannot restart "${op}".` };
+  }
+  stopApp("maven");
+  if (!(await waitForLaneIdle(mvnLaneBusy))) {
+    return { ok: false, error: "Timed out stopping the build; press Stop, then re-run." };
+  }
+  // Fire-and-forget, like the /api/build|test|package handlers: progress streams
+  // over SSE, so the relaunch must not block the HTTP response until it finishes.
+  const startFn = op === "build" ? build : op === "test" ? test : packageApp;
+  startFn(null, params.warm === true, params.mavenProfiles);
+  return { ok: true, restarted: true, op };
+}
+
 // ---------------------------------------------------------------------------
 // Process shutdown — never let a spawned Maven/Java process outlive us.
 //
@@ -3474,6 +3526,11 @@ const server = createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/stop") {
     const body = await readBody(req);
     sendJson(res, 200, stopApp(body.op)); // op omitted -> stop all lanes
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/restart") {
+    const body = await readBody(req);
+    sendJson(res, 200, await restart(body.op, body)); // stop the lane, then relaunch it
     return;
   }
 
