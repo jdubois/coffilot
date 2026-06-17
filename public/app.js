@@ -1902,10 +1902,11 @@ function applyJdks(env) {
   jdkSelect.innerHTML = "";
   const auto = document.createElement("option");
   auto.value = "";
-  auto.textContent =
+  const autoLabel =
     activeJdkInfo && activeJdkInfo.auto && activeJdkInfo.version
       ? `Auto (system default · ${activeJdkInfo.version})`
       : "Auto (system default)";
+  auto.textContent = autoLabel;
   jdkSelect.appendChild(auto);
   for (const j of jdks) {
     if (!j || !j.home) continue;

@@ -705,6 +705,8 @@ function probeJavaVersion(bin) {
     const m = out.match(/version "([^"]+)"/); // e.g. "21.0.2" or legacy "1.8.0_392"
     if (m) {
       const parts = m[1].split(".");
+      // Pre-Java-9 versions are "1.MAJOR.x" (e.g. 1.8 == Java 8), so the real major
+      // is the second component there; Java 9+ uses "MAJOR.x.y" directly.
       const major = parts[0] === "1" ? parseInt(parts[1], 10) : parseInt(parts[0], 10);
       result = { version: m[1], major: Number.isNaN(major) ? null : major };
     }
@@ -812,21 +814,23 @@ function discoverJdks() {
   });
 }
 
+// Whether a JAVA_HOME is one Coffilot actually discovered. Used as an allowlist so
+// only a known, on-disk JDK can ever be selected — a selection arriving over the
+// loopback settings endpoint is never spawned or trusted unless it is in this set.
+function isKnownJdkHome(home) {
+  return !!home && discoverJdks().some((j) => j.home === home);
+}
+
 // The JDK Coffilot will actually use for spawned actions: the explicit selection
-// when valid, otherwise the inherited JAVA_HOME / PATH `java` (the default, so
-// existing users are unaffected). `auto` marks the inherited default.
+// when it is a known/on-disk JDK, otherwise the inherited JAVA_HOME / PATH `java`
+// (the default, so existing users are unaffected). `auto` marks the inherited
+// default. The selected entry is taken from the discovered list (never re-probed
+// from the raw setting) so no user-supplied path reaches a child process here.
 function activeJdk() {
   if (settings.jdkHome) {
-    const bin = javaBinFor(settings.jdkHome);
-    if (existsSync(bin)) {
-      const info = probeJavaVersion(bin) || {};
-      return {
-        home: settings.jdkHome,
-        version: info.version || null,
-        major: info.major || null,
-        source: "selected",
-        auto: false,
-      };
+    const known = discoverJdks().find((j) => j.home === settings.jdkHome);
+    if (known) {
+      return { home: known.home, version: known.version, major: known.major, source: "selected", auto: false };
     }
   }
   const home = process.env.JAVA_HOME || null;
@@ -862,7 +866,9 @@ function jdkInstallHint() {
 // child uses "Path" on Windows). No-op when no JDK is selected (the default).
 function withJdkEnv(env) {
   const home = settings.jdkHome;
-  if (!home || !existsSync(javaBinFor(home))) return env;
+  // Only inject a JDK that Coffilot actually discovered (an allowlist), so the
+  // JAVA_HOME / PATH handed to spawned build tools can't be an arbitrary path.
+  if (!home || !isKnownJdkHome(home)) return env;
   env.JAVA_HOME = home;
   const binDir = path.join(home, "bin");
   const pathKey = Object.keys(env).find((k) => k.toLowerCase() === "path") || "PATH";
@@ -2064,13 +2070,15 @@ function applySettings(body) {
     const want = body.jdkHome ? String(body.jdkHome) : null;
     if (want !== settings.jdkHome) {
       if (appBusy()) {
-        session.log("[coffilot] JDK change ignored while the app is running — stop it first.", { level: "warn" });
+        session.log("[Coffilot] JDK change ignored while the app is running — stop it first.", { level: "warn" });
       } else if (want === null) {
         settings.jdkHome = null;
-      } else if (existsSync(javaBinFor(want))) {
+      } else if (isKnownJdkHome(want)) {
         settings.jdkHome = want;
       } else {
-        session.log(`[coffilot] selected JDK not found at ${want}; keeping the previous JDK.`, { level: "warn" });
+        session.log(`[Coffilot] ignoring unrecognized JDK selection ${want} (not a discovered JDK).`, {
+          level: "warn",
+        });
       }
     }
   }
