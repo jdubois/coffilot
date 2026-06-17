@@ -1479,6 +1479,17 @@ function watchTree(root, onChange) {
     } catch {
       return;
     }
+    // fs.watch emits "error" asynchronously (dir removed, EMFILE/ENOSPC, …); with
+    // no listener Node throws and crashes the process, so swallow it and drop this
+    // directory's watcher — the rest of the tree keeps working.
+    w.on("error", () => {
+      try {
+        w.close();
+      } catch {
+        /* ignore */
+      }
+      watched.delete(dir);
+    });
     watchers.push(w);
     watched.add(dir);
     let entries = [];
@@ -3528,7 +3539,9 @@ function killChild(child) {
     // shell:true means child is cmd.exe; kill the whole tree by PID so the
     // spawned Maven/Java processes don't get orphaned.
     try {
-      spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"]);
+      // .on("error") so a failed taskkill spawn (emitted asynchronously) can't
+      // crash the process; the try/catch only covers a synchronous spawn throw.
+      spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"]).on("error", () => {});
     } catch {
       /* ignore */
     }
@@ -3978,8 +3991,11 @@ async function findTestResultDirs(root, depth, acc = []) {
 
 function startMetricsPolling() {
   stopMetricsPolling();
-  metricsTimer = setInterval(refreshMetrics, 2500);
-  refreshMetrics();
+  // refreshMetrics is async; neither setInterval nor a bare call awaits it, so
+  // guard both so a failed poll can never escape as an unhandled rejection.
+  const poll = () => Promise.resolve(refreshMetrics()).catch(() => {});
+  metricsTimer = setInterval(poll, 2500);
+  poll();
 }
 
 function stopMetricsPolling() {
@@ -5192,7 +5208,7 @@ function sendJson(res, code, data) {
   res.end(JSON.stringify(data));
 }
 
-const server = createServer(async (req, res) => {
+async function handleRequest(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
   if (req.method === "GET" && STATIC_ASSETS[url.pathname]) {
@@ -5485,6 +5501,28 @@ const server = createServer(async (req, res) => {
 
   res.writeHead(404);
   res.end("Not found");
+}
+
+// Wrap the route handler so a throw in any endpoint (Build/Test/Package/Run/
+// Debug/MCP/…) can't reject an un-awaited promise — which would otherwise crash
+// the process and take the loopback server down. Log it and return a 500 so the
+// canvas stays connected.
+const server = createServer((req, res) => {
+  handleRequest(req, res).catch((err) => {
+    try {
+      session.log(`[coffilot] request handler error on ${req.method} ${req.url}: ${err?.stack || err}`, {
+        level: "error",
+      });
+    } catch {
+      /* logging must never re-throw */
+    }
+    try {
+      if (res.headersSent) res.end();
+      else sendJson(res, 500, { ok: false, error: "Internal error" });
+    } catch {
+      /* the socket is already gone */
+    }
+  });
 });
 
 let serverUrl = null;
