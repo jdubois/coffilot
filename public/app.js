@@ -67,8 +67,6 @@ const openBrowserInput = document.getElementById("in-openbrowser");
 const autoProfileInput = document.getElementById("in-autoprofile");
 const btnOpenBrowser = document.getElementById("btn-open-browser");
 const btnFix = document.getElementById("btn-fix");
-const btnStopMaven = document.getElementById("btn-stop-maven");
-const btnStopRun = document.getElementById("btn-stop-run");
 const btnRun = document.getElementById("btn-run");
 // Run-tab flame graph (async-profiler) controls.
 const flameEvent = document.getElementById("flame-event");
@@ -213,8 +211,8 @@ function showTab(name) {
   if (!consoles[name]) return;
   activeTab = name;
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
-  document.getElementById("build-console").classList.toggle("active", name === "build");
-  document.getElementById("package-console").classList.toggle("active", name === "package");
+  document.getElementById("build-pane").classList.toggle("active", name === "build");
+  document.getElementById("package-pane").classList.toggle("active", name === "package");
   document.getElementById("test-pane").classList.toggle("active", name === "test");
   document.getElementById("run-pane").classList.toggle("active", name === "run");
   // The header (phase/command/exit/fix) follows the active tab, so
@@ -308,7 +306,8 @@ document.addEventListener("keydown", (e) => {
 asideDrawer.addEventListener("change", () => setAsideOpen(!asideDrawer.matches));
 // Initial state: open on a wide canvas, collapsed on a narrow one. No loggers
 // sync here (it would touch state declared later in this module) — polling is
-// driven by tab activation and the metrics tab is the default.
+// driven by tab activation and the Settings tab is the default, so loggers
+// polling stays off until that tab is opened.
 workspaceEl.classList.toggle("aside-open", !asideDrawer.matches);
 syncAsideMode();
 
@@ -461,23 +460,19 @@ function clearStopping(which) {
   stopTimers[which] = null;
 }
 
-function applyStopButton(btn, which, busy) {
-  // The process has actually stopped: drop the optimistic state.
-  if (stopping[which] && !busy) clearStopping(which);
-  const isStopping = stopping[which];
-  btn.disabled = !busy || isStopping;
-  btn.classList.toggle("is-stopping", isStopping);
-  const spin = btn.querySelector(".btn-spin");
-  if (spin) spin.hidden = !isStopping;
-  const label = btn.querySelector(".btn-label");
-  if (label) label.textContent = isStopping ? "Stopping\u2026" : "Stop";
-  if (isStopping) {
-    btn.title = which === "run" ? "Stopping the app\u2026" : "Stopping the build\u2026";
-  } else if (busy) {
-    btn.title = which === "run" ? "Stop the running app" : "Stop the running build, test or package";
-  } else {
-    btn.title = which === "run" ? "The app isn't running" : "No build is running";
-  }
+// Each lane's primary button doubles as Build/Test/Package/Run (idle) and Stop
+// (while that lane is busy), so there's exactly one action per lane.
+const laneLabel = { build: "Build", test: "Run tests", package: "Package", run: "Run" };
+function setLaneButton(op, { label, danger, disabled, busyState, title }) {
+  const btn = triggerButton[op];
+  if (!btn) return;
+  const lbl = btn.querySelector(".btn-label");
+  if (lbl) lbl.textContent = label;
+  btn.classList.toggle("danger", !!danger);
+  btn.classList.toggle("primary", !danger);
+  btn.classList.toggle("is-stopping", busyState === "stopping");
+  btn.disabled = !!disabled;
+  btn.title = title || "";
 }
 
 // Optimistic "restarting" state for the trigger buttons. Clicking a trigger
@@ -556,11 +551,10 @@ function renderStatus(s) {
   // app actually running (the run lane busy).
   runActive = !!(run.busy || run.appPort);
   updateProfileButton();
-  // The two grouped Stop buttons are global, not tied to the active tab:
-  // the Maven Stop covers build/test/package; the Run Stop covers run.
+  // Drop the optimistic "stopping" state once the process has actually exited.
   const mvnBusy = laneActive(s, "build") || laneActive(s, "test") || laneActive(s, "package");
-  applyStopButton(btnStopMaven, "maven", mvnBusy);
-  applyStopButton(btnStopRun, "run", laneActive(s, "run"));
+  if (stopping.run && !laneActive(s, "run")) clearStopping("run");
+  if (stopping.maven && !mvnBusy) clearStopping("maven");
   // Per-lane spinners on the trigger buttons and tabs (global, so they reflect
   // activity regardless of which tab is showing). The `is-restarting` class
   // turns the trigger's spinner into a rotating restart glyph without touching
@@ -573,30 +567,41 @@ function renderStatus(s) {
       triggerButton[op].classList.toggle("is-restarting", !!restarting[op]);
     }
   }
-  // While a build op runs the lane is serialized, so grey out the other
-  // Build/Test/Package buttons (the running one stays active — click it again
-  // to restart). Everything is disabled when no build tool is present.
+  // Each lane's primary button: it triggers the lane when idle and becomes a red
+  // Stop while that lane is busy. Build/Test/Package share one serialized Maven
+  // lane, so while one runs its siblings are greyed out until it stops.
   const busyMvnOp = ["build", "test", "package"].find((op) => laneActive(s, op));
   for (const op of ["build", "test", "package"]) {
-    const btn = mvnButtons[op];
-    if (!btn) continue;
-    // The running op stays clickable (to restart); idle siblings are greyed out
-    // until it stops, and the op itself is locked while its restart is in flight.
-    btn.disabled = !toolPresent || (!!busyMvnOp && op !== busyMvnOp) || !!restarting[op];
-    btn.title = !toolPresent
-      ? "Coffilot needs a Maven or Gradle project."
-      : restarting[op]
-        ? "Restarting\u2026"
-        : op === busyMvnOp
-          ? `Restart the running ${op}`
-          : btn.disabled
-            ? `Stop the running ${busyMvnOp} first`
-            : "";
+    if (!toolPresent) {
+      setLaneButton(op, { label: laneLabel[op], disabled: true, title: "Coffilot needs a Maven or Gradle project." });
+    } else if (op === busyMvnOp) {
+      const isStopping = stopping.maven;
+      setLaneButton(op, {
+        label: isStopping ? "Stopping\u2026" : "Stop",
+        danger: true,
+        disabled: isStopping,
+        busyState: isStopping ? "stopping" : "stop",
+        title: isStopping ? "Stopping the build\u2026" : `Stop the running ${op}`,
+      });
+    } else if (busyMvnOp) {
+      setLaneButton(op, { label: laneLabel[op], disabled: true, title: `Stop the running ${busyMvnOp} first` });
+    } else {
+      setLaneButton(op, { label: laneLabel[op], disabled: !!restarting[op] });
+    }
   }
-  if (!toolPresent) btnRun.disabled = true;
-  else btnRun.disabled = !!restarting.run;
-  if (toolPresent) {
-    btnRun.title = restarting.run ? "Restarting\u2026" : laneActive(s, "run") ? "Restart the running app" : "";
+  if (!toolPresent) {
+    setLaneButton("run", { label: laneLabel.run, disabled: true, title: "Coffilot needs a Maven or Gradle project." });
+  } else if (laneActive(s, "run")) {
+    const isStopping = stopping.run;
+    setLaneButton("run", {
+      label: isStopping ? "Stopping\u2026" : "Stop",
+      danger: true,
+      disabled: isStopping,
+      busyState: isStopping ? "stopping" : "stop",
+      title: isStopping ? "Stopping the app\u2026" : "Stop the running app",
+    });
+  } else {
+    setLaneButton("run", { label: laneLabel.run, disabled: !!restarting.run });
   }
   // Header (phase / command / exit / fix) follows the active tab; while the
   // active tab's lane is restarting, show a steady "restarting" phase instead of
@@ -1304,6 +1309,8 @@ function applyEnv(env) {
 
   // Maven profiles are Maven-only; hide the control for Gradle / no tool.
   const profilesSupported = !!(env && env.profilesSupported);
+  const setMvnProfiles = document.getElementById("set-mvn-profiles");
+  if (setMvnProfiles) setMvnProfiles.hidden = !profilesSupported;
   if (mvnProfilesLabel) mvnProfilesLabel.hidden = !profilesSupported;
   if (mvnProfilesCombo) mvnProfilesCombo.hidden = !profilesSupported;
 
@@ -1513,44 +1520,48 @@ async function restartLane(op, body) {
   }
 }
 
-document.getElementById("btn-build").onclick = () => {
-  showTab("build");
-  triggerLane("build", "/api/build", { warm: warm(), mavenProfiles: mvnProfiles() });
-};
-document.getElementById("btn-test").onclick = () => {
-  showTab("test");
-  triggerLane("test", "/api/test", { warm: warm(), mavenProfiles: mvnProfiles() });
-};
-document.getElementById("btn-package").onclick = () => {
-  showTab("package");
-  triggerLane("package", "/api/package", { warm: warm(), mavenProfiles: mvnProfiles() });
-};
-document.getElementById("btn-run").onclick = () => {
-  showTab("run");
-  triggerLane("run", "/api/run", {
-    module: document.getElementById("in-module").value.trim(),
-    profiles: document.getElementById("in-profiles").value.trim(),
-    mavenProfiles: mvnProfiles(),
-  });
-};
-// Two grouped Stop buttons: the Maven Stop kills the shared build/test/
-// package lane; the Run Stop kills the independent app. They are global,
-// so you can stop a build without killing the running app, or vice versa.
-btnStopMaven.onclick = () => {
-  if (btnStopMaven.disabled) return;
+// Stop a lane. `which` is the lane group: "run" (the app) or "maven" (the shared
+// build/test/package lane). `op` is the specific Maven op that's running.
+function stopLane(which, op) {
+  if (stopping[which]) return;
+  if (which === "run") {
+    clearRestarting("run");
+    markStopping("run", "run");
+    post("/api/stop", { op: "run" });
+    return;
+  }
   const s = statusSnap || {};
-  const op = ["build", "test", "package"].find((o) => s[o] && s[o].busy) || activeTab;
+  const target = op || ["build", "test", "package"].find((o) => s[o] && s[o].busy) || activeTab;
   // A Stop wins over any in-flight restart of the build group.
   ["build", "test", "package"].forEach(clearRestarting);
-  markStopping("maven", op);
+  markStopping("maven", target);
   post("/api/stop", { op: "maven" });
-};
-btnStopRun.onclick = () => {
-  if (btnStopRun.disabled) return;
-  clearRestarting("run");
-  markStopping("run", "run");
-  post("/api/stop", { op: "run" });
-};
+}
+
+// One button per lane: it starts the lane when idle, or stops it while busy.
+function laneAction(op) {
+  if (op === "run") {
+    if (laneBusy("run")) return stopLane("run");
+    showTab("run");
+    triggerLane("run", "/api/run", {
+      module: document.getElementById("in-module").value.trim(),
+      profiles: document.getElementById("in-profiles").value.trim(),
+      mavenProfiles: mvnProfiles(),
+    });
+    return;
+  }
+  // build / test / package share the serialized Maven lane.
+  const busyOp = ["build", "test", "package"].find(laneBusy);
+  if (busyOp === op) return stopLane("maven", op); // this lane is running → stop it
+  if (busyOp) return; // a sibling is running (the button is disabled anyway)
+  showTab(op);
+  triggerLane(op, "/api/" + op, { warm: warm(), mavenProfiles: mvnProfiles() });
+}
+
+document.getElementById("btn-build").onclick = () => laneAction("build");
+document.getElementById("btn-test").onclick = () => laneAction("test");
+document.getElementById("btn-package").onclick = () => laneAction("package");
+document.getElementById("btn-run").onclick = () => laneAction("run");
 
 // Run tab: force-open the running app in a browser.
 btnOpenBrowser.onclick = () => post("/api/open-app", {});
