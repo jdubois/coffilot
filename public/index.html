@@ -425,6 +425,23 @@
               </select>
             </div>
 
+            <!-- JDK selector: which JDK runs Build / Test / Package / Run / Debug.
+               Discovered from SDKMAN, OS-standard locations and JAVA_HOME; "Auto"
+               keeps the inherited system default. -->
+            <div class="set-row" id="set-jdk">
+              <label class="cap-label" for="in-jdk">JDK</label>
+              <select id="in-jdk" title="JDK used to build, test, package, run and debug.">
+                <option value="">Auto (system default)</option>
+              </select>
+              <span class="info" id="jdk-info" tabindex="0" data-tip="Checking installed JDKs…">&#9432;</span>
+            </div>
+            <div id="jdk-banner" class="banner setting-banner" hidden>
+              <span id="jdk-msg"></span>
+              <code id="jdk-cmd" title="Click to copy" hidden></code>
+              <span id="jdk-copied" class="copied" hidden>copied</span>
+              <a id="jdk-docs" href="#" target="_blank" rel="noopener">install guide</a>
+            </div>
+
             <!-- Maven build profiles (-P), applied to Build / Test / Run -->
             <div class="set-row" id="set-mvn-profiles">
               <label class="cap-label" id="lbl-mvn-profiles">Maven profiles</label>

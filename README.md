@@ -93,6 +93,14 @@ wins; when neither is found the console says so and stays disabled until one is 
 - **Keep the JVM warm** &mdash; optionally use the [Maven Daemon (`mvnd`)](https://github.com/apache/maven-mvnd)
   (Maven) or the always-on **Gradle daemon** for Build / Test / Package so repeat runs
   skip JVM startup and JIT warmup.
+- **Switch JDK** &mdash; a **JDK** selector in **Settings** runs every action
+  (Build / Test / Package / Run / Debug) under the JDK you pick. JDKs are
+  auto-discovered &mdash; primarily from [SDKMAN](https://sdkman.io)
+  (`~/.sdkman/candidates/java/*`), then OS-standard install locations and your
+  `JAVA_HOME` &mdash; and applied by injecting `JAVA_HOME` into the build/run
+  environment (no `sdk use` shelling out). **Auto** keeps the system default; the
+  active JDK is shown as a pill next to the build tool. The change takes effect on
+  the next launch, so stop a running app before switching.
 - **Advisor scans (with BootUI)** &mdash; when the running app exposes
   [BootUI](https://github.com/jdubois/boot-ui), a toggle enables its MCP server and
   the advisor scans (architecture, Spring, security, Hibernate, …); findings can be
