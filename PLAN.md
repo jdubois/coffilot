@@ -108,8 +108,10 @@ Near-term, roughly in priority order:
 - [ ] Persist recent lane history / last results across reloads.
 - [ ] Surface test output filtering (only-failures, search) in the graphical view.
 - [ ] Make the metrics poll interval and endpoints configurable from Settings.
-- [ ] Add a lightweight automated check for `public/index.html` (jsdom smoke test)
-      wired into CI alongside `npm run check`.
+- [x] Add a lightweight automated check for the iframe UI (jsdom smoke test of
+      `public/index.html` + `public/app.js`) wired into CI alongside `npm run check`,
+      plus `node:test` unit tests for the pure parsers/normalizers and an
+      integration-project matrix (Maven + Gradle) in CI.
 - [ ] Document and test the share-as-gist / install-from-repo round trip.
 
 Explicitly **out of scope**: remote (non-loopback) access, and anything that mutates

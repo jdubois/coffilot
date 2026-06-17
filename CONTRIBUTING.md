@@ -90,18 +90,39 @@ inspect tooling when something fails to load.
 Before opening a pull request:
 
 ```bash
-npm install          # first time only, to get Prettier
+npm install          # first time only, to get Prettier + jsdom
 npm run check        # node --check extension.mjs (syntax)
+npm test             # node:test unit + UI smoke tests
 npm run format:check # Prettier formatting
 ```
 
 Run `npm run format` to apply formatting. The whole repo is Prettier-formatted
 (`prettier.config.cjs`); CI fails if `format:check` does.
 
-For the iframe UI, a quick way to confirm the inline script still parses and the
-key render functions work is to load `public/index.html` in [jsdom](https://github.com/jsdom/jsdom)
-and call the globals (`renderMetrics`, `renderMcp`, `renderStatus`, …). Manual
-verification in a live canvas is still expected for UI changes.
+### Testing
+
+Tests live under `test/` and run on Node's built-in test runner (`node --test`,
+no extra framework) via `npm test`. CI runs the same command.
+
+- **`test/parsers.test.mjs`** exercises the pure parsers / normalizers exported
+  from `extension.mjs` — the JUnit/Surefire XML parser, the `.class`
+  constant-pool reference reader and affected-test graph walk, and the
+  Prometheus / Quarkus metrics normalizers. To make `extension.mjs` importable
+  outside the Copilot CLI, the test sets `COFFILOT_TEST=1`, which makes the
+  module skip its side-effectful bootstrap (joining a session, declaring the
+  canvas, starting the loopback server) and dynamically import the
+  CLI-injected `@github/copilot-sdk`. Add new pure helpers behind an `export`
+  and cover them here.
+- **`test/ui-smoke.test.mjs`** loads `public/index.html` into
+  [jsdom](https://github.com/jsdom/jsdom), executes `public/app.js` against it
+  with stubbed network globals (`EventSource` / `fetch` / `matchMedia`), and
+  calls the key render globals (`renderMetrics`, `renderMcp`, `renderStatus`,
+  `renderTests`) on representative payloads to catch parse errors and obvious
+  render regressions. Manual verification in a live canvas is still expected for
+  UI changes.
+
+CI additionally builds and tests each project under `integration-tests/` (Maven
+and Gradle) so the tiers Coffilot drives stay green.
 
 ## Safety notes when testing
 

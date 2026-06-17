@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: Lint & syntax check
+    name: Lint, syntax check & unit tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -32,6 +32,49 @@ jobs:
       - name: Syntax-check the extension
         run: npm run check
 
+      - name: Run unit & UI smoke tests
+        run: npm test
+
       - name: Validate the extension manifest
         run: |
           node -e "const m = require('./copilot-extension.json'); if (m.name !== 'coffilot' || m.version !== 1) { throw new Error('bad manifest ' + JSON.stringify(m)); }"
+
+  integration-projects:
+    name: Integration project (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: hello-world
+            tool: maven
+          - project: gradle-hello-world
+            tool: gradle
+          - project: spring-mvc
+            tool: maven
+          - project: spring-mvc-actuator-devtools
+            tool: maven
+          - project: spring-mvc-bootui
+            tool: maven
+          - project: quarkus-rest
+            tool: maven
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: ${{ matrix.tool }}
+
+      - name: Build & test (Maven)
+        if: matrix.tool == 'maven'
+        working-directory: integration-tests/${{ matrix.project }}
+        run: ./mvnw -ntp -B test
+
+      - name: Build & test (Gradle)
+        if: matrix.tool == 'gradle'
+        working-directory: integration-tests/${{ matrix.project }}
+        run: ./gradlew test --no-daemon

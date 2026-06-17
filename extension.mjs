@@ -42,7 +42,6 @@ import { inflateRawSync } from "node:zlib";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createCanvas, joinSession } from "@github/copilot-sdk/extension";
 import { DebugSession } from "./jdwp.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -54,7 +53,33 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isWindows = process.platform === "win32";
 const isMac = process.platform === "darwin";
 
-const session = await joinSession({ canvases: [makeCanvas()] });
+// Test mode: when COFFILOT_TEST=1 the module is being imported by the unit-test
+// suite (node:test) rather than launched by the Copilot CLI over JSON-RPC. In
+// that mode we skip the side-effectful bootstrap — joining a session, declaring
+// the canvas, and starting the loopback HTTP server — so the pure functions this
+// file exports can be imported and exercised in isolation. The exported helpers
+// never touch `session` at call time, so a no-op stub is sufficient.
+const TEST_MODE = process.env.COFFILOT_TEST === "1";
+
+// The Copilot SDK is resolved by the Copilot CLI at runtime and is intentionally
+// not a declared dependency (no node_modules entry). Import it dynamically so the
+// unit-test suite — which imports this module only for its pure exports — does not
+// fail to resolve a package the CLI injects.
+let createCanvas, joinSession;
+if (!TEST_MODE) {
+  ({ createCanvas, joinSession } = await import("@github/copilot-sdk/extension"));
+}
+
+const session = TEST_MODE
+  ? {
+      log() {},
+      on() {},
+      once() {},
+      send() {},
+      sendPrompt() {},
+      rpc: {},
+    }
+  : await joinSession({ canvases: [makeCanvas()] });
 
 // Safety net: a background failure — a metrics poll, a port probe, a child-process
 // event, or an SSE write to a canvas that went away — must never terminate the
@@ -2279,7 +2304,7 @@ const DYNAMIC_TEST_PREFIXES = ["com.tngtech.archunit"];
 // Turn an internal JVM class/type descriptor into a dotted class name, or null
 // for primitives/arrays-of-primitives. Handles `com/example/Foo`, `Lcom/...;`
 // and array forms like `[Lcom/...;`.
-function internalToDotted(name) {
+export function internalToDotted(name) {
   if (!name) return null;
   let s = name;
   while (s.startsWith("[")) s = s.slice(1);
@@ -2292,7 +2317,7 @@ function internalToDotted(name) {
 // references (its "imports"). We only need the constant pool,
 // so we stop before the field/method/attribute tables. Returns null if the bytes
 // are not a recognisable class file.
-function parseClassRefs(buf) {
+export function parseClassRefs(buf) {
   if (buf.length < 10 || buf.readUInt32BE(0) !== 0xcafebabe) return null;
   const cpCount = buf.readUInt16BE(8);
   let off = 10;
@@ -2460,7 +2485,7 @@ const enclosingClass = (name) => name.split("$")[0];
 // dependency graph backwards to every transitive dependent and return the test
 // classes among them (plus always-run dynamic tests). Each returned test is a
 // top-level class with its owning module.
-function affectedTestsFromIndex(index, changedClasses) {
+export function affectedTestsFromIndex(index, changedClasses) {
   // Reverse adjacency: referenced → set of referrers, restricted to project
   // classes (we only keep edges between indexed classes).
   const reverse = new Map();
@@ -3886,42 +3911,8 @@ async function collectSurefireReport(sinceMs) {
       } catch {
         continue;
       }
-      const suiteTag = (xml.match(/<testsuite\b[^>]*>/) || [""])[0];
-      const suite = {
-        name: xmlAttr(suiteTag, "name") || f.replace(/^TEST-/, "").replace(/\.xml$/, ""),
-        tests: Number(xmlAttr(suiteTag, "tests")) || 0,
-        failures: Number(xmlAttr(suiteTag, "failures")) || 0,
-        errors: Number(xmlAttr(suiteTag, "errors")) || 0,
-        skipped: Number(xmlAttr(suiteTag, "skipped")) || 0,
-        timeSec: Number(xmlAttr(suiteTag, "time")) || 0,
-        cases: [],
-      };
-      const caseRe = /<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g;
-      let m;
-      while ((m = caseRe.exec(xml)) !== null) {
-        const openAttrs = m[1] || "";
-        const inner = m[2] || "";
-        const fail = inner.match(/<(failure|error|skipped)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1>)/);
-        let status = "passed";
-        let message = null;
-        let type = null;
-        let detail = null;
-        if (fail) {
-          status = fail[1] === "skipped" ? "skipped" : fail[1] === "error" ? "error" : "failed";
-          message = xmlAttr(fail[2] || "", "message");
-          type = xmlAttr(fail[2] || "", "type");
-          detail = fail[3] ? decodeXml(fail[3]).trim() : null;
-        }
-        suite.cases.push({
-          name: xmlAttr(openAttrs, "name") || "(unknown)",
-          classname: xmlAttr(openAttrs, "classname"),
-          timeSec: Number(xmlAttr(openAttrs, "time")) || 0,
-          status,
-          message,
-          type,
-          detail,
-        });
-      }
+      const fallbackName = f.replace(/^TEST-/, "").replace(/\.xml$/, "");
+      const suite = parseSurefireSuiteXml(xml, fallbackName);
       report.suites.push(suite);
       report.summary.tests += suite.tests || suite.cases.length;
       report.summary.failures += suite.failures;
@@ -3939,6 +3930,52 @@ async function collectSurefireReport(sinceMs) {
   // Surface failing suites first.
   report.suites.sort((a, b) => b.failures + b.errors - (a.failures + a.errors) || a.name.localeCompare(b.name));
   return report;
+}
+
+/**
+ * Parse a single JUnit/Surefire `TEST-*.xml` document (Maven Surefire or Gradle
+ * `build/test-results`) into a suite object: counts plus a per-`<testcase>` list
+ * with pass/fail/error/skipped status and failure detail. Pure (string in,
+ * object out) so it can be unit-tested without a build.
+ */
+export function parseSurefireSuiteXml(xml, fallbackName = "(unknown)") {
+  const suiteTag = (xml.match(/<testsuite\b[^>]*>/) || [""])[0];
+  const suite = {
+    name: xmlAttr(suiteTag, "name") || fallbackName,
+    tests: Number(xmlAttr(suiteTag, "tests")) || 0,
+    failures: Number(xmlAttr(suiteTag, "failures")) || 0,
+    errors: Number(xmlAttr(suiteTag, "errors")) || 0,
+    skipped: Number(xmlAttr(suiteTag, "skipped")) || 0,
+    timeSec: Number(xmlAttr(suiteTag, "time")) || 0,
+    cases: [],
+  };
+  const caseRe = /<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g;
+  let m;
+  while ((m = caseRe.exec(xml)) !== null) {
+    const openAttrs = m[1] || "";
+    const inner = m[2] || "";
+    const fail = inner.match(/<(failure|error|skipped)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1>)/);
+    let status = "passed";
+    let message = null;
+    let type = null;
+    let detail = null;
+    if (fail) {
+      status = fail[1] === "skipped" ? "skipped" : fail[1] === "error" ? "error" : "failed";
+      message = xmlAttr(fail[2] || "", "message");
+      type = xmlAttr(fail[2] || "", "type");
+      detail = fail[3] ? decodeXml(fail[3]).trim() : null;
+    }
+    suite.cases.push({
+      name: xmlAttr(openAttrs, "name") || "(unknown)",
+      classname: xmlAttr(openAttrs, "classname"),
+      timeSec: Number(xmlAttr(openAttrs, "time")) || 0,
+      status,
+      message,
+      type,
+      detail,
+    });
+  }
+  return suite;
 }
 
 /** Compact a full report for an agent action result (failures + per-suite counts only). */
@@ -4091,7 +4128,7 @@ async function jvmMetricsFromJson(base, prefix) {
 }
 
 /** Parse a Prometheus/OpenMetrics scrape into name -> [{ labels, value }]. */
-function parsePrometheus(text) {
+export function parsePrometheus(text) {
   const samples = new Map();
   for (const raw of text.split("\n")) {
     const line = raw.trim();
@@ -4116,7 +4153,7 @@ function parsePrometheus(text) {
 }
 
 /** Sum non-negative samples of a metric, optionally filtered by area label. */
-function promSum(samples, name, area) {
+export function promSum(samples, name, area) {
   const arr = samples.get(name);
   if (!arr) return null;
   let sum = 0;
@@ -4130,13 +4167,13 @@ function promSum(samples, name, area) {
   return found ? sum : null;
 }
 
-function promSingle(samples, name) {
+export function promSingle(samples, name) {
   const arr = samples.get(name);
   return arr && arr.length ? arr[0].value : null;
 }
 
 /** Read a label off a metric's first sample (e.g. jvm_info{version="21"}). */
-function promFirstLabel(samples, name, label) {
+export function promFirstLabel(samples, name, label) {
   const arr = samples.get(name);
   return arr && arr.length ? (arr[0].labels[label] ?? null) : null;
 }
@@ -4206,7 +4243,7 @@ async function actuatorMetrics(base) {
 // Actuator tiers.
 
 /** Normalize Quarkus /q/metrics + /q/health into the same shape as the other tiers. */
-function quarkusMetrics(metricsText, health) {
+export function quarkusMetrics(metricsText, health) {
   const s = metricsText ? parsePrometheus(metricsText) : null;
   const out = {
     appUp: true,
@@ -5546,19 +5583,25 @@ const server = createServer((req, res) => {
 
 let serverUrl = null;
 const serverReady = new Promise((resolve) => {
+  if (TEST_MODE) {
+    resolve();
+    return;
+  }
   server.listen(0, "127.0.0.1", () => {
     serverUrl = `http://127.0.0.1:${server.address().port}`;
     resolve();
   });
 });
-await serverReady;
+if (!TEST_MODE) {
+  await serverReady;
 
-// Now that the canvas is registered and its loopback server is listening, refine
-// the project root from the session's primary working directory in the
-// background. Kept off the synchronous startup path on purpose so opening a
-// session surfaces the canvas immediately; the UI self-heals via the broadcast
-// env (and its focus refresh / "Check again").
-void refineWorkspaceFromSession();
+  // Now that the canvas is registered and its loopback server is listening, refine
+  // the project root from the session's primary working directory in the
+  // background. Kept off the synchronous startup path on purpose so opening a
+  // session surfaces the canvas immediately; the UI self-heals via the broadcast
+  // env (and its focus refresh / "Check again").
+  void refineWorkspaceFromSession();
+}
 
 // ---------------------------------------------------------------------------
 // Canvas declaration
