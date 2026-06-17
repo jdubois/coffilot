@@ -472,8 +472,13 @@ function row(k, v) {
   return `<div class="metric"><span class="k">${k}</span><span class="v">${v}</span></div>`;
 }
 
+// Last rendered heap-fill width (%). The metrics panel is rebuilt from scratch
+// on every SSE push, so we replay the previous fill width and bump it to the new
+// value on the next frame, letting the CSS width transition animate smoothly.
+let lastHeapPct = 0;
 function renderMetrics(m) {
   if (!m || !m.appUp) {
+    lastHeapPct = 0;
     metricsSrc.hidden = true;
     renderMcp(null);
     metricsEl.innerHTML =
@@ -489,6 +494,7 @@ function renderMetrics(m) {
     tier === "bootui" ? "BootUI" : tier === "actuator" ? "Actuator" : tier === "quarkus" ? "Quarkus" : "process";
 
   if (tier === "process") {
+    lastHeapPct = 0;
     metricsEl.innerHTML =
       '<p class="muted">App is running, but no <code>/bootui/api</code>, <code>/actuator</code> or <code>/q/metrics</code> endpoint answered, so live JVM metrics aren\u2019t available.</p>';
     metricsHint.innerHTML =
@@ -501,6 +507,7 @@ function renderMetrics(m) {
   const heap = (m.memory && m.memory.heap) || {};
   const nonHeap = (m.memory && m.memory.nonHeap) || {};
   const pct = heap.usedPercent != null ? heap.usedPercent : 0;
+  const heapTarget = Math.min(100, pct);
   let html = "";
   if (o.applicationName) html += row("App", esc(o.applicationName));
   if (o.springBootVersion) html += row("Spring Boot", esc(o.springBootVersion));
@@ -511,11 +518,20 @@ function renderMetrics(m) {
   if (m.threads) html += row("Threads", `${m.threads.totalThreads} (${m.threads.daemonThreads} daemon)`);
   if (heap.usedBytes != null || heap.maxBytes != null) {
     html += `<h2 style="margin-top:0.75rem">Heap</h2>`;
-    html += `<div class="bar"><div style="width:${Math.min(100, pct)}%"></div></div>`;
+    html += `<div class="bar"><div style="width:${lastHeapPct}%"></div></div>`;
     html += row("Heap used", `${mb(heap.usedBytes)} / ${mb(heap.maxBytes)} (${pct}%)`);
   }
   if (nonHeap.usedBytes != null) html += row("Non-heap used", mb(nonHeap.usedBytes));
   metricsEl.innerHTML = html || '<p class="muted">No metrics reported.</p>';
+  // Animate the heap bar from its previous width to the new value: the fill is
+  // emitted at lastHeapPct above, then bumped to the target after a forced
+  // reflow so the CSS width transition plays instead of snapping.
+  const heapFill = metricsEl.querySelector(".bar > div");
+  if (heapFill) {
+    void heapFill.offsetWidth;
+    heapFill.style.width = heapTarget + "%";
+    lastHeapPct = heapTarget;
+  }
 
   if (tier === "bootui") {
     metricsHint.innerHTML =
