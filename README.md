@@ -239,7 +239,7 @@ also runs **standalone**, so editors that don't implement that runtime (for exam
 
   The agent then sees the `build_app`, `run_tests`, `run_affected_tests`,
   `package_app`, `start_app`, `stop_app`, `get_status`, `get_metrics`,
-  `profile_app`, `fix_issue`, `run_scan`, `set_log_level` and debug tools. `fix_issue`
+  `profile_app`, `fix_issue`, `run_scan`, `set_log_level`, and debug tools. `fix_issue`
   returns the fix prompt to the calling agent (there is no Copilot chat to push it
   into). The web UI is served too, so you can open it in a browser as well.
 

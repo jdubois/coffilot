@@ -117,8 +117,9 @@ const GRADLE_MARKERS = [
 // install the authoritative root arrives a moment later via the background
 // refinement kicked off after the server starts listening.
 // COFFILOT_PROJECT lets a standalone launch (e.g. an MCP server configured in
-// Cursor) point at the target project explicitly when the process cwd isn't it;
-// in the Copilot app this is unset and resolution uses the install location.
+// Cursor) point at the target project explicitly when the process cwd is not the
+// target project; in the Copilot app this is unset and resolution uses the
+// install location.
 let workspacePath = findProjectRoot(process.env.COFFILOT_PROJECT || null);
 
 // Auto-detect the build tool from the project. Maven wins when both are present,
