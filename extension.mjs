@@ -758,7 +758,7 @@ function findProjectRoot(primary) {
 // under COPILOT_HOME (not the repo) keyed by a hash of the workspace path.
 // ---------------------------------------------------------------------------
 
-const SETTINGS_KEYS = ["warm", "springProfiles", "devtools", "randomPort", "openBrowser"];
+const SETTINGS_KEYS = ["warm", "springProfiles", "devtools", "randomPort", "openBrowser", "fullBuild"];
 
 function settingsPaths() {
   const home = process.env.COPILOT_HOME || path.join(os.homedir(), ".copilot");
@@ -774,6 +774,9 @@ function defaultSettings() {
     devtools: false,
     randomPort: false,
     openBrowser: false,
+    // On by default: the Test button runs the whole suite. Off runs only the
+    // tests affected by the current uncommitted changes.
+    fullBuild: true,
   };
 }
 
@@ -1456,6 +1459,146 @@ function finishRecompile() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Continuous testing — re-run the affected tests whenever a source file changes.
+// Mirrors the live-reload watcher: a dependency-free recursive fs.watch over the
+// project's src roots, debounced, with a busy/pending guard so overlapping saves
+// collapse into a single follow-up run.
+// ---------------------------------------------------------------------------
+
+let continuousWatcher = null; // active watcher handle while continuous testing is on
+let continuousBusy = false;
+let continuousPending = false;
+let continuousDebounce = null;
+let continuousProfiles = undefined; // Maven profiles captured when the mode was enabled
+let continuousSuspendDepth = 0; // >0 while a manual/agent build-group op holds priority
+
+function continuousStatus() {
+  return { enabled: !!continuousWatcher, busy: continuousBusy };
+}
+
+// Watch each module's src/ (covers main + test sources). Watching src/ rather
+// than target/ or build/ avoids a feedback loop where a test run's recompiled
+// .class files would retrigger the watcher.
+function sourceWatchRoots() {
+  const mods = listModules();
+  const bases = (mods.length ? mods : [{ name: "" }]).map((m) => path.join(workspacePath, m.name || "", "src"));
+  return [...new Set(bases)].filter((d) => existsSync(d));
+}
+
+function startContinuousTesting(mavenProfiles) {
+  stopContinuousTesting({ silent: true });
+  const roots = sourceWatchRoots();
+  if (!roots.length) {
+    pushConsole("[continuous] no src directory to watch; continuous testing not started.", "stderr", "test");
+    broadcast("status", statusSnapshot());
+    return { ok: false, error: "No src directory to watch.", continuous: continuousStatus() };
+  }
+  continuousProfiles = mavenProfiles && String(mavenProfiles).trim() ? String(mavenProfiles).trim() : undefined;
+  const handles = roots.map((root) =>
+    watchTree(root, (file) => {
+      if (!SOURCE_RE.test(file)) return;
+      if (continuousDebounce) clearTimeout(continuousDebounce);
+      continuousDebounce = setTimeout(triggerContinuousRun, 450);
+    }),
+  );
+  continuousWatcher = {
+    close() {
+      for (const h of handles) {
+        try {
+          h.close();
+        } catch {
+          /* ignore */
+        }
+      }
+    },
+  };
+  pushConsole(
+    `[continuous] watching ${roots.map((r) => path.relative(workspacePath, r) || ".").join(", ")} — saving a source file recompiles it, then re-runs the affected tests.`,
+    "stdout",
+    "test",
+  );
+  broadcast("status", statusSnapshot());
+  return { ok: true, continuous: continuousStatus() };
+}
+
+function stopContinuousTesting({ silent = false } = {}) {
+  if (continuousDebounce) {
+    clearTimeout(continuousDebounce);
+    continuousDebounce = null;
+  }
+  if (continuousWatcher) {
+    try {
+      continuousWatcher.close();
+    } catch {
+      /* ignore */
+    }
+    continuousWatcher = null;
+    if (!silent) pushConsole("[continuous] stopped.", "stdout", "test");
+    broadcast("status", statusSnapshot());
+  }
+  return { ok: true, continuous: continuousStatus() };
+}
+
+function triggerContinuousRun() {
+  if (!continuousWatcher) return;
+  // Defer while a manual/agent build-group op holds priority (suspend gate), while
+  // a continuous run is already in flight, or while any build-group process holds
+  // the shared Maven lane; collapse overlapping triggers into one follow-up run.
+  if (continuousSuspendDepth > 0 || continuousBusy || mvnLaneBusy()) {
+    continuousPending = true;
+    return;
+  }
+  continuousBusy = true;
+  broadcast("status", statusSnapshot());
+  Promise.resolve(runAffectedTests(settings.warm === true, continuousProfiles, { fromContinuous: true }))
+    .catch((e) => pushConsole(`[continuous] run failed: ${e.message}`, "stderr", "test"))
+    .finally(() => {
+      continuousBusy = false;
+      broadcast("status", statusSnapshot());
+      if (continuousPending && continuousWatcher && continuousSuspendDepth === 0) {
+        continuousPending = false;
+        triggerContinuousRun();
+      }
+    });
+}
+
+// Reentrant gate that pauses continuous testing while a manual/agent build-group
+// op runs (Build/Test/Package, including agent actions and the Fix-with-Copilot
+// flow). The first suspend pre-empts any in-flight auto-run and blocks new ones
+// for the whole op; the matching resume re-arms continuous and runs once if source
+// saves landed meanwhile. A counter (not a boolean) keeps nested calls balanced —
+// e.g. runAffectedTests → test — so the gate only lifts when the outermost op ends.
+async function suspendContinuous() {
+  continuousSuspendDepth++;
+  if (continuousSuspendDepth === 1) await preemptContinuous();
+}
+
+function resumeContinuous() {
+  if (continuousSuspendDepth > 0) continuousSuspendDepth--;
+  if (continuousSuspendDepth !== 0) return;
+  // Outermost op finished: if saves were deferred (or an in-flight auto-run was
+  // pre-empted) while suspended, re-run the affected tests once. Use the watcher's
+  // debounce so a rapid next op collapses this instead of churning the lane.
+  if (continuousWatcher && continuousPending && !continuousBusy) {
+    continuousPending = false;
+    if (continuousDebounce) clearTimeout(continuousDebounce);
+    continuousDebounce = setTimeout(triggerContinuousRun, 450);
+  }
+}
+
+// Stop the in-flight continuous auto-run so a manual/agent build-group op can take
+// the shared Maven lane instead of being rejected as "already running". The killed
+// run's saved change is remembered (continuousPending) so it re-runs once the op
+// finishes (resumeContinuous drains it). Only ever called by suspendContinuous.
+async function preemptContinuous() {
+  if (!continuousBusy) return;
+  continuousPending = true;
+  pushConsole("[continuous] pausing the auto-run for a manual build/test/package…", "stdout", "test");
+  stopApp("maven");
+  await waitForLaneIdle(mvnLaneBusy, 8000);
+}
+
 // Start the live-reload watcher if DevTools is enabled and a Spring app with the
 // DevTools dependency is currently running. Safe to call repeatedly. (Quarkus dev
 // mode has its own built-in live reload, so it never needs this watcher.)
@@ -1479,6 +1622,7 @@ function applySettings(body) {
   if (typeof body.devtools === "boolean") settings.devtools = body.devtools;
   if (typeof body.randomPort === "boolean") settings.randomPort = body.randomPort;
   if (typeof body.openBrowser === "boolean") settings.openBrowser = body.openBrowser;
+  if (typeof body.fullBuild === "boolean") settings.fullBuild = body.fullBuild;
   persistSettings();
 
   if (settings.devtools !== prev.devtools) {
@@ -1570,6 +1714,7 @@ function statusSnapshot() {
     run: laneStatus("run"),
     metricsTier: lastMetrics.metricsTier || null,
     reload: liveReloadStatus(),
+    continuous: continuousStatus(),
   };
 }
 
@@ -1819,15 +1964,14 @@ function withMavenProfiles(args, mavenProfiles) {
 }
 
 // ---------------------------------------------------------------------------
-// Affected-test selection (Infinitest-style)
+// Affected-test selection
 //
-// Like Infinitest, "Run affected" runs only the tests relevant to the
-// developer's current changes instead of the whole suite. The approach mirrors
-// Infinitest's:
+// "Run affected" runs only the tests relevant to the developer's current
+// changes instead of the whole suite, using a bytecode dependency graph:
 //   1. Build a dependency graph from the compiled .class files. Each class's
 //      constant pool lists every other class it references, so an edge A→B means
-//      "A uses B". (Infinitest does this with Javassist; we parse the constant
-//      pool directly so Coffilot needs no extra dependencies.)
+//      "A uses B". (We parse the constant pool directly so Coffilot needs no
+//      extra dependencies.)
 //   2. Find what changed: the uncommitted working-tree changes vs HEAD (git),
 //      mapped from .java/.kt/… source paths to fully-qualified class names.
 //   3. Walk the graph backwards from the changed classes to every class that
@@ -1855,7 +1999,7 @@ const TEST_MARKERS = new Set([
 ]);
 
 // Tests that load classes dynamically (e.g. ArchUnit scanning a package) have no
-// statically computable dependencies, so — like Infinitest — we always run them.
+// statically computable dependencies, so we always run them.
 const DYNAMIC_TEST_PREFIXES = ["com.tngtech.archunit"];
 
 // Turn an internal JVM class/type descriptor into a dotted class name, or null
@@ -1871,7 +2015,7 @@ function internalToDotted(name) {
 }
 
 // Parse a .class file's constant pool and return the set of dotted class names it
-// references (its "imports", in Infinitest terms). We only need the constant pool,
+// references (its "imports"). We only need the constant pool,
 // so we stop before the field/method/attribute tables. Returns null if the bytes
 // are not a recognisable class file.
 function parseClassRefs(buf) {
@@ -2044,7 +2188,7 @@ const enclosingClass = (name) => name.split("$")[0];
 // top-level class with its owning module.
 function affectedTestsFromIndex(index, changedClasses) {
   // Reverse adjacency: referenced → set of referrers, restricted to project
-  // classes (Infinitest only keeps edges between indexed classes).
+  // classes (we only keep edges between indexed classes).
   const reverse = new Map();
   for (const [name, entry] of index) {
     for (const ref of entry.refs) {
@@ -2230,20 +2374,25 @@ async function build(extraArgs, warm, mavenProfiles) {
     pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "build");
     return noToolResult();
   }
-  if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
-  const r = resolveRunner(warm);
-  const base = extraArgs && extraArgs.length ? extraArgs : defaultBuildArgs(r.warm);
-  const args = withMavenProfiles(base, mavenProfiles);
-  lanes.build.warm = r.warm;
-  const code = await spawnTool("build", args, "building", { bin: r.bin, label: r.label });
-  return {
-    ok: code === 0,
-    exitCode: code,
-    command: lanes.build.command,
-    runner: r.label,
-    warm: r.warm,
-    tail: tail("build"),
-  };
+  await suspendContinuous();
+  try {
+    if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
+    const r = resolveRunner(warm);
+    const base = extraArgs && extraArgs.length ? extraArgs : defaultBuildArgs(r.warm);
+    const args = withMavenProfiles(base, mavenProfiles);
+    lanes.build.warm = r.warm;
+    const code = await spawnTool("build", args, "building", { bin: r.bin, label: r.label });
+    return {
+      ok: code === 0,
+      exitCode: code,
+      command: lanes.build.command,
+      runner: r.label,
+      warm: r.warm,
+      tail: tail("build"),
+    };
+  } finally {
+    resumeContinuous();
+  }
 }
 
 async function packageApp(extraArgs, warm, mavenProfiles) {
@@ -2251,20 +2400,25 @@ async function packageApp(extraArgs, warm, mavenProfiles) {
     pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "package");
     return noToolResult();
   }
-  if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
-  const r = resolveRunner(warm);
-  const base = extraArgs && extraArgs.length ? extraArgs : defaultPackageArgs(r.warm);
-  const args = withMavenProfiles(base, mavenProfiles);
-  lanes.package.warm = r.warm;
-  const code = await spawnTool("package", args, "packaging", { bin: r.bin, label: r.label });
-  return {
-    ok: code === 0,
-    exitCode: code,
-    command: lanes.package.command,
-    runner: r.label,
-    warm: r.warm,
-    tail: tail("package"),
-  };
+  await suspendContinuous();
+  try {
+    if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
+    const r = resolveRunner(warm);
+    const base = extraArgs && extraArgs.length ? extraArgs : defaultPackageArgs(r.warm);
+    const args = withMavenProfiles(base, mavenProfiles);
+    lanes.package.warm = r.warm;
+    const code = await spawnTool("package", args, "packaging", { bin: r.bin, label: r.label });
+    return {
+      ok: code === 0,
+      exitCode: code,
+      command: lanes.package.command,
+      runner: r.label,
+      warm: r.warm,
+      tail: tail("package"),
+    };
+  } finally {
+    resumeContinuous();
+  }
 }
 
 async function test(extraArgs, warm, mavenProfiles, opts = {}) {
@@ -2272,70 +2426,148 @@ async function test(extraArgs, warm, mavenProfiles, opts = {}) {
     pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "test");
     return noToolResult();
   }
-  if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
-  const r = resolveRunner(warm);
-  const base = extraArgs && extraArgs.length ? extraArgs : defaultTestArgs(r.warm);
-  const args = withMavenProfiles(base, mavenProfiles);
-  lanes.test.warm = r.warm;
-  lastTestReport = null;
-  broadcast("tests", null);
-  // Seed the progress-bar estimate: persisted total if we have one, otherwise
-  // the total from any test reports already on disk (a prior run), so the
-  // bar is determinate from the first run instead of an indeterminate sweep.
-  let estimate = lastTestTotal;
-  if (!estimate) {
-    try {
-      const prev = await collectSurefireReport(0);
-      estimate = (prev.summary && prev.summary.tests) || 0;
-    } catch {
-      estimate = 0;
+  // A manual/agent test takes over from a background continuous run via the suspend
+  // gate; the continuous run itself (fromContinuous) must not suspend/pre-empt —
+  // that would stop its own process.
+  const gated = !opts.fromContinuous;
+  if (gated) await suspendContinuous();
+  try {
+    if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
+    const r = resolveRunner(warm);
+    const base = extraArgs && extraArgs.length ? extraArgs : defaultTestArgs(r.warm);
+    const args = withMavenProfiles(base, mavenProfiles);
+    lanes.test.warm = r.warm;
+    lastTestReport = null;
+    broadcast("tests", null);
+    // Seed the progress-bar estimate: persisted total if we have one, otherwise
+    // the total from any test reports already on disk (a prior run), so the
+    // bar is determinate from the first run instead of an indeterminate sweep.
+    let estimate = lastTestTotal;
+    if (!estimate) {
+      try {
+        const prev = await collectSurefireReport(0);
+        estimate = (prev.summary && prev.summary.tests) || 0;
+      } catch {
+        estimate = 0;
+      }
     }
+    resetTestProgress(estimate);
+    testRunStartedAt = Date.now();
+    // Live per-class progress is parsed from Surefire's console output (Maven only);
+    // Gradle's default output isn't per-test, so its graphical view fills in from
+    // the JUnit XML report once the run finishes.
+    const onLine = buildTool === "maven" ? onTestLine : undefined;
+    const code = await spawnTool("test", args, "testing", { bin: r.bin, label: r.label, onLine });
+    if (testProgress) {
+      testProgress.running = false;
+      broadcastTestProgress();
+    }
+    const report = await collectSurefireReport(testRunStartedAt);
+    lastTestReport = report;
+    lastTest = report.summary;
+    // Persist the total only when the tool exited on its own (code is a number)
+    // and this was a full-suite run. A manual Stop kills the process (code === null),
+    // which would otherwise persist a partial total; an affected (subset) run would
+    // otherwise shrink the full-suite estimate used to size the next run's bar.
+    if (!opts.affected && code !== null && report.summary && report.summary.tests > 0) {
+      lastTestTotal = report.summary.tests;
+      persistLastTestTotal(lastTestTotal);
+    }
+    broadcast("tests", report);
+    broadcast("status", statusSnapshot());
+    return {
+      ok: code === 0,
+      exitCode: code,
+      command: lanes.test.command,
+      runner: r.label,
+      warm: r.warm,
+      report: trimReportForAgent(report),
+      tail: tail("test"),
+    };
+  } finally {
+    if (gated) resumeContinuous();
   }
-  resetTestProgress(estimate);
-  testRunStartedAt = Date.now();
-  // Live per-class progress is parsed from Surefire's console output (Maven only);
-  // Gradle's default output isn't per-test, so its graphical view fills in from
-  // the JUnit XML report once the run finishes.
-  const onLine = buildTool === "maven" ? onTestLine : undefined;
-  const code = await spawnTool("test", args, "testing", { bin: r.bin, label: r.label, onLine });
-  if (testProgress) {
-    testProgress.running = false;
-    broadcastTestProgress();
+}
+
+// Continuous mode only: recompile main + test sources before computing the
+// affected-test selection. The selection's dependency graph is built from the
+// compiled .class files (buildClassIndex), so a freshly-edited class — or worse, a
+// brand-new class or a newly-added dependency edge — is invisible to selection
+// until it has been compiled. Compiling first keeps the graph in sync with the
+// just-saved edit; the affected-test run that follows then finds everything
+// already compiled (an up-to-date no-op). Returns the tool exit code (0 = ok,
+// null = killed/pre-empted, anything else = compile failure).
+async function compileForSelection(warm, mavenProfiles) {
+  const r = resolveRunner(warm);
+  let args;
+  if (buildTool === "gradle") {
+    // Compile only the modules whose sources changed: each owns an edited file, so
+    // its :module:testClasses task is guaranteed to exist. A bare `testClasses`
+    // would build only the root project, while listing every module risks hitting a
+    // sourceless aggregator that has no such task. Unchanged modules keep their
+    // current .class references already.
+    const git = gitChangedFiles();
+    const modules = new Set();
+    if (git.ok) {
+      for (const f of git.files) {
+        const c = sourceFileToClass(f);
+        if (c) modules.add(c.module || "");
+      }
+    }
+    const tasks = (modules.size ? [...modules] : [""]).map((m) => gradleTaskPath(m, "testClasses"));
+    args = [...tasks, "--console=plain", ...gradleWarmFlags(r.warm)];
+  } else {
+    // Maven's reactor recompiles only stale modules (incremental compilation);
+    // test-compile refreshes both the main and test .class output the graph reads.
+    args = ["-ntp", "test-compile"];
   }
-  const report = await collectSurefireReport(testRunStartedAt);
-  lastTestReport = report;
-  lastTest = report.summary;
-  // Persist the total only when the tool exited on its own (code is a number)
-  // and this was a full-suite run. A manual Stop kills the process (code === null),
-  // which would otherwise persist a partial total; an affected (subset) run would
-  // otherwise shrink the full-suite estimate used to size the next run's bar.
-  if (!opts.affected && code !== null && report.summary && report.summary.tests > 0) {
-    lastTestTotal = report.summary.tests;
-    persistLastTestTotal(lastTestTotal);
-  }
-  broadcast("tests", report);
-  broadcast("status", statusSnapshot());
-  return {
-    ok: code === 0,
-    exitCode: code,
-    command: lanes.test.command,
-    runner: r.label,
-    warm: r.warm,
-    report: trimReportForAgent(report),
-    tail: tail("test"),
-  };
+  args = withMavenProfiles(args, mavenProfiles);
+  lanes.test.warm = r.warm;
+  return spawnTool("test", args, "testing", { bin: r.bin, label: r.label });
 }
 
 // Compute the affected-test selection for the current uncommitted changes, log a
 // human-readable summary to the Test console + a `tests-selection` event, and run
 // just those tests. Used by the Test tab's "Run affected" button and the
 // run_affected_tests agent action.
-async function runAffectedTests(warm, mavenProfiles) {
+async function runAffectedTests(warm, mavenProfiles, opts = {}) {
   if (!buildTool) {
     pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "test");
     return noToolResult();
   }
+  // A continuous run is already serialized by the watcher/busy flags and must not
+  // suspend itself. Manual and agent affected runs go through the suspend gate so
+  // they take priority over an in-flight continuous run (pre-empting it) instead of
+  // being rejected as "already running".
+  if (opts.fromContinuous) return runAffectedTestsCore(warm, mavenProfiles, opts);
+  await suspendContinuous();
+  try {
+    return await runAffectedTestsCore(warm, mavenProfiles, opts);
+  } finally {
+    resumeContinuous();
+  }
+}
+
+async function runAffectedTestsCore(warm, mavenProfiles, opts = {}) {
   if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
+
+  // Continuous mode compiles the changed sources first so the selection below sees
+  // the just-saved edit (new classes / new dependency edges land in the .class index
+  // the graph is built from). A compile failure surfaces in the Test console and
+  // stops the run — the tests couldn't have compiled anyway, and it re-runs on the
+  // next save. Manual / agent affected runs skip this and stay fast.
+  if (opts.fromContinuous) {
+    const code = await compileForSelection(warm, mavenProfiles);
+    if (code === null) return { ok: false, error: "Interrupted." };
+    if (code !== 0) {
+      pushConsole(
+        "[continuous] compilation failed — fix the errors above; tests re-run on the next save.",
+        "stderr",
+        "test",
+      );
+      return { ok: false, error: "Compilation failed.", compileFailed: true };
+    }
+  }
 
   const sel = computeAffectedTests();
   broadcast("tests-selection", sel);
@@ -2368,14 +2600,17 @@ async function runAffectedTests(warm, mavenProfiles) {
   }
 
   pushConsole(
-    `[coffilot] Infinitest-style selection: ${sel.tests.length} test class(es) affected by ${sel.sources.length} changed source(s)${sel.fallback ? " (name-based fallback — run Build for accurate selection)" : ""}.`,
+    `[coffilot] Affected-test selection: ${sel.tests.length} test class(es) affected by ${sel.sources.length} changed source(s)${sel.fallback ? " (name-based fallback — run Build for accurate selection)" : ""}.`,
     "stdout",
     "test",
   );
   for (const t of sel.tests) pushConsole(`  • ${t.fqcn}`, "stdout", "test");
 
   const args = withMavenProfiles(affectedTestArgs(sel.tests, warm), mavenProfiles);
-  const result = await test(args, warm, mavenProfiles, { affected: true });
+  const result = await test(args, warm, mavenProfiles, {
+    affected: true,
+    fromContinuous: opts.fromContinuous === true,
+  });
   return { ...result, selection: sel };
 }
 
@@ -2922,8 +3157,12 @@ async function restart(op, params = {}) {
   }
   // Fire-and-forget, like the /api/build|test|package handlers: progress streams
   // over SSE, so the relaunch must not block the HTTP response until it finishes.
-  const startFn = op === "build" ? build : op === "test" ? test : packageApp;
-  startFn(null, params.warm === true, params.mavenProfiles);
+  if (op === "test" && params.affected === true) {
+    runAffectedTests(params.warm === true, params.mavenProfiles);
+  } else {
+    const startFn = op === "build" ? build : op === "test" ? test : packageApp;
+    startFn(null, params.warm === true, params.mavenProfiles);
+  }
   return { ok: true, restarted: true, op };
 }
 
@@ -3994,10 +4233,19 @@ const server = createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/test") {
     const body = await readBody(req);
     // affected:true runs only the tests relevant to the current uncommitted
-    // changes (Infinitest-style); otherwise the full suite runs.
+    // changes; otherwise the full suite runs.
     if (body.affected === true) runAffectedTests(body.warm === true, body.mavenProfiles);
     else test(null, body.warm === true, body.mavenProfiles);
     sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/test/continuous") {
+    const body = await readBody(req);
+    // Toggle the continuous-testing watcher: on saves it re-runs the affected
+    // tests. Always uses affected selection (the Full build toggle is disabled
+    // in the UI while this is on).
+    const result = body.enabled === true ? startContinuousTesting(body.mavenProfiles) : stopContinuousTesting();
+    sendJson(res, 200, result);
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/package") {
@@ -4168,7 +4416,7 @@ function makeCanvas() {
       {
         name: "run_affected_tests",
         description:
-          "Run only the tests affected by the current uncommitted changes (git working tree vs HEAD), Infinitest-style: Coffilot builds a dependency graph from the compiled .class files and runs just the test classes that transitively depend on the changed code — much faster than the full suite. Requires a prior compile (build_app/run_tests) for dependency-accurate selection; otherwise it falls back to name-based mapping (Foo → FooTest). Returns the parsed JUnit report for the tests it ran, plus the selection details.",
+          "Run only the tests affected by the current uncommitted changes (git working tree vs HEAD): Coffilot builds a dependency graph from the compiled .class files and runs just the test classes that transitively depend on the changed code — much faster than the full suite. Requires a prior compile (build_app/run_tests) for dependency-accurate selection; otherwise it falls back to name-based mapping (Foo → FooTest). Returns the parsed JUnit report for the tests it ran, plus the selection details.",
         inputSchema: {
           type: "object",
           properties: {

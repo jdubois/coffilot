@@ -23,7 +23,7 @@ wins; when neither is found the console says so and stays disabled until one is 
   the JUnit results parsed into a graphical, per-test view (summary chips, per-suite
   grouping, expandable failure stack traces) and a live progress bar. A console toggle
   shows the raw output.
-- **Run affected** &mdash; an [Infinitest](https://infinitest.github.io/)-style mode
+- **Run affected** &mdash; a mode
   that runs only the tests relevant to your **uncommitted changes** (git working tree
   vs `HEAD`) instead of the whole suite. Coffilot builds a dependency graph from the
   compiled `.class` files (reading each class's constant pool, no extra dependencies)

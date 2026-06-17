@@ -24,8 +24,10 @@ const exitEl = document.getElementById("exit");
 const metricsEl = document.getElementById("metrics");
 const testsEl = document.getElementById("tests");
 const tabBadge = document.getElementById("tab-tests-badge");
-const btnTestAffected = document.getElementById("btn-test-affected");
-const btnTestAffectedSpin = document.querySelector("#btn-test-affected .btn-spin");
+const fullbuildToggle = document.getElementById("fullbuild-toggle");
+const fullbuildInput = document.getElementById("in-fullbuild");
+const continuousToggle = document.getElementById("continuous-toggle");
+const continuousInput = document.getElementById("in-continuous");
 const testSelectionEl = document.getElementById("test-selection");
 const warmToggle = document.getElementById("warm-toggle");
 const warmInput = document.getElementById("in-warm");
@@ -115,6 +117,11 @@ let caps = {};
 // Whether a Maven/Gradle build tool is present. When false the canvas runs
 // in degraded mode: Build/Test/Package/Run stay disabled.
 let toolPresent = true;
+// Persisted "Full build" preference (env.settings.fullBuild), on by default.
+// Tracked here so renderStatus can show the toggle unchecked while continuous
+// testing overrides it, then restore the user's choice once continuous testing
+// is turned off.
+let fullBuildSetting = true;
 // Last JDTLS availability snapshot (env.jdtls), used for the toolchain pill.
 let jdtlsState = {};
 
@@ -400,34 +407,34 @@ function renderStatus(s) {
   // While a build op runs the lane is serialized, so grey out the other
   // Build/Test/Package buttons (the running one stays active — click it again
   // to restart). Everything is disabled when no build tool is present.
+  //
+  // Exception: a *continuous* (automatic) test run must not lock the toolbar.
+  // The user can still click Build/Test/Package to run it now; that pre-empts
+  // the background auto-run via the restart path. So a continuous-driven test
+  // run doesn't count as a blocking op for the sibling buttons.
+  const continuousRunning = !!(s.continuous && s.continuous.busy);
   const busyMvnOp = ["build", "test", "package"].find((op) => laneActive(s, op));
+  const blockingMvnOp = continuousRunning && busyMvnOp === "test" ? undefined : busyMvnOp;
   for (const op of ["build", "test", "package"]) {
     const btn = mvnButtons[op];
     if (!btn) continue;
     // The running op stays clickable (to restart); idle siblings are greyed out
     // until it stops, and the op itself is locked while its restart is in flight.
-    btn.disabled = !toolPresent || (!!busyMvnOp && op !== busyMvnOp) || !!restarting[op];
+    btn.disabled = !toolPresent || (!!blockingMvnOp && op !== blockingMvnOp) || !!restarting[op];
     btn.title = !toolPresent
       ? "Coffilot needs a Maven or Gradle project."
       : restarting[op]
         ? "Restarting\u2026"
-        : op === busyMvnOp
+        : op === blockingMvnOp
           ? `Restart the running ${op}`
           : btn.disabled
-            ? `Stop the running ${busyMvnOp} first`
-            : "";
+            ? `Stop the running ${blockingMvnOp} first`
+            : continuousRunning
+              ? "Continuous testing is running \u2014 click to run this now"
+              : "";
   }
-  // "Run affected" shares the serialized Maven lane; spinner follows the test lane.
-  if (btnTestAffected) {
-    const testBusy = !!(s.test && s.test.busy);
-    btnTestAffected.disabled = !toolPresent || (!!busyMvnOp && !testBusy);
-    btnTestAffected.title = !toolPresent
-      ? "Coffilot needs a Maven or Gradle project."
-      : btnTestAffected.disabled
-        ? `Stop the running ${busyMvnOp} first`
-        : "Run only the tests affected by your uncommitted changes vs HEAD (Infinitest-style)";
-    if (btnTestAffectedSpin) btnTestAffectedSpin.hidden = !testBusy;
-  }
+  // Test-view toggles reflect server state (continuous on/off) and tool presence.
+  reflectTestToggles();
   if (!toolPresent) btnRun.disabled = true;
   else btnRun.disabled = !!restarting.run;
   if (toolPresent) {
@@ -799,7 +806,7 @@ function renderTests(report, opts) {
   testsEl.innerHTML = html;
 }
 
-// Infinitest-style affected-test selection banner. `sel` is the server's
+// Affected-test selection banner. `sel` is the server's
 // computeAffectedTests() result (or an error/skip variant).
 function renderTestSelection(sel) {
   if (!testSelectionEl) return;
@@ -820,7 +827,7 @@ function renderTestSelection(sel) {
   }
   const n = (sel.tests || []).length;
   const files = sel.sources.length;
-  let txt = `Infinitest-style: ${n} test class${n === 1 ? "" : "es"} affected by ${files} changed source${files === 1 ? "" : "s"} vs HEAD`;
+  let txt = `Affected: ${n} test class${n === 1 ? "" : "es"} affected by ${files} changed source${files === 1 ? "" : "s"} vs HEAD`;
   if (sel.fallback) txt += " · name-based (run Build for dependency-accurate selection)";
   testSelectionEl.hidden = false;
   testSelectionEl.className = "test-selection" + (n ? "" : " warn");
@@ -829,6 +836,22 @@ function renderTestSelection(sel) {
 
 function hideTestSelection() {
   if (testSelectionEl) testSelectionEl.hidden = true;
+}
+
+// Sync the two Test-view toggles with server + settings state. Continuous
+// testing always uses affected selection, so while it's on the Full build
+// toggle is forced off and greyed out; turning it off restores the user's
+// persisted choice. Both are disabled when no build tool is present.
+function reflectTestToggles() {
+  if (!fullbuildToggle || !continuousToggle) return;
+  const cont = !!(statusSnap && statusSnap.continuous && statusSnap.continuous.enabled);
+  continuousInput.checked = cont;
+  continuousInput.disabled = !toolPresent;
+  continuousToggle.classList.toggle("disabled", !toolPresent);
+  const fbDisabled = !toolPresent || cont;
+  fullbuildInput.checked = cont ? false : fullBuildSetting;
+  fullbuildInput.disabled = fbDisabled;
+  fullbuildToggle.classList.toggle("disabled", fbDisabled);
 }
 
 function populateModules(modules) {
@@ -993,6 +1016,8 @@ function applySettingsState(s) {
   devtoolsInput.checked = s.devtools === true;
   randomportInput.checked = s.randomPort === true;
   openBrowserInput.checked = s.openBrowser === true;
+  fullBuildSetting = s.fullBuild === true;
+  reflectTestToggles();
   if (document.activeElement !== springInput && typeof s.springProfiles === "string") {
     springInput.value = s.springProfiles;
   }
@@ -1239,16 +1264,13 @@ document.getElementById("btn-build").onclick = () => {
 };
 document.getElementById("btn-test").onclick = () => {
   showTab("test");
-  hideTestSelection();
-  triggerLane("test", "/api/test", { warm: warm(), mavenProfiles: mvnProfiles() });
+  // Continuous testing always uses affected selection; otherwise the Full build
+  // toggle decides between the affected subset (off) and the whole suite (on).
+  const continuousOn = !!(statusSnap && statusSnap.continuous && statusSnap.continuous.enabled);
+  const affected = continuousOn || !fullbuildInput.checked;
+  if (!affected) hideTestSelection();
+  triggerLane("test", "/api/test", { affected, warm: warm(), mavenProfiles: mvnProfiles() });
 };
-if (btnTestAffected) {
-  btnTestAffected.onclick = () => {
-    if (btnTestAffected.disabled) return;
-    showTab("test");
-    post("/api/test", { affected: true, warm: warm(), mavenProfiles: mvnProfiles() });
-  };
-}
 document.getElementById("btn-package").onclick = () => {
   showTab("package");
   triggerLane("package", "/api/package", { warm: warm(), mavenProfiles: mvnProfiles() });
@@ -1321,6 +1343,7 @@ function saveSettings() {
     devtools: devtoolsInput.checked,
     randomPort: randomportInput.checked,
     openBrowser: openBrowserInput.checked,
+    fullBuild: fullbuildInput.checked,
   });
 }
 warmInput.addEventListener("change", saveSettings);
@@ -1328,6 +1351,18 @@ devtoolsInput.addEventListener("change", saveSettings);
 randomportInput.addEventListener("change", saveSettings);
 openBrowserInput.addEventListener("change", saveSettings);
 springInput.addEventListener("change", saveSettings);
+
+// "Full build" persists the affected-vs-full-suite preference for the Test button.
+fullbuildInput.addEventListener("change", () => {
+  fullBuildSetting = fullbuildInput.checked === true;
+  saveSettings();
+});
+// "Continuous testing" starts/stops the server-side watch loop. The server
+// echoes the new state via the status SSE, which reflectTestToggles() applies.
+continuousInput.addEventListener("change", () => {
+  if (continuousInput.disabled) return;
+  post("/api/test/continuous", { enabled: continuousInput.checked, mavenProfiles: mvnProfiles() });
+});
 
 btnFix.onclick = async () => {
   const kind = btnFix.dataset.kind;

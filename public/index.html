@@ -131,13 +131,32 @@
           <div class="subtabs" role="tablist" aria-label="Test view">
             <button class="subtab active" data-tview="graphical">Graphical</button>
             <button class="subtab" data-tview="console">Console</button>
-            <button
-              id="btn-test-affected"
-              class="affected-btn"
-              title="Run only the tests affected by your uncommitted changes vs HEAD (Infinitest-style)"
-            >
-              <span class="btn-spin" hidden></span>Run affected
-            </button>
+            <div class="test-toggles">
+              <label class="switch" id="fullbuild-toggle">
+                <input type="checkbox" id="in-fullbuild" checked />
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-label">Full build</span>
+              </label>
+              <span
+                class="info"
+                id="fullbuild-info"
+                tabindex="0"
+                data-tip="On (default): the Test button runs the entire test suite. Off: run only the tests affected by your uncommitted changes (git working tree vs HEAD)."
+                >&#9432;</span
+              >
+              <label class="switch" id="continuous-toggle">
+                <input type="checkbox" id="in-continuous" />
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-label">Continuous testing</span>
+              </label>
+              <span
+                class="info"
+                id="continuous-info"
+                tabindex="0"
+                data-tip="Off (default). On: automatically re-run the affected tests whenever you save a source file. While on, runs always use affected selection, so Full build is disabled."
+                >&#9432;</span
+              >
+            </div>
           </div>
           <div id="test-selection" class="test-selection" hidden></div>
           <div class="subpane-wrap">
