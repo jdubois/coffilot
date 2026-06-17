@@ -51,6 +51,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ---------------------------------------------------------------------------
 
 const isWindows = process.platform === "win32";
+const isMac = process.platform === "darwin";
 
 const session = await joinSession({ canvases: [makeCanvas()] });
 
@@ -269,6 +270,86 @@ function detectMvnd() {
   }
   mvndInfo = { available: false, path: null };
   return mvndInfo;
+}
+
+// ---------------------------------------------------------------------------
+// async-profiler (CPU/alloc/wall/lock flame graphs)
+//
+// The Run tab can attach async-profiler to the running app's JVM and render a
+// flame graph from the sampled stacks. async-profiler ships as a native tool
+// (the `asprof` CLI + libasyncProfiler), so — like mvnd — we DETECT an installed
+// copy rather than bundling one, and degrade gracefully (with an install hint)
+// when it is missing. There is no Windows build of async-profiler, so the whole
+// feature is reported unavailable there.
+// ---------------------------------------------------------------------------
+
+let asprofInfo = null;
+function detectAsprof() {
+  if (asprofInfo && asprofInfo.available) return asprofInfo;
+  if (isWindows) {
+    asprofInfo = { available: false, path: null };
+    return asprofInfo;
+  }
+  const candidates = [];
+  // Explicit overrides first: ASPROF points at the binary, ASYNC_PROFILER_HOME /
+  // ASYNC_PROFILER_DIR at an unpacked release directory.
+  if (process.env.ASPROF) candidates.push(process.env.ASPROF);
+  for (const home of [process.env.ASYNC_PROFILER_HOME, process.env.ASYNC_PROFILER_DIR]) {
+    if (home) candidates.push(path.join(home, "bin", "asprof"), path.join(home, "asprof"));
+  }
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    if (dir) candidates.push(path.join(dir, "asprof"));
+  }
+  // Common install locations: Homebrew (macOS/Linux) plus typical manual unpacks.
+  candidates.push(
+    "/opt/homebrew/bin/asprof",
+    "/usr/local/bin/asprof",
+    "/home/linuxbrew/.linuxbrew/bin/asprof",
+    "/opt/async-profiler/bin/asprof",
+    "/usr/local/async-profiler/bin/asprof",
+  );
+  const home = process.env.HOME || "";
+  if (home) candidates.push(path.join(home, "async-profiler", "bin", "asprof"));
+  for (const c of candidates) {
+    try {
+      if (existsSync(c)) {
+        asprofInfo = { available: true, path: c };
+        return asprofInfo;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  asprofInfo = { available: false, path: null };
+  return asprofInfo;
+}
+
+/** Install hint surfaced in the UI when async-profiler isn't found. */
+function profilerInstall() {
+  if (isMac) {
+    return { os: "macOS", cmd: "brew install async-profiler", url: "https://github.com/async-profiler/async-profiler" };
+  }
+  if (isWindows) {
+    return { os: "Windows", cmd: null, url: "https://github.com/async-profiler/async-profiler" };
+  }
+  return {
+    os: "Linux",
+    cmd: null,
+    url: "https://github.com/async-profiler/async-profiler/releases/latest",
+  };
+}
+
+/** Profiler capability the UI uses to enable/disable the flame-graph controls. */
+function profilerSnapshot() {
+  const a = detectAsprof();
+  return {
+    available: a.available,
+    supported: !isWindows, // async-profiler has no Windows build
+    // The default events the picker offers; "cpu" is mapped to itimer on macOS
+    // by the backend (no perf_events there).
+    events: ["cpu", "alloc", "wall", "lock"],
+    install: profilerInstall(),
+  };
 }
 
 // When a project ships a pom.xml but no Maven wrapper, fall back to a system
@@ -758,7 +839,16 @@ function findProjectRoot(primary) {
 // under COPILOT_HOME (not the repo) keyed by a hash of the workspace path.
 // ---------------------------------------------------------------------------
 
-const SETTINGS_KEYS = ["warm", "springProfiles", "devtools", "randomPort", "openBrowser"];
+const SETTINGS_KEYS = [
+  "warm",
+  "springProfiles",
+  "devtools",
+  "randomPort",
+  "openBrowser",
+  "autoProfile",
+  "autoProfileEvent",
+  "autoProfileDuration",
+];
 
 function settingsPaths() {
   const home = process.env.COPILOT_HOME || path.join(os.homedir(), ".copilot");
@@ -774,6 +864,9 @@ function defaultSettings() {
     devtools: false,
     randomPort: false,
     openBrowser: false,
+    autoProfile: false,
+    autoProfileEvent: "cpu",
+    autoProfileDuration: 30,
   };
 }
 
@@ -1479,6 +1572,13 @@ function applySettings(body) {
   if (typeof body.devtools === "boolean") settings.devtools = body.devtools;
   if (typeof body.randomPort === "boolean") settings.randomPort = body.randomPort;
   if (typeof body.openBrowser === "boolean") settings.openBrowser = body.openBrowser;
+  if (typeof body.autoProfile === "boolean") settings.autoProfile = body.autoProfile;
+  if (["cpu", "alloc", "wall", "lock"].includes(body.autoProfileEvent)) {
+    settings.autoProfileEvent = body.autoProfileEvent;
+  }
+  if (Number.isFinite(Number(body.autoProfileDuration))) {
+    settings.autoProfileDuration = Math.min(120, Math.max(3, Math.round(Number(body.autoProfileDuration))));
+  }
   persistSettings();
 
   if (settings.devtools !== prev.devtools) {
@@ -1588,6 +1688,8 @@ function envSnapshot() {
     quarkusProfiles: listQuarkusProfiles(),
     capabilities: capabilitiesSnapshot(),
     settings: settingsSnapshot(),
+    // CPU/alloc/wall/lock flame graphs via async-profiler (Run tab).
+    profiler: profilerSnapshot(),
     // Warm-JVM tier (mvnd for Maven, daemon for Gradle).
     warmAvailable: warm.available,
     warmKind: warm.kind,
@@ -1948,6 +2050,8 @@ async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
   app.actuatorPrefix = null;
   csrfToken = null;
   lastMetrics = { appUp: false };
+  resetProfile();
+  broadcastProfile();
 
   // Pick the run strategy: explicit mode wins, else infer from the chosen
   // module's framework — Quarkus (quarkus:dev / quarkusDev) and Spring Boot
@@ -2417,6 +2521,13 @@ function stopApp(op) {
     if (o === "run") {
       stopMetricsPolling();
       stopLiveReload();
+      if (profileChild) {
+        try {
+          profileChild.kill("SIGTERM");
+        } catch {
+          /* already gone */
+        }
+      }
     }
     const lane = lanes[o];
     const child = lane.child;
@@ -3028,10 +3139,351 @@ function finishMetrics() {
       const base = appBase();
       if (base) openExternalUrl(base);
     }
+    // "Automatically record at startup" (Run tab → Flame graph): kick off a
+    // profiling run once, on the same first-reachable transition.
+    if (settings.autoProfile) startAutoProfile();
     broadcast("status", statusSnapshot());
   }
   broadcast("metrics", lastMetrics);
   return lastMetrics;
+}
+
+// ---------------------------------------------------------------------------
+// async-profiler flame-graph engine
+//
+// On demand (Run tab "Record" button or the profile_app agent action) we attach
+// async-profiler to the running app's JVM for a fixed duration and collect
+// sampled stacks in "collapsed" format. The collapsed file is parsed here into a
+// flame tree (rendered client-side) plus a self-time hotspot list (surfaced to
+// the agent), all from a single profiling run.
+// ---------------------------------------------------------------------------
+
+// Logical event -> the async-profiler event token to request. macOS has no
+// perf_events, so the CPU profile is sampled with itimer there instead of cpu.
+const PROFILE_EVENTS = { cpu: "cpu", alloc: "alloc", wall: "wall", lock: "lock" };
+function resolveProfileEvent(event) {
+  const e = PROFILE_EVENTS[event] ? event : "cpu";
+  const token = e === "cpu" && isMac ? "itimer" : e;
+  return { event: e, token };
+}
+
+// Profiling state. `flameTree`/`top`/`total` are populated once a run completes;
+// the client fetches them from /api/profile/data. Everything else is broadcast
+// over SSE so the Run tab can reflect progress live.
+let profile = {
+  status: "idle", // idle | running | done | error
+  event: null, // logical event (cpu | alloc | wall | lock)
+  duration: 0,
+  pid: null,
+  startedAt: 0,
+  finishedAt: 0,
+  error: null,
+  total: 0,
+  top: [],
+  hasGraph: false,
+};
+let flameTree = null; // { n, v, c: [...] } built from the last collapsed run
+let profileChild = null; // the running `asprof -d` process
+let profileResolve = null; // resolves the in-flight run's promise (agent action)
+
+function profilePublic() {
+  const { event, duration, status, pid, startedAt, finishedAt, error, total, hasGraph } = profile;
+  return { status, event, duration, pid, startedAt, finishedAt, error, total, hasGraph };
+}
+
+function broadcastProfile() {
+  broadcast("profile", profilePublic());
+}
+
+function resetProfile() {
+  profile = {
+    status: "idle",
+    event: null,
+    duration: 0,
+    pid: null,
+    startedAt: 0,
+    finishedAt: 0,
+    error: null,
+    total: 0,
+    top: [],
+    hasGraph: false,
+  };
+  flameTree = null;
+}
+
+/** The collapsed-stacks file async-profiler writes for this workspace. */
+function profileOutFile() {
+  const { dir } = settingsPaths();
+  const key = createHash("sha1").update(workspacePath).digest("hex").slice(0, 16);
+  return path.join(dir, `flame-${key}.collapsed`);
+}
+
+// Find the PID of the JVM actually serving the app. spring-boot:run / bootRun /
+// quarkus:dev / quarkusDev all FORK a separate app JVM, so the run lane's own
+// child is the build-tool wrapper, not the app. The listener on the app's HTTP
+// port is the app JVM, so resolve it from the port first; fall back to the lane
+// child for plain-`java` runs (which are the JVM directly, and may not open a
+// port at all).
+function pidOnPort(port) {
+  if (isWindows || !port) return null;
+  try {
+    const res = spawnSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
+      encoding: "utf8",
+      timeout: 4000,
+    });
+    if (res.status === 0 && res.stdout) {
+      for (const tok of res.stdout.split(/\s+/)) {
+        const n = Number(tok);
+        if (Number.isInteger(n) && n > 0) return n;
+      }
+    }
+  } catch {
+    /* lsof missing or failed */
+  }
+  return null;
+}
+
+function resolveAppPid() {
+  const fromPort = pidOnPort(app.appPort);
+  if (fromPort) return fromPort;
+  if (app.runMode === "java" && lanes.run.child && lanes.run.child.pid) return lanes.run.child.pid;
+  return null;
+}
+
+// Parse async-profiler "collapsed" output (one `frame1;frame2;... count` line
+// per stack) into a flame tree plus self-time hotspots. Tiny nodes (below 0.1%
+// of total samples) are pruned to keep the rendered graph and the JSON payload
+// manageable.
+function buildFlame(collapsed) {
+  const root = { n: "(total)", v: 0, c: new Map() };
+  const self = new Map();
+  let total = 0;
+  for (const raw of collapsed.split("\n")) {
+    const line = raw.trimEnd();
+    const sp = line.lastIndexOf(" ");
+    if (sp <= 0) continue;
+    const count = Number(line.slice(sp + 1));
+    if (!Number.isFinite(count) || count <= 0) continue;
+    const frames = line.slice(0, sp).split(";");
+    total += count;
+    root.v += count;
+    let node = root;
+    for (const f of frames) {
+      let child = node.c.get(f);
+      if (!child) {
+        child = { n: f, v: 0, c: new Map() };
+        node.c.set(f, child);
+      }
+      child.v += count;
+      node = child;
+    }
+    const leaf = frames[frames.length - 1];
+    self.set(leaf, (self.get(leaf) || 0) + count);
+  }
+  const minV = Math.max(1, total * 0.001);
+  const toArray = (node) => ({
+    n: node.n,
+    v: node.v,
+    c: [...node.c.values()]
+      .filter((ch) => ch.v >= minV)
+      .sort((a, b) => b.v - a.v)
+      .map(toArray),
+  });
+  const top = [...self.entries()]
+    .map(([name, samples]) => ({ name, samples, pct: total ? samples / total : 0 }))
+    .sort((a, b) => b.samples - a.samples)
+    .slice(0, 12);
+  return { tree: toArray(root), total, top };
+}
+
+function finishProfileFromFile(stderrTail) {
+  const out = profileOutFile();
+  let collapsed = "";
+  try {
+    if (existsSync(out)) collapsed = readFileSync(out, "utf8");
+  } catch {
+    /* unreadable */
+  }
+  if (collapsed.trim()) {
+    const { tree, total, top } = buildFlame(collapsed);
+    flameTree = tree;
+    profile.total = total;
+    profile.top = top;
+    profile.hasGraph = true;
+    profile.status = "done";
+    profile.error = null;
+  } else {
+    profile.status = "error";
+    profile.hasGraph = false;
+    profile.error = stderrTail || "async-profiler produced no samples.";
+  }
+  profile.finishedAt = Date.now();
+}
+
+/**
+ * Attach async-profiler to the running app for `duration` seconds and collect a
+ * flame graph. Returns the immediate validation/ack synchronously plus a `done`
+ * promise that resolves with the final summary once the run completes (used by
+ * the profile_app agent action; the HTTP endpoint ignores it and relies on SSE).
+ */
+function startProfile({ duration, event } = {}) {
+  if (profile.status === "running") {
+    return { ok: false, status: "running", error: "A profiling run is already in progress." };
+  }
+  const ap = detectAsprof();
+  if (isWindows || !ap.available) {
+    return {
+      ok: false,
+      status: "unavailable",
+      error: isWindows
+        ? "async-profiler has no Windows build, so flame graphs aren't available."
+        : "async-profiler (asprof) isn't installed. Install it to record flame graphs.",
+    };
+  }
+  if (!runLaneBusy()) {
+    return { ok: false, status: "error", error: "Start the app from the Run tab before recording a flame graph." };
+  }
+  const pid = resolveAppPid();
+  if (!pid) {
+    return {
+      ok: false,
+      status: "error",
+      error: "Couldn't find the app's JVM process to attach to (is the app fully started?).",
+    };
+  }
+  const { event: logical, token } = resolveProfileEvent(event);
+  const dur = Math.min(120, Math.max(3, Math.round(Number(duration) || 30)));
+  const out = profileOutFile();
+  try {
+    mkdirSync(path.dirname(out), { recursive: true });
+    if (existsSync(out)) unlinkSync(out);
+  } catch {
+    /* best effort */
+  }
+
+  resetProfile();
+  profile.status = "running";
+  profile.event = logical;
+  profile.duration = dur;
+  profile.pid = pid;
+  profile.startedAt = Date.now();
+  broadcastProfile();
+  pushConsole(`[coffilot] profiling pid ${pid} for ${dur}s (event=${token}) with async-profiler…`, "stdout", "run");
+
+  const done = new Promise((resolve) => (profileResolve = resolve));
+  let stderr = "";
+  try {
+    profileChild = spawn(ap.path, ["-d", String(dur), "-e", token, "-o", "collapsed", "-f", out, String(pid)], {
+      cwd: workspacePath,
+      env: process.env,
+    });
+  } catch (e) {
+    profile.status = "error";
+    profile.error = e.message;
+    profile.finishedAt = Date.now();
+    broadcastProfile();
+    if (profileResolve) profileResolve(profileSummary());
+    return { ok: false, status: "error", error: e.message, done };
+  }
+  profileChild.stderr?.on("data", (c) => (stderr += c.toString()));
+  profileChild.on("error", (err) => {
+    profileChild = null;
+    profile.status = "error";
+    profile.error = err.message;
+    profile.finishedAt = Date.now();
+    pushConsole(`[coffilot] async-profiler failed: ${err.message}`, "stderr", "run");
+    broadcastProfile();
+    if (profileResolve) profileResolve(profileSummary());
+  });
+  profileChild.on("close", () => {
+    profileChild = null;
+    const stderrTail = stderr.trim().split("\n").slice(-6).join("\n");
+    finishProfileFromFile(stderrTail);
+    if (profile.status === "done") {
+      pushConsole(
+        `[coffilot] flame graph ready — ${profile.total} samples; open the Flame graph tab in Run.`,
+        "stdout",
+        "run",
+      );
+    } else {
+      pushConsole(`[coffilot] profiling failed: ${profile.error}`, "stderr", "run");
+    }
+    broadcastProfile();
+    if (profileResolve) profileResolve(profileSummary());
+  });
+  return { ok: true, status: "running", event: logical, duration: dur, pid, done };
+}
+
+// Fired by finishMetrics when "Automatically record at startup" is on and the app
+// first becomes reachable. Records using the persisted event/duration and logs a
+// clear reason to the Run console when it can't (so it never just "does nothing").
+function startAutoProfile() {
+  if (profile.status === "running") return;
+  const ap = detectAsprof();
+  if (isWindows || !ap.available) {
+    pushConsole(
+      isWindows
+        ? "[coffilot] auto-record is on, but async-profiler has no Windows build — skipping the flame graph."
+        : "[coffilot] auto-record is on, but async-profiler (asprof) isn't installed — skipping the flame graph.",
+      "stderr",
+      "run",
+    );
+    return;
+  }
+  pushConsole('[coffilot] auto-recording a flame graph ("Automatically record at startup" is on)…', "stdout", "run");
+  const r = startProfile({ event: settings.autoProfileEvent, duration: settings.autoProfileDuration });
+  if (!r.ok && r.error) pushConsole(`[coffilot] auto-record couldn't start: ${r.error}`, "stderr", "run");
+}
+
+/** Stop an in-flight profiling run early, dumping whatever has been collected. */
+function stopProfile() {
+  if (profile.status !== "running") return { ok: false, error: "No profiling run is in progress." };
+  const ap = detectAsprof();
+  const out = profileOutFile();
+  if (ap.available && profile.pid) {
+    // Cleanly stop the session in the target JVM and dump partial results. The
+    // `-d` child then exits and its close handler parses the file.
+    try {
+      spawnSync(ap.path, ["stop", "-o", "collapsed", "-f", out, String(profile.pid)], { timeout: 8000 });
+    } catch {
+      /* fall through to killing the child */
+    }
+  }
+  if (profileChild) {
+    try {
+      profileChild.kill("SIGTERM");
+    } catch {
+      /* already gone */
+    }
+  }
+  return { ok: true, stopping: true };
+}
+
+/** Summary returned to the agent action once a run completes. */
+function profileSummary() {
+  if (profile.status !== "done") {
+    return { ok: false, status: profile.status, error: profile.error || "Profiling did not complete." };
+  }
+  return {
+    ok: true,
+    status: "done",
+    event: profile.event,
+    durationSec: profile.duration,
+    totalSamples: profile.total,
+    topHotspots: (profile.top || []).map((h) => ({
+      method: h.name,
+      selfSamples: h.samples,
+      selfPercent: Math.round(h.pct * 1000) / 10,
+    })),
+    note: "The interactive flame graph is available in the Run tab's Flame graph view.",
+  };
+}
+
+/** Run a profiling session and wait for it to finish (for the agent action). */
+async function profileAppAwait({ duration, event } = {}) {
+  const r = startProfile({ duration, event });
+  if (!r.ok) return { ok: false, status: r.status, error: r.error };
+  return r.done;
 }
 
 /** Shape the BootUI MCP server status for the UI (enabled + advertised tools). */
@@ -3072,6 +3524,7 @@ const FIX_OP = {
   "run-java": "run",
   "run-spring": "run",
   "run-quarkus": "run",
+  profile: "run",
 };
 
 function buildFixPrompt(kind, extra = {}) {
@@ -3140,6 +3593,27 @@ function buildFixPrompt(kind, extra = {}) {
       ]
         .filter(Boolean)
         .join("\n\n");
+    case "profile": {
+      const top = profile.top || [];
+      const hotspots = top.length
+        ? top.map((h, i) => `${i + 1}. ${h.name} — ${h.samples} self samples (${(h.pct * 100).toFixed(1)}%)`).join("\n")
+        : "(no hotspots captured)";
+      const eventLabel =
+        profile.event === "alloc"
+          ? "allocation"
+          : profile.event === "wall"
+            ? "wall-clock"
+            : profile.event === "lock"
+              ? "lock-contention"
+              : "CPU";
+      return [
+        `An async-profiler ${eventLabel} flame graph of the running app (${profile.duration}s, ${profile.total} samples) highlighted these hottest methods by self time. Investigate the top entries, explain why they dominate, and propose or apply targeted optimizations (algorithmic fixes, caching, reduced allocation, avoided lock contention, etc.) without changing behavior.`,
+        "Top self-time hotspots:",
+        codeBlock(hotspots),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
     case "install-bootui": {
       const moduleName = extra.module || "";
       if (buildTool === "gradle") {
@@ -3514,6 +3988,7 @@ const server = createServer(async (req, res) => {
     res.write(`event: status\ndata: ${JSON.stringify(statusSnapshot())}\n\n`);
     res.write(`event: metrics\ndata: ${JSON.stringify(lastMetrics)}\n\n`);
     res.write(`event: tests\ndata: ${JSON.stringify(lastTestReport)}\n\n`);
+    res.write(`event: profile\ndata: ${JSON.stringify(profilePublic())}\n\n`);
     req.on("close", () => sseClients.get(instanceId)?.delete(res));
     return;
   }
@@ -3526,6 +4001,7 @@ const server = createServer(async (req, res) => {
       // UI replays it into the right console.
       console: [...lanes.build.console, ...lanes.test.console, ...lanes.package.console, ...lanes.run.console],
       tests: lastTestReport,
+      profile: profilePublic(),
       env: envSnapshot(),
     });
     return;
@@ -3581,6 +4057,29 @@ const server = createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/restart") {
     const body = await readBody(req);
     sendJson(res, 200, await restart(body.op, body)); // stop the lane, then relaunch it
+    return;
+  }
+
+  // CPU/alloc/wall/lock flame graph via async-profiler. /api/profile starts a
+  // fixed-duration run (progress streams over SSE as `profile` events); the
+  // graph data is fetched from /api/profile/data once it completes.
+  if (req.method === "POST" && url.pathname === "/api/profile") {
+    const body = await readBody(req);
+    const { done, ...ack } = startProfile({ duration: body.duration, event: body.event });
+    void done; // fire-and-forget; the UI follows progress over SSE
+    sendJson(res, 200, ack);
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/profile/stop") {
+    sendJson(res, 200, stopProfile());
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/profile/status") {
+    sendJson(res, 200, profilePublic());
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/profile/data") {
+    sendJson(res, 200, { ...profilePublic(), flame: flameTree, top: profile.top || [] });
     return;
   }
 
@@ -3804,15 +4303,36 @@ function makeCanvas() {
         handler: async () => (await refreshMetrics()) || lastMetrics,
       },
       {
+        name: "profile_app",
+        description:
+          "Record an async-profiler flame graph of the running app and return its top self-time hotspots. Requires async-profiler (asprof) installed and the app running (started via start_app). The interactive flame graph appears in the Run tab's Flame graph view. Waits for the run to complete.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            duration: {
+              type: "number",
+              description: "Sampling duration in seconds (3–120, default 30).",
+            },
+            event: {
+              type: "string",
+              enum: ["cpu", "alloc", "wall", "lock"],
+              description:
+                "What to sample: cpu (CPU time; itimer on macOS), alloc (allocations), wall (wall-clock), lock (lock contention). Default cpu.",
+            },
+          },
+        },
+        handler: async (ctx) => profileAppAwait({ duration: ctx.input?.duration, event: ctx.input?.event }),
+      },
+      {
         name: "fix_issue",
         description:
-          "Send a context-rich request into this chat asking to fix the current problem. Kind: compile (build failed), package (package failed), test (failing tests), run-java/run-spring/run-quarkus (startup failure), or mcp (advisor scan findings).",
+          "Send a context-rich request into this chat asking to fix the current problem. Kind: compile (build failed), package (package failed), test (failing tests), run-java/run-spring/run-quarkus (startup failure), profile (optimize the flame-graph hotspots), or mcp (advisor scan findings).",
         inputSchema: {
           type: "object",
           properties: {
             kind: {
               type: "string",
-              enum: ["compile", "package", "test", "run-java", "run-spring", "run-quarkus", "mcp"],
+              enum: ["compile", "package", "test", "run-java", "run-spring", "run-quarkus", "profile", "mcp"],
               description: "Which failure to fix.",
             },
             tool: { type: "string", description: "For kind=mcp: the scan tool name." },
