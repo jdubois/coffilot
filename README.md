@@ -159,11 +159,11 @@ Copy the extension files into the target location, keeping the folder name
 ```bash
 # Project scope (committed to the repo you want to drive):
 mkdir -p .github/extensions/coffilot
-cp -R extension.mjs copilot-extension.json public .github/extensions/coffilot/
+cp -R extension.mjs host.mjs mcp.mjs jdwp.mjs copilot-extension.json public .github/extensions/coffilot/
 
 # Or user scope (available in every session):
 mkdir -p ~/.copilot/extensions/coffilot
-cp -R extension.mjs copilot-extension.json public ~/.copilot/extensions/coffilot/
+cp -R extension.mjs host.mjs mcp.mjs jdwp.mjs copilot-extension.json public ~/.copilot/extensions/coffilot/
 ```
 
 Reload extensions (or restart the session); Coffilot is then discovered
@@ -194,12 +194,57 @@ In a Copilot app session on a Maven or Gradle project, open the **Coffilot** can
 6. **Stop** when done.
 
 The agent can drive the same flow with the `build_app`, `run_tests`,
-The agent can drive the same flow with the `build_app`, `run_tests`,
 `run_affected_tests`, `package_app`, `start_app`, `stop_app`, `get_status`,
 `get_metrics`, `profile_app`, `fix_issue`, `run_scan` and `set_log_level` actions,
 plus the debug actions `start_debug`, `stop_debug`, `set_breakpoint`,
 `remove_breakpoint`, `debug_continue`, `debug_step`, `debug_stack`,
 `get_variables`, `debug_evaluate` and `debug_status`.
+
+## Use with Cursor and other editors (standalone & MCP)
+
+Coffilot is built for the GitHub Copilot canvas runtime, but its engine — the
+build/test/package/run lanes, the JUnit view, live JVM metrics and advisor scans —
+also runs **standalone**, so editors that don't implement that runtime (for example
+**Cursor**) can use it two ways. No extra dependencies are needed; the
+`@github/copilot-sdk` is only used when the Copilot host provides it.
+
+- **Browser UI** — run the console as a plain web app and open it in a browser
+  alongside your editor:
+
+  ```bash
+  COFFILOT_PROJECT=/path/to/your/java-project node extension.mjs --standalone
+  # or, from inside the project: npm run standalone
+  ```
+
+  It prints a loopback URL (`http://127.0.0.1:<port>/…`) to open. The "Fix with
+  Copilot" button needs the Copilot conversation, so it is inert here; everything
+  else works.
+
+- **MCP server** — expose the actions as [Model Context
+  Protocol](https://modelcontextprotocol.io) tools over stdio so Cursor's agent can
+  build, test, run and read metrics. Add Coffilot to your MCP config (e.g.
+  `.cursor/mcp.json`):
+
+  ```json
+  {
+    "mcpServers": {
+      "coffilot": {
+        "command": "node",
+        "args": ["/path/to/coffilot/extension.mjs", "--mcp"],
+        "env": { "COFFILOT_PROJECT": "/path/to/your/java-project" }
+      }
+    }
+  }
+  ```
+
+  The agent then sees the `build_app`, `run_tests`, `run_affected_tests`,
+  `package_app`, `start_app`, `stop_app`, `get_status`, `get_metrics`,
+  `profile_app`, `fix_issue`, `run_scan`, `set_log_level` and debug tools. `fix_issue`
+  returns the fix prompt to the calling agent (there is no Copilot chat to push it
+  into). The web UI is served too, so you can open it in a browser as well.
+
+  Set `COFFILOT_PROJECT` to the target project, or launch with the project as the
+  working directory. Both modes bind to `127.0.0.1` only, like the Copilot path.
 
 ## How it works
 

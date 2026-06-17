@@ -42,7 +42,7 @@ import { inflateRawSync } from "node:zlib";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createCanvas, joinSession } from "@github/copilot-sdk/extension";
+import { loadHost } from "./host.mjs";
 import { DebugSession } from "./jdwp.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -53,6 +53,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const isWindows = process.platform === "win32";
 const isMac = process.platform === "darwin";
+
+// Resolve the host bindings. In the Copilot app this returns the real
+// `@github/copilot-sdk/extension` SDK; launched standalone (e.g. for use with
+// Cursor via MCP, or just `node extension.mjs --standalone`) it returns local
+// shims so the loopback server + UI run without the host. See host.mjs.
+const host = await loadHost();
+const { createCanvas, joinSession } = host;
 
 const session = await joinSession({ canvases: [makeCanvas()] });
 
@@ -109,7 +116,10 @@ const GRADLE_MARKERS = [
 // fast path is already correct for a project-embedded install; for a user/global
 // install the authoritative root arrives a moment later via the background
 // refinement kicked off after the server starts listening.
-let workspacePath = findProjectRoot(null);
+// COFFILOT_PROJECT lets a standalone launch (e.g. an MCP server configured in
+// Cursor) point at the target project explicitly when the process cwd isn't it;
+// in the Copilot app this is unset and resolution uses the install location.
+let workspacePath = findProjectRoot(process.env.COFFILOT_PROJECT || null);
 
 // Auto-detect the build tool from the project. Maven wins when both are present,
 // per Coffilot's "prefer Maven" rule; null means neither was found (degraded UI).
@@ -844,6 +854,10 @@ function freePort() {
 // resolves into the coffilot repo. Older hosts may not implement it, so failures
 // are tolerated and we fall back to path heuristics.
 async function getSessionPrimaryDir() {
+  // Standalone (non-Copilot) has no permission-paths RPC; the authoritative root
+  // is COFFILOT_PROJECT when set, matching the synchronous startup resolution so
+  // the background refine / "Check again" don't drift to the process cwd.
+  if (session.standalone) return process.env.COFFILOT_PROJECT || null;
   try {
     const res = await session.rpc?.permissions?.paths?.list?.();
     if (res && typeof res.primary === "string" && res.primary) return res.primary;
@@ -4924,9 +4938,12 @@ async function sendFix(kind, extra) {
   const prompt = buildFixPrompt(kind, extra);
   if (!prompt) return { ok: false, error: `Unknown fix kind: ${kind}` };
   try {
-    await session.send({ prompt });
+    const sent = await session.send({ prompt });
     session.log(`[coffilot] asked the agent to fix: ${kind}`, { level: "info" });
-    return { ok: true, sent: true, kind };
+    // Standalone (e.g. MCP for Cursor) has no live conversation: session.send
+    // hands the prompt back so the calling agent receives the fix request.
+    const handedBack = sent && typeof sent.prompt === "string" ? { prompt: sent.prompt } : {};
+    return { ok: true, sent: true, kind, ...handedBack };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -5559,6 +5576,39 @@ await serverReady;
 // session surfaces the canvas immediately; the UI self-heals via the broadcast
 // env (and its focus refresh / "Check again").
 void refineWorkspaceFromSession();
+
+// Standalone bootstrap (non-Copilot hosts such as Cursor). The Copilot path
+// leaves this untouched. In standalone mode we mint a browser-openable UI URL
+// and, when launched as an MCP server, expose the canvas actions over stdio so
+// an MCP-capable agent can drive the build/test/run/metrics tools.
+if (host.mode === "standalone") {
+  await startStandalone();
+}
+
+async function startStandalone() {
+  const canvas = session.canvases && session.canvases[0];
+  let url = `${serverUrl}/`;
+  try {
+    // The canvas open() mints a per-instance token and returns the gated URL.
+    if (canvas && typeof canvas.open === "function") {
+      const opened = await canvas.open({ instanceId: "standalone" });
+      if (opened && opened.url) url = opened.url;
+    }
+  } catch (e) {
+    session.log(`[coffilot] standalone open failed: ${e.message}`, { level: "warn" });
+  }
+  // Diagnostics always go to stderr, never stdout (the MCP JSON-RPC channel).
+  process.stderr.write(
+    `\nCoffilot is running standalone.\n` +
+      `  Build tool: ${TOOL_LABEL || "none detected"}\n` +
+      `  Project:    ${workspacePath}\n` +
+      `  Open UI:    ${url}\n\n`,
+  );
+  if (host.mcp && canvas) {
+    const { startMcpServer } = await import("./mcp.mjs");
+    startMcpServer(canvas, { log: (m) => session.log(m), version: "0.1.0" });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Canvas declaration

@@ -31,6 +31,13 @@ extension.mjs            The extension: SDK wiring, canvas + actions, loopback H
                          server, Maven/Gradle runner, JUnit report parser, metrics/MCP
                          proxy, the Debug lane (JDWP injection + attach), and the
                          "fix with Copilot" bridge.
+host.mjs                 Host adapter: returns the @github/copilot-sdk bindings in the
+                         Copilot app, or standalone shims (no SDK) when launched with
+                         --standalone / --mcp, so the engine also runs outside Copilot
+                         (e.g. for Cursor).
+mcp.mjs                  Minimal MCP (Model Context Protocol) stdio server that exposes
+                         the canvas actions as MCP tools, for editors that speak MCP
+                         (Cursor). Used only in standalone --mcp mode.
 jdwp.mjs                 The self-contained JDWP debug engine: a loopback JDWP client
                          and a DebugSession (breakpoints, stepping, stack, locals,
                          evaluate, snapshots). Pure (takes a log callback); no external

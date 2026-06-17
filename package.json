@@ -25,6 +25,8 @@
   ],
   "scripts": {
     "check": "node --check extension.mjs",
+    "standalone": "node extension.mjs --standalone",
+    "mcp": "node extension.mjs --mcp",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
