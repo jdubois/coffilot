@@ -93,7 +93,7 @@ verification in a live canvas is still expected for UI changes.
 ## Safety notes when testing
 
 The loopback control endpoints are mostly safe to `curl` for inspection
-(`/api/state`, `/api/settings`, `/api/recheck`, `/api/build`, `/api/test`, `/api/run`, `/api/stop`,
+(`/api/state`, `/api/settings`, `/api/recheck`, `/api/build`, `/api/test`, `/api/run`, `/api/stop`, `/api/restart`,
 `/events`, …), but **`/api/fix` and `/api/mcp/scan` fire prompts / scans into the
 conversation** — don't call them casually. The HTTP server binds to `127.0.0.1`
 only; keep it that way.
