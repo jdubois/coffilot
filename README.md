@@ -23,6 +23,14 @@ wins; when neither is found the console says so and stays disabled until one is 
   the JUnit results parsed into a graphical, per-test view (summary chips, per-suite
   grouping, expandable failure stack traces) and a live progress bar. A console toggle
   shows the raw output.
+- **Run affected** &mdash; an [Infinitest](https://infinitest.github.io/)-style mode
+  that runs only the tests relevant to your **uncommitted changes** (git working tree
+  vs `HEAD`) instead of the whole suite. Coffilot builds a dependency graph from the
+  compiled `.class` files (reading each class's constant pool, no extra dependencies)
+  and runs just the test classes that transitively depend on the changed code — via
+  Surefire `-Dtest=…` (Maven) or `--tests …` (Gradle). Build once for
+  dependency-accurate selection; before the first compile it falls back to a name-based
+  mapping (`Foo` → `FooTest` / `FooTests` / `FooIT`).
 - **Package** &mdash; Maven `./mvnw -ntp package` or Gradle `./gradlew assemble`,
   streamed live like Build.
 - **Run** &mdash; `spring-boot:run` (Maven) / `bootRun` (Gradle) for a Spring Boot
@@ -128,6 +136,15 @@ cp -R extension.mjs copilot-extension.json public ~/.copilot/extensions/coffilot
 Reload extensions (or restart the session); Coffilot is then discovered
 automatically (`canvasId: java-app`).
 
+### This repository
+
+This repo dog-foods Coffilot: it ships a tiny
+`.github/extensions/coffilot/extension.mjs` wrapper that loads the root
+`extension.mjs`, so opening **this** repository in the Copilot app loads Coffilot
+by default — no manual install or `~/.copilot/extensions/coffilot` symlink needed.
+If you already have such a user-scope symlink, remove it when working in this repo
+so Coffilot isn't loaded twice.
+
 ## Use
 
 In a Copilot app session on a Maven or Gradle project, open the **Coffilot** canvas, then:
@@ -141,8 +158,8 @@ In a Copilot app session on a Maven or Gradle project, open the **Coffilot** can
 5. **Stop** when done.
 
 The agent can drive the same flow with the `build_app`, `run_tests`,
-`package_app`, `start_app`, `stop_app`, `get_status`, `get_metrics`, `fix_issue`
-and `run_scan` actions.
+`run_affected_tests`, `package_app`, `start_app`, `stop_app`, `get_status`,
+`get_metrics`, `fix_issue` and `run_scan` actions.
 
 ## How it works
 

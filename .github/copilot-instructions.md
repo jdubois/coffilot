@@ -49,8 +49,9 @@ are both first-class build tools, auto-detected per project.
 ## How it works (orientation)
 
 - `extension.mjs`: `joinSession({ canvases: [makeCanvas()] })`, the canvas
-  declaration + agent actions (`build_app`, `run_tests`, `package_app`, `start_app`,
-  `stop_app`, `get_status`, `get_metrics`, `fix_issue`, `run_scan`), the build-tool
+  declaration + agent actions (`build_app`, `run_tests`, `run_affected_tests`,
+  `package_app`, `start_app`, `stop_app`, `get_status`, `get_metrics`, `fix_issue`,
+  `run_scan`), the build-tool
   runner (`spawn` of `./mvnw`/`mvnd` for Maven or `./gradlew`/`gradle` for Gradle,
   with `--enable-native-access=ALL-UNNAMED` via `MAVEN_OPTS` / `GRADLE_OPTS`), the run
   modes (`spring-boot:run`/`bootRun` for Spring Boot, `quarkus:dev`/`quarkusDev` for

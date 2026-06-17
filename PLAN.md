@@ -49,8 +49,9 @@ Shipped in the extension today:
 - `--enable-native-access=ALL-UNNAMED` applied to the build-tool JVM (via
   `MAVEN_OPTS` / `GRADLE_OPTS`) and, for Maven, the app JVM to silence JDK
   native-access warnings.
-- Agent-facing actions: `build_app`, `run_tests`, `package_app`, `start_app`,
-  `stop_app`, `get_status`, `get_metrics`, `fix_issue`, `run_scan`.
+- Agent-facing actions: `build_app`, `run_tests`, `run_affected_tests`,
+  `package_app`, `start_app`, `stop_app`, `get_status`, `get_metrics`, `fix_issue`,
+  `run_scan`.
 
 ## Known limitations
 

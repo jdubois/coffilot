@@ -24,6 +24,9 @@ const exitEl = document.getElementById("exit");
 const metricsEl = document.getElementById("metrics");
 const testsEl = document.getElementById("tests");
 const tabBadge = document.getElementById("tab-tests-badge");
+const btnTestAffected = document.getElementById("btn-test-affected");
+const btnTestAffectedSpin = document.querySelector("#btn-test-affected .btn-spin");
+const testSelectionEl = document.getElementById("test-selection");
 const warmToggle = document.getElementById("warm-toggle");
 const warmInput = document.getElementById("in-warm");
 const warmLabel = document.getElementById("warm-label");
@@ -339,6 +342,17 @@ function renderStatus(s) {
       : btn.disabled
         ? `Stop the running ${busyMvnOp} first`
         : "";
+  }
+  // "Run affected" shares the serialized Maven lane; spinner follows the test lane.
+  if (btnTestAffected) {
+    const testBusy = !!(s.test && s.test.busy);
+    btnTestAffected.disabled = !toolPresent || (!!busyMvnOp && !testBusy);
+    btnTestAffected.title = !toolPresent
+      ? "Coffilot needs a Maven or Gradle project."
+      : btnTestAffected.disabled
+        ? `Stop the running ${busyMvnOp} first`
+        : "Run only the tests affected by your uncommitted changes vs HEAD (Infinitest-style)";
+    if (btnTestAffectedSpin) btnTestAffectedSpin.hidden = !testBusy;
   }
   if (!toolPresent) btnRun.disabled = true;
   // Header (phase / command / exit / fix) follows the active tab.
@@ -682,6 +696,38 @@ function renderTests(report, opts) {
     html += `</details>`;
   }
   testsEl.innerHTML = html;
+}
+
+// Infinitest-style affected-test selection banner. `sel` is the server's
+// computeAffectedTests() result (or an error/skip variant).
+function renderTestSelection(sel) {
+  if (!testSelectionEl) return;
+  if (!sel || !sel.ok) {
+    testSelectionEl.hidden = false;
+    testSelectionEl.className = "test-selection warn";
+    testSelectionEl.textContent = (sel && sel.message) || "Affected-test selection is unavailable.";
+    return;
+  }
+  if (!sel.sources || !sel.sources.length) {
+    testSelectionEl.hidden = false;
+    testSelectionEl.className = "test-selection warn";
+    testSelectionEl.textContent =
+      sel.changedFiles && sel.changedFiles.length
+        ? "No changed Java/Kotlin sources vs HEAD — nothing to test."
+        : "No uncommitted changes vs HEAD — nothing to test.";
+    return;
+  }
+  const n = (sel.tests || []).length;
+  const files = sel.sources.length;
+  let txt = `Infinitest-style: ${n} test class${n === 1 ? "" : "es"} affected by ${files} changed source${files === 1 ? "" : "s"} vs HEAD`;
+  if (sel.fallback) txt += " · name-based (run Build for dependency-accurate selection)";
+  testSelectionEl.hidden = false;
+  testSelectionEl.className = "test-selection" + (n ? "" : " warn");
+  testSelectionEl.textContent = txt;
+}
+
+function hideTestSelection() {
+  if (testSelectionEl) testSelectionEl.hidden = true;
 }
 
 function populateModules(modules) {
@@ -1066,8 +1112,16 @@ document.getElementById("btn-build").onclick = () => {
 };
 document.getElementById("btn-test").onclick = () => {
   showTab("test");
+  hideTestSelection();
   post("/api/test", { warm: warm(), mavenProfiles: mvnProfiles() });
 };
+if (btnTestAffected) {
+  btnTestAffected.onclick = () => {
+    if (btnTestAffected.disabled) return;
+    showTab("test");
+    post("/api/test", { affected: true, warm: warm(), mavenProfiles: mvnProfiles() });
+  };
+}
 document.getElementById("btn-package").onclick = () => {
   showTab("package");
   post("/api/package", { warm: warm(), mavenProfiles: mvnProfiles() });
@@ -1207,6 +1261,9 @@ es.addEventListener("test-progress", (e) => {
 es.addEventListener("tests", (e) => {
   const report = JSON.parse(e.data);
   renderTests(report, { runnerLabel: lastRunnerLabel });
+});
+es.addEventListener("tests-selection", (e) => {
+  renderTestSelection(JSON.parse(e.data));
 });
 es.addEventListener("reset", (e) => {
   // Clear only the console for the op that's (re)starting; the others keep

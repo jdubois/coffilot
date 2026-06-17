@@ -1768,6 +1768,396 @@ function withMavenProfiles(args, mavenProfiles) {
   return p ? [...args, "-P", p] : args;
 }
 
+// ---------------------------------------------------------------------------
+// Affected-test selection (Infinitest-style)
+//
+// Like Infinitest, "Run affected" runs only the tests relevant to the
+// developer's current changes instead of the whole suite. The approach mirrors
+// Infinitest's:
+//   1. Build a dependency graph from the compiled .class files. Each class's
+//      constant pool lists every other class it references, so an edge A→B means
+//      "A uses B". (Infinitest does this with Javassist; we parse the constant
+//      pool directly so Coffilot needs no extra dependencies.)
+//   2. Find what changed: the uncommitted working-tree changes vs HEAD (git),
+//      mapped from .java/.kt/… source paths to fully-qualified class names.
+//   3. Walk the graph backwards from the changed classes to every class that
+//      depends on them (transitively), then keep the ones that are tests — those
+//      are the only tests that need to run.
+// When the project hasn't been compiled yet (no .class files) we fall back to a
+// name-based mapping (Foo → FooTest / FooTests / FooIT) so the feature still
+// narrows the run, and tell the developer to Build for accurate selection.
+// ---------------------------------------------------------------------------
+
+// Annotation/base-class markers that identify a JUnit/TestNG test class. They
+// show up in a compiled test's constant pool (as `Lorg/junit/...;` annotation
+// descriptors or a `TestCase` superclass reference), so detecting a test is just
+// a constant-pool lookup — no classloading required.
+const TEST_MARKERS = new Set([
+  "org.junit.jupiter.api.Test",
+  "org.junit.jupiter.api.TestFactory",
+  "org.junit.jupiter.api.TestTemplate",
+  "org.junit.jupiter.api.RepeatedTest",
+  "org.junit.jupiter.api.Nested",
+  "org.junit.jupiter.params.ParameterizedTest",
+  "org.junit.Test",
+  "junit.framework.TestCase",
+  "org.testng.annotations.Test",
+]);
+
+// Tests that load classes dynamically (e.g. ArchUnit scanning a package) have no
+// statically computable dependencies, so — like Infinitest — we always run them.
+const DYNAMIC_TEST_PREFIXES = ["com.tngtech.archunit"];
+
+// Turn an internal JVM class/type descriptor into a dotted class name, or null
+// for primitives/arrays-of-primitives. Handles `com/example/Foo`, `Lcom/...;`
+// and array forms like `[Lcom/...;`.
+function internalToDotted(name) {
+  if (!name) return null;
+  let s = name;
+  while (s.startsWith("[")) s = s.slice(1);
+  if (s.startsWith("L") && s.endsWith(";")) s = s.slice(1, -1);
+  if (s.length <= 1) return null; // primitive descriptor (I, J, Z, …) or empty
+  return s.replace(/\//g, ".");
+}
+
+// Parse a .class file's constant pool and return the set of dotted class names it
+// references (its "imports", in Infinitest terms). We only need the constant pool,
+// so we stop before the field/method/attribute tables. Returns null if the bytes
+// are not a recognisable class file.
+function parseClassRefs(buf) {
+  if (buf.length < 10 || buf.readUInt32BE(0) !== 0xcafebabe) return null;
+  const cpCount = buf.readUInt16BE(8);
+  let off = 10;
+  const classNameIndices = [];
+  const utf8 = new Map();
+  try {
+    for (let i = 1; i < cpCount; i++) {
+      const tag = buf[off++];
+      switch (tag) {
+        case 1: {
+          // CONSTANT_Utf8
+          const len = buf.readUInt16BE(off);
+          off += 2;
+          utf8.set(i, buf.toString("utf8", off, off + len));
+          off += len;
+          break;
+        }
+        case 7: // CONSTANT_Class → name_index
+          classNameIndices.push(buf.readUInt16BE(off));
+          off += 2;
+          break;
+        case 8: // String
+        case 16: // MethodType
+        case 19: // Module
+        case 20: // Package
+          off += 2;
+          break;
+        case 15: // MethodHandle
+          off += 3;
+          break;
+        case 3: // Integer
+        case 4: // Float
+        case 9: // Fieldref
+        case 10: // Methodref
+        case 11: // InterfaceMethodref
+        case 12: // NameAndType
+        case 17: // Dynamic
+        case 18: // InvokeDynamic
+          off += 4;
+          break;
+        case 5: // Long  (occupies two pool slots)
+        case 6: // Double
+          off += 8;
+          i++;
+          break;
+        default:
+          return null; // unknown tag → can't trust further offsets
+      }
+    }
+  } catch {
+    return null; // truncated/garbled class file
+  }
+
+  const refs = new Set();
+  for (const idx of classNameIndices) {
+    const d = internalToDotted(utf8.get(idx));
+    if (d) refs.add(d);
+  }
+  // CONSTANT_Class entries miss types that only appear inside descriptors (field
+  // types, method params/returns, annotation types). Scan every Utf8 for `L…;`
+  // descriptors to recover them. This over-approximates, which is safe: we only
+  // keep edges to classes that are actually in the project index.
+  for (const s of utf8.values()) {
+    if (s.indexOf("L") === -1) continue;
+    const re = /L([^;<]+);/g;
+    let m;
+    while ((m = re.exec(s)) !== null) {
+      const d = internalToDotted("L" + m[1] + ";");
+      if (d) refs.add(d);
+    }
+  }
+  return refs;
+}
+
+// The compiled-output directories to index, per build tool, tagged with whether
+// they hold main or test classes and which module they belong to ("" = root).
+function outputClassDirs() {
+  const mods = listModules();
+  const bases = (mods.length ? mods : [{ name: "" }]).map((m) => ({
+    module: m.name || "",
+    dir: path.join(workspacePath, m.name || ""),
+  }));
+  const dirs = [];
+  for (const { module, dir } of bases) {
+    if (buildTool === "gradle") {
+      for (const lang of ["java", "kotlin", "groovy", "scala"]) {
+        dirs.push({ dir: path.join(dir, "build", "classes", lang, "main"), kind: "main", module });
+        dirs.push({ dir: path.join(dir, "build", "classes", lang, "test"), kind: "test", module });
+        dirs.push({ dir: path.join(dir, "build", "classes", lang, "integrationTest"), kind: "test", module });
+      }
+    } else {
+      dirs.push({ dir: path.join(dir, "target", "classes"), kind: "main", module });
+      dirs.push({ dir: path.join(dir, "target", "test-classes"), kind: "test", module });
+    }
+  }
+  return dirs.filter((d) => existsSync(d.dir));
+}
+
+// Recursively list every .class file under a directory (skips inner-class noise
+// is not needed — inner classes carry their own dependency edges).
+function walkClassFiles(root, acc = []) {
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return acc;
+  }
+  for (const e of entries) {
+    const full = path.join(root, e.name);
+    if (e.isDirectory()) walkClassFiles(full, acc);
+    else if (e.isFile() && e.name.endsWith(".class")) acc.push(full);
+  }
+  return acc;
+}
+
+// Dotted class name for a .class file, derived from its path under the output
+// root: target/classes/com/example/Foo$Bar.class → com.example.Foo$Bar.
+function classNameFromFile(rootDir, file) {
+  const rel = path.relative(rootDir, file).replace(/\\/g, "/");
+  return rel.replace(/\.class$/, "").replace(/\//g, ".");
+}
+
+// Build the project class index: name → { kind, module, refs, isTest, dynamic }.
+function buildClassIndex() {
+  const classes = new Map();
+  for (const { dir, kind, module } of outputClassDirs()) {
+    for (const file of walkClassFiles(dir)) {
+      const name = classNameFromFile(dir, file);
+      let buf;
+      try {
+        buf = readFileSync(file);
+      } catch {
+        continue;
+      }
+      const refs = parseClassRefs(buf);
+      if (!refs) continue;
+      let isTest = false;
+      let dynamic = false;
+      if (kind === "test") {
+        for (const marker of TEST_MARKERS) {
+          if (refs.has(marker)) {
+            isTest = true;
+            break;
+          }
+        }
+        for (const ref of refs) {
+          if (DYNAMIC_TEST_PREFIXES.some((p) => ref.startsWith(p))) {
+            dynamic = true;
+            break;
+          }
+        }
+      }
+      // Prefer a test-output entry if the same name appears under both roots.
+      const prev = classes.get(name);
+      if (prev && prev.kind === "test" && kind !== "test") continue;
+      classes.set(name, { name, kind, module, refs, isTest, dynamic });
+    }
+  }
+  return classes;
+}
+
+const enclosingClass = (name) => name.split("$")[0];
+
+// Given the class index and the set of changed (dotted) class names, walk the
+// dependency graph backwards to every transitive dependent and return the test
+// classes among them (plus always-run dynamic tests). Each returned test is a
+// top-level class with its owning module.
+function affectedTestsFromIndex(index, changedClasses) {
+  // Reverse adjacency: referenced → set of referrers, restricted to project
+  // classes (Infinitest only keeps edges between indexed classes).
+  const reverse = new Map();
+  for (const [name, entry] of index) {
+    for (const ref of entry.refs) {
+      if (ref === name || !index.has(ref)) continue;
+      let set = reverse.get(ref);
+      if (!set) {
+        set = new Set();
+        reverse.set(ref, set);
+      }
+      set.add(name);
+    }
+  }
+
+  // Seed with every indexed class that IS a changed class or an inner class of
+  // one (Foo.java compiles to Foo, Foo$Bar, …).
+  const changedSet = new Set(changedClasses);
+  const seeds = new Set();
+  for (const name of index.keys()) {
+    if (changedSet.has(name) || changedSet.has(enclosingClass(name))) seeds.add(name);
+  }
+
+  // BFS over reverse edges → all transitive dependents.
+  const visited = new Set(seeds);
+  const queue = [...seeds];
+  while (queue.length) {
+    const cur = queue.shift();
+    const referrers = reverse.get(cur);
+    if (!referrers) continue;
+    for (const r of referrers) {
+      if (!visited.has(r)) {
+        visited.add(r);
+        queue.push(r);
+      }
+    }
+  }
+
+  const tests = new Map(); // top-level FQCN → module
+  for (const name of visited) {
+    const e = index.get(name);
+    if (e && e.isTest) tests.set(enclosingClass(name), e.module);
+  }
+  // Dynamic-dependency tests (ArchUnit, …) can't be selected by graph, so always
+  // include them.
+  for (const [name, e] of index) {
+    if (e.dynamic) tests.set(enclosingClass(name), e.module);
+  }
+  return [...tests].map(([fqcn, module]) => ({ fqcn, module }));
+}
+
+// Map a repo-relative source path to its class name + module + main/test kind,
+// or null for non-JVM-source files. Handles module prefixes and the standard
+// src/<sourceSet>/<lang>/ layout.
+function sourceFileToClass(rel) {
+  const norm = rel.replace(/\\/g, "/");
+  const m = norm.match(/^(?:(.+)\/)?src\/([^/]+)\/(?:java|kotlin|groovy|scala)\/(.+)\.(?:java|kt|groovy|scala)$/);
+  if (!m) return null;
+  const module = m[1] || "";
+  const sourceSet = m[2];
+  const fqcn = m[3].replace(/\//g, ".");
+  const kind = /test/i.test(sourceSet) ? "test" : "main";
+  return { module, fqcn, kind, file: rel };
+}
+
+// Uncommitted working-tree changes vs HEAD (staged + unstaged + untracked),
+// relative to the project root. Returns { ok, files, error }.
+function gitChangedFiles() {
+  const run = (args) => spawnSync("git", args, { cwd: workspacePath, encoding: "utf8", timeout: 10000 });
+  const probe = run(["rev-parse", "--is-inside-work-tree"]);
+  if (probe.error || probe.status !== 0 || !/true/.test(probe.stdout || "")) {
+    return { ok: false, files: [], error: "Not a git repository — affected-test selection needs git." };
+  }
+  const files = new Set();
+  for (const args of [
+    ["diff", "--name-only", "--relative"], // unstaged tracked
+    ["diff", "--name-only", "--relative", "--cached"], // staged
+    ["ls-files", "--others", "--exclude-standard"], // untracked
+  ]) {
+    const r = run(args);
+    if (r.status === 0 && r.stdout) {
+      for (const line of r.stdout.split("\n")) {
+        const f = line.trim();
+        if (f) files.add(f);
+      }
+    }
+  }
+  return { ok: true, files: [...files] };
+}
+
+// Name-based fallback when there are no compiled classes to graph: a changed test
+// runs itself; a changed main class Foo maps to candidate FooTest/FooTests/FooIT…
+function nameBasedTests(sources) {
+  const tests = new Map();
+  for (const s of sources) {
+    if (s.kind === "test") {
+      tests.set(enclosingClass(s.fqcn), s.module);
+      continue;
+    }
+    for (const suffix of ["Test", "Tests", "IT", "ITCase", "TestCase"]) {
+      tests.set(s.fqcn + suffix, s.module);
+    }
+  }
+  return [...tests].map(([fqcn, module]) => ({ fqcn, module }));
+}
+
+// Top-level entry point: figure out which test classes to run for the current
+// uncommitted changes. Returns a rich result the UI/agent can explain.
+function computeAffectedTests() {
+  const git = gitChangedFiles();
+  if (!git.ok) return { ok: false, reason: "not-git", message: git.error };
+
+  const sources = [];
+  const nonSource = [];
+  for (const f of git.files) {
+    const c = sourceFileToClass(f);
+    if (c) sources.push(c);
+    else nonSource.push(f);
+  }
+
+  const base = { ok: true, changedFiles: git.files, sources, nonSource };
+  if (!sources.length) {
+    return { ...base, tests: [], fallback: false, reason: git.files.length ? "no-source-changes" : "no-changes" };
+  }
+
+  const index = buildClassIndex();
+  if (!index.size) {
+    return { ...base, tests: nameBasedTests(sources), fallback: true, reason: "no-classes" };
+  }
+
+  const changedClasses = sources.map((s) => s.fqcn);
+  const tests = new Map();
+  for (const t of affectedTestsFromIndex(index, changedClasses)) tests.set(t.fqcn, t.module);
+  // A directly edited test source always runs, even if its compiled class is
+  // stale or missing from the index.
+  for (const s of sources) if (s.kind === "test") tests.set(enclosingClass(s.fqcn), s.module);
+
+  return {
+    ...base,
+    tests: [...tests].map(([fqcn, module]) => ({ fqcn, module })),
+    fallback: false,
+    reason: "graph",
+    indexedCount: index.size,
+  };
+}
+
+// Build the runner args that execute only `tests` (array of { fqcn, module }).
+function affectedTestArgs(tests, warm) {
+  if (buildTool === "gradle") {
+    // List each owning module's `test` task so a global --tests filter never hits
+    // a task with zero matches (which Gradle treats as an error). Every listed
+    // module owns ≥1 of the patterns, so each task matches at least one test.
+    const modules = [...new Set(tests.map((t) => t.module || ""))];
+    const args = modules.map((m) => gradleTaskPath(m, "test"));
+    args.push("--console=plain", ...gradleWarmFlags(warm));
+    for (const t of tests) args.push("--tests", t.fqcn);
+    return args;
+  }
+  // Surefire's -Dtest matches by simple class name (it builds **/Name.java
+  // patterns); failIfNoSpecifiedTests=false keeps reactor modules without a match
+  // from failing the run.
+  const simple = [...new Set(tests.map((t) => enclosingClass(t.fqcn).split(".").pop()))];
+  return ["-ntp", `-Dtest=${simple.join(",")}`, "-Dsurefire.failIfNoSpecifiedTests=false", "test"];
+}
+
 // Default argument vectors per lane, per tool. `warm` only affects Gradle (daemon
 // vs --no-daemon); Maven's warm tier swaps the binary (mvnd) instead.
 function defaultBuildArgs(warm) {
@@ -1827,7 +2217,7 @@ async function packageApp(extraArgs, warm, mavenProfiles) {
   };
 }
 
-async function test(extraArgs, warm, mavenProfiles) {
+async function test(extraArgs, warm, mavenProfiles, opts = {}) {
   if (!buildTool) {
     pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "test");
     return noToolResult();
@@ -1865,10 +2255,11 @@ async function test(extraArgs, warm, mavenProfiles) {
   const report = await collectSurefireReport(testRunStartedAt);
   lastTestReport = report;
   lastTest = report.summary;
-  // Persist the total only when the tool exited on its own (code is a number).
-  // A manual Stop kills the process (code === null), which would otherwise
-  // persist a partial total and skew the next run's bar.
-  if (code !== null && report.summary && report.summary.tests > 0) {
+  // Persist the total only when the tool exited on its own (code is a number)
+  // and this was a full-suite run. A manual Stop kills the process (code === null),
+  // which would otherwise persist a partial total; an affected (subset) run would
+  // otherwise shrink the full-suite estimate used to size the next run's bar.
+  if (!opts.affected && code !== null && report.summary && report.summary.tests > 0) {
     lastTestTotal = report.summary.tests;
     persistLastTestTotal(lastTestTotal);
   }
@@ -1883,6 +2274,59 @@ async function test(extraArgs, warm, mavenProfiles) {
     report: trimReportForAgent(report),
     tail: tail("test"),
   };
+}
+
+// Compute the affected-test selection for the current uncommitted changes, log a
+// human-readable summary to the Test console + a `tests-selection` event, and run
+// just those tests. Used by the Test tab's "Run affected" button and the
+// run_affected_tests agent action.
+async function runAffectedTests(warm, mavenProfiles) {
+  if (!buildTool) {
+    pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "test");
+    return noToolResult();
+  }
+  if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
+
+  const sel = computeAffectedTests();
+  broadcast("tests-selection", sel);
+
+  if (!sel.ok) {
+    pushConsole(`[coffilot] Affected tests: ${sel.message}`, "stderr", "test");
+    return { ok: false, error: sel.message };
+  }
+  if (!sel.sources.length) {
+    const msg = sel.changedFiles.length
+      ? "No changed Java/Kotlin sources vs HEAD — nothing to test."
+      : "No uncommitted changes vs HEAD — nothing to test.";
+    pushConsole(`[coffilot] ${msg}`, "stdout", "test");
+    return { ok: true, skipped: true, selection: sel, message: msg };
+  }
+  if (!sel.tests.length) {
+    pushConsole(
+      `[coffilot] ${sel.sources.length} changed source(s) but no affected tests were found.`,
+      "stdout",
+      "test",
+    );
+    if (sel.fallback) {
+      pushConsole(
+        "[coffilot] Compiled classes not found — run Build for dependency-accurate selection.",
+        "stdout",
+        "test",
+      );
+    }
+    return { ok: true, skipped: true, selection: sel };
+  }
+
+  pushConsole(
+    `[coffilot] Infinitest-style selection: ${sel.tests.length} test class(es) affected by ${sel.sources.length} changed source(s)${sel.fallback ? " (name-based fallback — run Build for accurate selection)" : ""}.`,
+    "stdout",
+    "test",
+  );
+  for (const t of sel.tests) pushConsole(`  • ${t.fqcn}`, "stdout", "test");
+
+  const args = withMavenProfiles(affectedTestArgs(sel.tests, warm), mavenProfiles);
+  const result = await test(args, warm, mavenProfiles, { affected: true });
+  return { ...result, selection: sel };
 }
 
 async function startApp({ module, profiles, mavenProfiles, mode } = {}) {
@@ -3447,7 +3891,10 @@ const server = createServer(async (req, res) => {
   }
   if (req.method === "POST" && url.pathname === "/api/test") {
     const body = await readBody(req);
-    test(null, body.warm === true, body.mavenProfiles);
+    // affected:true runs only the tests relevant to the current uncommitted
+    // changes (Infinitest-style); otherwise the full suite runs.
+    if (body.affected === true) runAffectedTests(body.warm === true, body.mavenProfiles);
+    else test(null, body.warm === true, body.mavenProfiles);
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -3598,6 +4045,26 @@ function makeCanvas() {
           },
         },
         handler: async (ctx) => test(splitArgs(ctx.input?.args), ctx.input?.warm === true, ctx.input?.mavenProfiles),
+      },
+      {
+        name: "run_affected_tests",
+        description:
+          "Run only the tests affected by the current uncommitted changes (git working tree vs HEAD), Infinitest-style: Coffilot builds a dependency graph from the compiled .class files and runs just the test classes that transitively depend on the changed code — much faster than the full suite. Requires a prior compile (build_app/run_tests) for dependency-accurate selection; otherwise it falls back to name-based mapping (Foo → FooTest). Returns the parsed JUnit report for the tests it ran, plus the selection details.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            mavenProfiles: {
+              type: "string",
+              description: "Maven build profiles to activate via -P (Maven projects only; ignored for Gradle).",
+            },
+            warm: {
+              type: "boolean",
+              description:
+                "Keep the JVM warm between runs (Maven Daemon mvnd when available, or the Gradle daemon) for faster startup.",
+            },
+          },
+        },
+        handler: async (ctx) => runAffectedTests(ctx.input?.warm === true, ctx.input?.mavenProfiles),
       },
       {
         name: "package_app",

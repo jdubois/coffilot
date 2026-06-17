@@ -131,7 +131,15 @@
           <div class="subtabs" role="tablist" aria-label="Test view">
             <button class="subtab active" data-tview="graphical">Graphical</button>
             <button class="subtab" data-tview="console">Console</button>
+            <button
+              id="btn-test-affected"
+              class="affected-btn"
+              title="Run only the tests affected by your uncommitted changes vs HEAD (Infinitest-style)"
+            >
+              <span class="btn-spin" hidden></span>Run affected
+            </button>
           </div>
+          <div id="test-selection" class="test-selection" hidden></div>
           <div class="subpane-wrap">
             <div id="tests" class="tsub active">
               <p class="empty">No test run yet. Click <strong>Test</strong> to run the suite.</p>
