@@ -1310,10 +1310,13 @@ function renderTests(report, opts) {
   // "0 tests / no reports" view, and point at the console + Fix button. (A Stop
   // leaves buildExit null, so an interrupted run never shows as a build failure.)
   if (report.buildExit != null && report.buildExit !== 0 && s.tests === 0) {
+    const toolName = (caps && caps.toolLabel) || "build";
     testsEl.innerHTML =
       '<p class="empty bad">Build failed (exit ' +
       report.buildExit +
-      ") before any tests ran \u2014 check the Maven console above for the error" +
+      ") before any tests ran \u2014 check the " +
+      esc(toolName) +
+      " console above for the compilation error" +
       ", or click <strong>Fix with Copilot</strong>.</p>";
     tabBadge.hidden = false;
     tabBadge.textContent = "!";

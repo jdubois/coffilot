@@ -1903,10 +1903,19 @@ function fixInfo(op) {
   if (op === "package" && lane.phase === "failed") {
     return { kind: "package", label: "Fix package error with Copilot" };
   }
-  if (op === "test" && lastTestReport) {
-    const s = lastTestReport.summary;
-    if ((s.failures || 0) + (s.errors || 0) > 0) {
-      return { kind: "test", label: "Fix failing tests with Copilot" };
+  if (op === "test") {
+    if (lastTestReport) {
+      const s = lastTestReport.summary;
+      if ((s.failures || 0) + (s.errors || 0) > 0) {
+        return { kind: "test", label: "Fix failing tests with Copilot" };
+      }
+    }
+    // A failed Test lane with no parsed test failures means the build broke before
+    // any test ran — almost always a compilation error. Offer a fix that reads the
+    // error from the Test console (not the Build lane's), matching the graphical
+    // view's "Build failed before any tests ran" message so the prompt is real.
+    if (lane.phase === "failed") {
+      return { kind: "test-compile", label: "Fix build error with Copilot" };
     }
   }
   if (op === "run" && lane.phase === "failed") {
@@ -4681,6 +4690,7 @@ const FIX_OP = {
   compile: "build",
   package: "package",
   test: "test",
+  "test-compile": "test",
   "run-java": "run",
   "run-spring": "run",
   "run-quarkus": "run",
@@ -4698,6 +4708,15 @@ function buildFixPrompt(kind, extra = {}) {
         `The ${TOOL_LABEL} build in this project failed to compile/package. Find the root cause and fix the code so the build passes.`,
         where,
         "Build errors:",
+        codeBlock(errorLines(op).length ? errorLines(op) : tail(op, 60)),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    case "test-compile":
+      return [
+        `The ${TOOL_LABEL} test run in this project failed to compile before any tests ran — the main or test sources don't compile. Find the root cause and fix the code so the sources compile and the tests can run.`,
+        where,
+        "Compilation errors:",
         codeBlock(errorLines(op).length ? errorLines(op) : tail(op, 60)),
       ]
         .filter(Boolean)
@@ -5891,13 +5910,23 @@ function makeCanvas() {
       {
         name: "fix_issue",
         description:
-          "Send a context-rich request into this chat asking to fix the current problem. Kind: compile (build failed), package (package failed), test (failing tests), run-java/run-spring/run-quarkus (startup failure), profile (optimize the flame-graph hotspots), or mcp (advisor scan findings).",
+          "Send a context-rich request into this chat asking to fix the current problem. Kind: compile (build failed), package (package failed), test (failing tests), test-compile (a test run failed to compile before any tests ran), run-java/run-spring/run-quarkus (startup failure), profile (optimize the flame-graph hotspots), or mcp (advisor scan findings).",
         inputSchema: {
           type: "object",
           properties: {
             kind: {
               type: "string",
-              enum: ["compile", "package", "test", "run-java", "run-spring", "run-quarkus", "profile", "mcp"],
+              enum: [
+                "compile",
+                "package",
+                "test",
+                "test-compile",
+                "run-java",
+                "run-spring",
+                "run-quarkus",
+                "profile",
+                "mcp",
+              ],
               description: "Which failure to fix.",
             },
             tool: { type: "string", description: "For kind=mcp: the scan tool name." },
