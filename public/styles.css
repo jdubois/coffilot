@@ -130,6 +130,13 @@ button.danger.is-stopping:hover {
   background: var(--true-color-red, #cf222e);
   border-color: var(--true-color-red, #cf222e);
 }
+/* A trigger button mid-restart (stopping the old process before relaunching):
+   keep it looking busy rather than greyed out so the click clearly registered. */
+button.is-restarting,
+button.is-restarting:hover {
+  opacity: 0.9;
+  cursor: progress;
+}
 button.fix {
   border-color: var(--true-color-orange, #bc4c00);
   color: var(--color-white, #fff);
@@ -225,7 +232,8 @@ select {
 }
 .pill.building,
 .pill.testing,
-.pill.packaging {
+.pill.packaging,
+.pill.restarting {
   color: var(--true-color-blue, #0969da);
   border-color: var(--true-color-blue, #0969da);
 }
@@ -888,6 +896,25 @@ aside h2 {
 .btn-spin {
   margin-right: 0.4rem;
   vertical-align: -1px;
+}
+/* While a trigger is mid-restart, swap its loader ring for a rotating restart
+   glyph in the same fixed-size slot — distinct from a fresh run, and with no
+   width change to the button (the label stays put). */
+button.is-restarting .btn-spin {
+  position: relative;
+  border: 0;
+  animation: none;
+}
+button.is-restarting .btn-spin::before {
+  content: "\21BB";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  animation: cof-spin 0.9s linear infinite;
 }
 .tab-spin {
   margin-left: 0.1rem;
