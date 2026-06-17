@@ -33,7 +33,8 @@ Shipped in the extension today:
   frame-local variables and a dotted-path evaluator. Per-build-tool agent injection
   (plain Java argv, Spring Maven `-Dspring-boot.run.jvmArguments`, a generated Gradle
   init-script for Spring/app Gradle, Quarkus `-Ddebug`). Debug and Run are mutually
-  exclusive (shared app slot); live reload is disabled while debugging.
+  exclusive (shared app slot); DevTools is ignored while debugging (live reload off
+  and `spring.devtools.restart.enabled=false` on the app JVM).
 - **Maven and Gradle support**, auto-detected from project markers (Maven preferred
   when both are present; a clear degraded notice when neither is). The wrapper
   (`./mvnw` / `./gradlew`) is preferred over a system `mvn` / `gradle`, cross-platform.

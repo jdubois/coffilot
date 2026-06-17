@@ -48,8 +48,10 @@ wins; when neither is found the console says so and stays disabled until one is 
   pause, the paused call stack, frame-local variables and a dotted-path evaluator.
   Debug and Run are **mutually exclusive** (they share the single app slot), and
   Copilot can drive the whole session through agent actions (set a breakpoint,
-  continue, inspect variables, …). Live reload is disabled while debugging so a
-  recompile can't drop the session.
+  continue, inspect variables, …). DevTools is ignored while debugging — Coffilot's
+  live reload stays off and DevTools' own restart is disabled (via
+  `spring.devtools.restart.enabled=false`) so a recompile or restart can't drop the
+  session.
 - **Stop** &mdash; terminates the running app / build process.
 - **Profiles** &mdash; the toolbar scans the project for available run profiles —
   **Spring Boot** profiles (`application-<profile>.*`) or **Quarkus** profiles
