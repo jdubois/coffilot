@@ -189,6 +189,15 @@ async function refineWorkspaceFromSession() {
 // Maven, the launched app JVM.
 const NATIVE_ACCESS_FLAG = "--enable-native-access=ALL-UNNAMED";
 
+// Spring Boot DevTools, when on the classpath, runs the app inside a restart
+// classloader and auto-restarts the JVM whenever target/classes changes. Both
+// behaviours break a JDWP debug session (breakpoints loaded in the restart
+// classloader misbehave, and a restart silently drops the debugger). When Debug
+// launches a Spring app we therefore ignore the DevTools toggle and pass this
+// System property to the forked app JVM so DevTools stays out of the way. It is
+// a no-op when DevTools isn't present, but we only add it when it is.
+const DEVTOOLS_DISABLE_FLAG = "-Dspring.devtools.restart.enabled=false";
+
 // Maven 3.9+ (and the mvnd native client) embed JLine for their console. When
 // spawned without a TTY (as this canvas always does), JLine can't open a system
 // terminal and logs a noisy "Unable to create a system terminal, creating a dumb
@@ -2974,8 +2983,10 @@ async function startApp({ module, profiles, mavenProfiles, mode, dbg = null } = 
       // (SPRING_PROFILES_ACTIVE / SERVER_PORT) to avoid cross-platform --args
       // quoting pitfalls.
       const args = [gradleTaskPath(module, "bootRun"), "--console=plain"];
-      // Debug: an init script adds the JDWP agent to the forked bootRun JVM.
-      if (dbg) args.push("--init-script", gradleDebugInitScript(dbg));
+      // Debug: an init script adds the JDWP agent to the forked bootRun JVM, and
+      // (when the module carries DevTools) disables DevTools restart so it can't
+      // drop the debug session.
+      if (dbg) args.push("--init-script", gradleDebugInitScript(dbg, { devtools: !!(mod && mod.devtools) }));
       const extra = {};
       if (profiles) extra.SPRING_PROFILES_ACTIVE = profiles;
       if (settings.randomPort) {
@@ -3006,8 +3017,13 @@ async function startApp({ module, profiles, mavenProfiles, mode, dbg = null } = 
     if (profiles) args.push(`-Dspring-boot.run.profiles=${profiles}`);
     // Pass the native-access flag to the forked app JVM so its FFM-using
     // dependencies don't print restricted-method warnings; in Debug mode the JDWP
-    // agent rides along on the same jvmArguments string.
-    const jvmArgs = dbg ? `${NATIVE_ACCESS_FLAG} ${jdwpAgentArg(dbg)}` : NATIVE_ACCESS_FLAG;
+    // agent rides along on the same jvmArguments string. When the module carries
+    // DevTools we also disable its restart so it can't drop the debug session.
+    let jvmArgs = NATIVE_ACCESS_FLAG;
+    if (dbg) {
+      jvmArgs += ` ${jdwpAgentArg(dbg)}`;
+      if (mod && mod.devtools) jvmArgs += ` ${DEVTOOLS_DISABLE_FLAG}`;
+    }
     args.push(`-Dspring-boot.run.jvmArguments=${jvmArgs}`);
     // "Use a random HTTP port": run on a free port the console picks (via
     // server.port) so the app doesn't collide with whatever owns the default.
@@ -3360,9 +3376,12 @@ function jdwpAgentArg(dbg) {
 
 /** Write a throwaway Gradle init script that adds the JDWP agent (and the
  * native-access flag) to the forked app JVM of JavaExec-typed run tasks
- * (bootRun / run). Quarkus uses -Ddebug instead, so quarkusDev isn't matched. */
-function gradleDebugInitScript(dbg) {
+ * (bootRun / run). Quarkus uses -Ddebug instead, so quarkusDev isn't matched.
+ * When `devtools` is set (a Spring module with DevTools on the classpath), it
+ * also disables DevTools restart so it can't drop the debug session. */
+function gradleDebugInitScript(dbg, { devtools = false } = {}) {
   const flags = [NATIVE_ACCESS_FLAG, jdwpAgentArg(dbg)];
+  if (devtools) flags.push(DEVTOOLS_DISABLE_FLAG);
   const body = [
     "gradle.allprojects {",
     "  tasks.matching { it.name == 'bootRun' || it.name == 'run' }.configureEach { t ->",
