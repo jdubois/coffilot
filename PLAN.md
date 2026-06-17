@@ -79,9 +79,10 @@ Shipped in the extension today:
 
 - **State is in-memory** and single-app (one build lane + one Run at a time). It is
   reset on extension reload rather than persisted.
-- **Run output is raw build-tool / app stdout** — unlike BootUI's API it is not run
-  through a secret masker, so build output could echo secrets. Hardening this means
-  masking before streaming to the iframe and before sending "fix" context.
+- **Run output is raw build-tool / app stdout**, but it now passes through a
+  conservative secret masker before streaming to the iframe and before sending
+  "fix" context (toggle via the `maskSecrets` setting). Masking is heuristic, so
+  unusual secret formats can still slip through.
 - **Port detection is log-regex based** (Tomcat / Netty / Undertow, plus Quarkus'
   "Listening on" banner). A custom startup banner can hide the port, in which case
   metrics simply stay unavailable.
@@ -104,7 +105,7 @@ Shipped in the extension today:
 
 Near-term, roughly in priority order:
 
-- [ ] Mask obvious secrets in streamed build/run output and in "fix" context.
+- [x] Mask obvious secrets in streamed build/run output and in "fix" context.
 - [ ] Persist recent lane history / last results across reloads.
 - [ ] Surface test output filtering (only-failures, search) in the graphical view.
 - [ ] Make the metrics poll interval and endpoints configurable from Settings.

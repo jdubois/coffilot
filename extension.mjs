@@ -920,6 +920,7 @@ const SETTINGS_KEYS = [
   "autoProfile",
   "autoProfileEvent",
   "autoProfileDuration",
+  "maskSecrets",
 ];
 
 function settingsPaths() {
@@ -942,6 +943,9 @@ function defaultSettings() {
     autoProfile: false,
     autoProfileEvent: "cpu",
     autoProfileDuration: 30,
+    // Mask obvious secret shapes in streamed build/run output and in the
+    // "Fix with Copilot" context. On by default.
+    maskSecrets: true,
   };
 }
 
@@ -1861,6 +1865,7 @@ function applySettings(body) {
   if (typeof body.devtools === "boolean") settings.devtools = body.devtools;
   if (typeof body.randomPort === "boolean") settings.randomPort = body.randomPort;
   if (typeof body.openBrowser === "boolean") settings.openBrowser = body.openBrowser;
+  if (typeof body.maskSecrets === "boolean") settings.maskSecrets = body.maskSecrets;
   if (typeof body.fullBuild === "boolean") settings.fullBuild = body.fullBuild;
   if (typeof body.autoProfile === "boolean") settings.autoProfile = body.autoProfile;
   if (["cpu", "alloc", "wall", "lock"].includes(body.autoProfileEvent)) {
@@ -2022,11 +2027,77 @@ function envSnapshot() {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Secret masking
+// ---------------------------------------------------------------------------
+
+// Build- and run-output is raw process stdout/stderr, so it can echo secrets
+// (a printed env var, a datasource URL with a password, an access token in a
+// log line). We mask obvious secret shapes before they are stored, streamed to
+// the iframe, or folded into a "Fix with Copilot" prompt. Conservative on
+// purpose: each pattern targets a recognizable token/credential shape so normal
+// build output is not riddled with redactions. Toggleable via the `maskSecrets`
+// setting (default on).
+const SECRET_REDACTION = "***REDACTED***";
+
+// Patterns applied in order. Each replaces only the sensitive span (a capture
+// group when present, else the whole match) with the redaction marker.
+const SECRET_PATTERNS = [
+  // Credentials embedded in a URL: ******host → mask "user:pass".
+  { re: /([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+:[^/\s:@]+)@/gi, group: 2 },
+  // Authorization header values: ****** Basic <token>.
+  { re: /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, group: 0, keepPrefix: true },
+  // Provider-specific token shapes.
+  { re: /\bAKIA[0-9A-Z]{16}\b/g, group: 0 }, // AWS access key id
+  { re: /\bASIA[0-9A-Z]{16}\b/g, group: 0 }, // AWS temporary access key id
+  { re: /\bgh[posur]_[A-Za-z0-9]{20,}\b/g, group: 0 }, // GitHub PAT/OAuth tokens (ghp_/gho_/ghu_/ghs_/ghr_)
+  { re: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, group: 0 }, // GitHub fine-grained PAT
+  { re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, group: 0 }, // Slack tokens
+  { re: /\bAIza[0-9A-Za-z_-]{35}\b/g, group: 0 }, // Google API key
+  // JWTs (header.payload.signature, base64url).
+  { re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, group: 0 },
+  // PEM private-key header line (the body lines are generic base64, so we mark
+  // the BEGIN line rather than risk masking unrelated base64 output).
+  { re: /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/g, group: 0 },
+  // key=value / key: value assignments whose key names a credential. Masks the
+  // value (optionally quoted). Catches DB_PASSWORD=…, spring.datasource.password: …,
+  // api-key="…", access_token=…, etc.
+  {
+    re: /\b([\w.-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|client[_-]?secret)[\w.-]*)(\s*[=:]\s*)(["']?)([^\s"']{4,})\3/gi,
+    valueReplace: true,
+  },
+];
+
+/** Redact obvious secret shapes from a chunk of text (multi-line safe). */
+export function maskSecrets(text) {
+  if (text == null) return text;
+  let out = String(text);
+  for (const p of SECRET_PATTERNS) {
+    if (p.valueReplace) {
+      // key + separator + optional-quote + value + optional-quote → keep the
+      // key/separator/quotes, replace only the value.
+      out = out.replace(p.re, (_m, key, sep, quote) => `${key}${sep}${quote}${SECRET_REDACTION}${quote}`);
+    } else if (p.keepPrefix) {
+      // Preserve the scheme word (Bearer/Basic) but redact the token after it.
+      out = out.replace(p.re, (m) => m.replace(/(\s+).*/s, `$1${SECRET_REDACTION}`));
+    } else if (p.group === 2) {
+      out = out.replace(p.re, (_m, g1) => `${g1}${SECRET_REDACTION}@`);
+    } else {
+      out = out.replace(p.re, SECRET_REDACTION);
+    }
+  }
+  return out;
+}
+
 function pushConsole(line, stream, op = "build") {
   // op tags which tab's console (build | test | run) the line belongs to so the
   // UI can keep three separate consoles. Each lane owns its own buffer.
   const o = lanes[op] ? op : "build";
-  const entry = { line, stream, op: o };
+  // Mask secrets at this single choke point so every lane's stored + streamed
+  // output is sanitized; the "Fix with Copilot" context, which reads back these
+  // buffers (tail / errorLines), inherits the masking for free.
+  const safe = settings.maskSecrets === false ? line : maskSecrets(line);
+  const entry = { line: safe, stream, op: o };
   const buf = lanes[o].console;
   buf.push(entry);
   if (buf.length > CONSOLE_CAP) buf.shift();
@@ -4958,8 +5029,12 @@ function buildFixPrompt(kind, extra = {}) {
 }
 
 async function sendFix(kind, extra) {
-  const prompt = buildFixPrompt(kind, extra);
-  if (!prompt) return { ok: false, error: `Unknown fix kind: ${kind}` };
+  const raw = buildFixPrompt(kind, extra);
+  if (!raw) return { ok: false, error: `Unknown fix kind: ${kind}` };
+  // Defense in depth: console-derived context is already masked at pushConsole,
+  // but a fix prompt can also carry parsed test-failure detail and scan JSON, so
+  // mask the assembled prompt before it leaves for the conversation.
+  const prompt = settings.maskSecrets === false ? raw : maskSecrets(raw);
   try {
     await session.send({ prompt });
     session.log(`[coffilot] asked the agent to fix: ${kind}`, { level: "info" });

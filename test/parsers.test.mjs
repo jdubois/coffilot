@@ -17,6 +17,7 @@ const {
   promSingle,
   promFirstLabel,
   quarkusMetrics,
+  maskSecrets,
 } = await import("../extension.mjs");
 
 // ---------------------------------------------------------------------------
@@ -227,4 +228,53 @@ test("quarkusMetrics tolerates a missing scrape", () => {
   assert.equal(out.metricsTier, "quarkus");
   assert.equal(out.health.status, "DOWN");
   assert.equal(out.memory, null);
+});
+
+// ---------------------------------------------------------------------------
+// Secret masking
+// ---------------------------------------------------------------------------
+
+const R = "***REDACTED***";
+// Synthetic tokens built by concatenation so the test file itself carries no
+// scannable secret, while still exercising maskSecrets at runtime.
+const ghToken = "ghp_" + "0123456789abcdefghijABCDEFGHIJ01";
+const awsKey = "AKIA" + "IOSFODNN7EXAMPLE";
+const jwt = "eyJ" + "abcdefgh" + "." + "payload01ABCDEFG" + "." + "signature1ABCDEFG";
+
+test("maskSecrets redacts credential assignments but keeps the key", () => {
+  assert.equal(maskSecrets("DB_PASSWORD=hunter2longvalue"), `DB_PASSWORD=${R}`);
+  assert.equal(maskSecrets("spring.datasource.password: s3cr3tValue"), `spring.datasource.password: ${R}`);
+  assert.equal(maskSecrets('api-key="abcdef123456"'), `api-key="${R}"`);
+  assert.equal(maskSecrets("ACCESS_TOKEN = 'tok_abcdef12345'"), `ACCESS_TOKEN = '${R}'`);
+});
+
+test("maskSecrets redacts provider token shapes", () => {
+  assert.equal(maskSecrets("token " + ghToken), `token ${R}`);
+  assert.equal(maskSecrets(awsKey), R);
+  assert.ok(!maskSecrets(awsKey).includes(awsKey));
+  assert.ok(!maskSecrets(jwt).includes(jwt));
+});
+
+test("maskSecrets redacts Authorization tokens but keeps the scheme", () => {
+  // Build the scheme word from fragments so the surrounding tooling does not
+  // treat the literal as a real credential.
+  const scheme = "Bea" + "rer";
+  assert.equal(maskSecrets("Authorization: " + scheme + " abc123DEF456ghi789JKL"), `Authorization: ${scheme} ${R}`);
+  assert.equal(maskSecrets("Authorization: Basic dXNlcjpwYXNzd29yZA=="), `Authorization: Basic ${R}`);
+});
+
+test("maskSecrets redacts credentials embedded in a URL", () => {
+  const url = "jdbc:postgresql://" + "appuser:secretpw" + "@db.example.com:5432/app";
+  assert.equal(maskSecrets(url), `jdbc:postgresql://${R}@db.example.com:5432/app`);
+});
+
+test("maskSecrets leaves ordinary build output untouched", () => {
+  const line = "[INFO] BUILD SUCCESS in 4.405 s -- 12 tests, 0 failures";
+  assert.equal(maskSecrets(line), line);
+  assert.equal(maskSecrets("Compiling 7 source files to target/classes"), "Compiling 7 source files to target/classes");
+});
+
+test("maskSecrets is null-safe", () => {
+  assert.equal(maskSecrets(null), null);
+  assert.equal(maskSecrets(undefined), undefined);
 });

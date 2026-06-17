@@ -75,6 +75,7 @@ const devtoolsToggle = document.getElementById("devtools-toggle");
 const devtoolsInput = document.getElementById("in-devtools");
 const setRandomport = document.getElementById("set-randomport");
 const randomportInput = document.getElementById("in-randomport");
+const maskSecretsInput = document.getElementById("in-masksecrets");
 const openBrowserInput = document.getElementById("in-openbrowser");
 const autoProfileInput = document.getElementById("in-autoprofile");
 const btnOpenBrowser = document.getElementById("btn-open-browser");
@@ -1574,6 +1575,7 @@ function applySettingsState(s) {
   warmInput.checked = !warmInput.disabled && s.warm === true;
   devtoolsInput.checked = s.devtools === true;
   randomportInput.checked = s.randomPort === true;
+  if (maskSecretsInput) maskSecretsInput.checked = s.maskSecrets !== false;
   openBrowserInput.checked = s.openBrowser === true;
   fullBuildSetting = s.fullBuild === true;
   reflectTestToggles();
@@ -1987,6 +1989,7 @@ function saveSettings() {
     springProfiles: springInput.value.trim(),
     devtools: devtoolsInput.checked,
     randomPort: randomportInput.checked,
+    maskSecrets: maskSecretsInput ? maskSecretsInput.checked : true,
     openBrowser: openBrowserInput.checked,
     fullBuild: fullbuildInput.checked,
     autoProfile: autoProfileInput ? autoProfileInput.checked : false,
@@ -1997,6 +2000,7 @@ function saveSettings() {
 warmInput.addEventListener("change", saveSettings);
 devtoolsInput.addEventListener("change", saveSettings);
 randomportInput.addEventListener("change", saveSettings);
+if (maskSecretsInput) maskSecretsInput.addEventListener("change", saveSettings);
 openBrowserInput.addEventListener("change", saveSettings);
 springInput.addEventListener("change", saveSettings);
 if (autoProfileInput) autoProfileInput.addEventListener("change", saveSettings);

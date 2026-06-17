@@ -531,6 +531,21 @@
               >
             </div>
 
+            <!-- Mask likely secrets in streamed build/run output -->
+            <div class="set-row switch-row" id="set-masksecrets">
+              <label class="switch" id="masksecrets-toggle">
+                <input type="checkbox" id="in-masksecrets" checked />
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-label">Mask secrets in output</span>
+              </label>
+              <span
+                class="info"
+                tabindex="0"
+                data-tip="Redact likely secrets (tokens, credentials in URLs, key=value secrets) from the console and from 'Fix with Copilot' context. Heuristic, not exhaustive."
+                >&#9432;</span
+              >
+            </div>
+
             <!-- Dev setup proposals (moved here from the top banners) -->
             <div class="set-row set-proposals">
               <button id="btn-add-bootui" class="fix tiny" hidden>Add BootUI to dev profile</button>
