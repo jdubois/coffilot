@@ -4712,6 +4712,10 @@ function resolveAppPid() {
   return null;
 }
 
+// jps/jcmd prints this literal main class when it can't determine the entry point
+// (e.g. a process it lacks permission to introspect); never a real app to attach to.
+const UNKNOWN_MAIN_CLASS = "Unknown";
+
 // Build-tool / wrapper main classes that are never the app JVM we want to attach
 // to. Used to filter the `jcmd -l` / `jps -l` listing down to the app process.
 const NON_APP_MAINS = [
@@ -4740,7 +4744,7 @@ export function pickAppPidFromJvmList(listing, selfPid) {
     if (!Number.isInteger(pid) || pid <= 0) continue;
     if (selfPid && pid === selfPid) continue;
     const main = sp === -1 ? "" : line.slice(sp + 1).trim();
-    if (!main || main === "Unknown") continue;
+    if (!main || main === UNKNOWN_MAIN_CLASS) continue;
     if (NON_APP_MAINS.some((skip) => main.startsWith(skip) || main.includes(skip))) continue;
     candidates.push(pid);
   }
@@ -5046,7 +5050,10 @@ function startProfileJfr({ pid, dur, logical, done }) {
   try {
     const res = spawnSync(j.jcmd, args, { encoding: "utf8", timeout: 10000 });
     startOut = `${res.stdout || ""}${res.stderr || ""}`;
-    if ((res.status != null && res.status !== 0) || /Exception|could not|No such|not found/i.test(startOut)) {
+    // Prefer the exit code; jcmd has historically exited 0 while still printing a
+    // failure, so also catch its own error markers ("Could not …", a Java stack
+    // trace) — but keep them specific to avoid tripping on benign app output.
+    if ((res.status != null && res.status !== 0) || /\bcould not\b|Exception:/i.test(startOut)) {
       throw new Error(startOut.trim().split("\n").slice(-4).join("\n") || "JFR.start failed.");
     }
   } catch (e) {
