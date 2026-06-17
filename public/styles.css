@@ -1,5 +1,16 @@
 :root {
   color-scheme: light dark;
+  /* Motion design tokens — a small, consistent vocabulary so every
+     interaction shares the same feel. "snappy" = short durations with an
+     ease-out curve; "spring" adds a touch of overshoot for toggles/popups. */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-fast: 90ms;
+  --dur: 150ms;
+  --dur-slow: 240ms;
+  --shadow-sm: 0 1px 2px rgba(31, 35, 40, 0.12);
+  --shadow-md: 0 4px 12px rgba(31, 35, 40, 0.16);
+  --shadow-pop: 0 8px 24px rgba(31, 35, 40, 0.22);
 }
 * {
   box-sizing: border-box;
@@ -16,6 +27,8 @@ body {
   font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
   font-size: var(--text-body-medium, 14px);
   line-height: var(--leading-body-medium, 20px);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 header {
   padding: 0.75rem 3rem 0.75rem 1rem;
@@ -52,13 +65,24 @@ h1 {
   height: 30px;
   padding: 0;
   color: var(--text-color-muted, #8c959f);
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
 }
 .icon-btn svg {
   width: 15px;
   height: 15px;
+  transition: transform var(--dur-slow) var(--ease-out);
 }
 .icon-btn:hover {
   color: var(--text-color-default, #1f2328);
+}
+.icon-btn:hover svg {
+  transform: rotate(-90deg);
+}
+.icon-btn:active {
+  transform: scale(0.9);
 }
 .icon-btn.is-busy {
   cursor: progress;
@@ -84,12 +108,23 @@ button {
   border-radius: 6px;
   padding: 0.3rem 0.7rem;
   transition:
-    background-color 0.12s ease,
-    border-color 0.12s ease;
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
 }
 button:hover {
   background: color-mix(in srgb, var(--text-color-default, #1f2328) 8%, var(--background-color-default, #ffffff));
   border-color: var(--text-color-muted, #8c959f);
+}
+/* Tactile press: every button dips slightly when clicked for instant feedback. */
+button:active {
+  transform: scale(0.96);
+}
+button:focus-visible {
+  outline: 2px solid var(--color-focus-outline, #0969da);
+  outline-offset: 2px;
 }
 button:disabled {
   opacity: 0.5;
@@ -151,6 +186,24 @@ button.tiny {
   padding: 0.15rem 0.5rem;
   font-size: 12px;
 }
+/* Hover-lift + press depth for the primary action buttons (header groups, the
+   green Run, the red Stops, the orange Fix). Excludes busy/disabled states so a
+   button that's mid-action doesn't bounce. The :active rules are declared after
+   the :hover rules so a press always wins the tie and reads as a real click. */
+button.primary:not(:disabled):hover,
+button.danger:not(.is-stopping):not(.is-restarting):not(:disabled):hover,
+button.fix:not(:disabled):hover,
+.btn-group button:not(:disabled):not(.is-stopping):not(.is-restarting):hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+button.primary:not(:disabled):active,
+button.danger:not(:disabled):active,
+button.fix:not(:disabled):active,
+.btn-group button:not(:disabled):active {
+  transform: translateY(0) scale(0.96);
+  box-shadow: var(--shadow-sm);
+}
 input,
 select {
   font: inherit;
@@ -159,6 +212,19 @@ select {
   color: var(--text-color-default, #1f2328);
   border-radius: 6px;
   padding: 0.25rem 0.5rem;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+input:hover,
+select:hover {
+  border-color: var(--text-color-muted, #8c959f);
+}
+input:focus,
+select:focus {
+  outline: none;
+  border-color: var(--true-color-blue, #0969da);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--true-color-blue, #0969da) 22%, transparent);
 }
 select {
   cursor: pointer;
@@ -194,7 +260,9 @@ select {
   background: var(--background-color-default, #ffffff);
   border: 1px solid var(--border-color-default, #d0d7de);
   border-radius: 6px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-pop);
+  transform-origin: top center;
+  animation: cof-pop var(--dur) var(--ease-out);
 }
 .combo-menu .opt {
   padding: 0.22rem 0.5rem;
@@ -202,6 +270,7 @@ select {
   cursor: pointer;
   font-size: 13px;
   white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease-out);
 }
 .combo-menu .opt:hover,
 .combo-menu .opt.active {
@@ -354,6 +423,10 @@ select {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-color-muted, #656d76);
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
 }
 .subtab.active {
   color: var(--text-color-default, #1f2328);
@@ -417,14 +490,20 @@ aside h2 {
 }
 .bar {
   height: 8px;
-  border-radius: 4px;
+  border-radius: 999px;
   background: var(--background-color-muted, #eaeef2);
   overflow: hidden;
   margin: 0.35rem 0 0.75rem;
 }
 .bar > div {
   height: 100%;
-  background: var(--true-color-blue, #0969da);
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--true-color-blue, #0969da) 75%, transparent),
+    var(--true-color-blue, #0969da)
+  );
+  transition: width var(--dur-slow) var(--ease-out);
 }
 .muted {
   color: var(--text-color-muted, #656d76);
@@ -612,11 +691,24 @@ aside h2 {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
 }
 .tab svg {
   width: 15px;
   height: 15px;
   flex: 0 0 auto;
+  transition: transform var(--dur) var(--ease-spring);
+}
+.tab:hover svg,
+.tab.active svg {
+  transform: scale(1.12);
+}
+/* Tab presses shouldn't bounce like action buttons — keep them flat. */
+.tab:active {
+  transform: none;
 }
 .tab.active {
   color: var(--text-color-default, #1f2328);
@@ -967,7 +1059,7 @@ button.is-restarting .btn-spin::before {
   height: 18px;
   border-radius: 999px;
   background: var(--border-color-default, #d0d7de);
-  transition: background 0.15s ease;
+  transition: background var(--dur) var(--ease-out);
 }
 .switch .thumb {
   position: absolute;
@@ -978,7 +1070,7 @@ button.is-restarting .btn-spin::before {
   border-radius: 50%;
   background: var(--color-white, #fff);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-  transition: transform 0.15s ease;
+  transition: transform var(--dur) var(--ease-spring);
 }
 .switch > input:checked + .track {
   background: var(--true-color-green, #1a7f37);
@@ -1027,13 +1119,17 @@ button.is-restarting .btn-spin::before {
   color: var(--text-color-default, #1f2328);
   font-size: 12px;
   line-height: 1.35;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--shadow-pop);
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.08s ease;
+  transform: translateY(-3px);
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
 }
 .tip-pop.show {
   opacity: 1;
+  transform: translateY(0);
 }
 
 /* Aside (right column) sub-tabs: Live JVM Metrics / Settings */
@@ -1057,6 +1153,12 @@ button.is-restarting .btn-spin::before {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur) var(--ease-out);
+}
+.atab:active {
+  transform: none;
 }
 .atab svg {
   width: 13px;
@@ -1134,4 +1236,136 @@ button.is-restarting .btn-spin::before {
   flex-wrap: wrap;
   margin: 0.4rem 0 0;
   padding: 0.45rem 0.6rem;
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   Motion & micro-interactions
+   Snappy, tasteful polish layered on top of the structural styles above. All
+   of it is one-shot or ambient (never re-triggered by the frequent SSE
+   re-renders of metrics/tests), and the whole layer is disabled under
+   prefers-reduced-motion by the guard at the very end of this file.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+@keyframes cof-fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes cof-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes cof-line-in {
+  from {
+    opacity: 0.45;
+  }
+  to {
+    opacity: 1;
+  }
+}
+/* Ambient "breathing" glow in the pill's own phase color (via currentColor),
+   so an in-flight build/test/run gently signals that it's alive. */
+@keyframes cof-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 38%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 7px 1px color-mix(in srgb, currentColor 32%, transparent);
+  }
+}
+
+/* Tab / pane swaps: content eases up into place. Only ever added on a user
+   click (never on streaming output), so it plays once per switch. */
+.lpane.active,
+.apane.active,
+.tsub.active {
+  animation: cof-fade-in-up var(--dur-slow) var(--ease-out);
+}
+
+/* Active-phase status pill: soft, color-matched pulse while work is in flight. */
+.pill.building,
+.pill.testing,
+.pill.packaging,
+.pill.restarting,
+.pill.running {
+  animation: cof-pulse 1.8s ease-in-out infinite;
+}
+
+/* Live console: each new line fades up to full opacity as it streams in. */
+.term span {
+  animation: cof-line-in var(--dur-fast) var(--ease-out);
+}
+
+/* "copied" confirmations and the test-tab badge pop in when they appear. */
+.copied,
+.tab .badge.bad,
+.tab .badge.good {
+  animation: cof-pop var(--dur) var(--ease-spring);
+}
+.tab .badge {
+  transition:
+    background-color var(--dur) var(--ease-out),
+    color var(--dur) var(--ease-out);
+}
+
+/* Banners that toggle in (mvnd/JDTLS hints, the no-tool notice) slide down. */
+.banner:not([hidden]),
+#no-tool-banner:not([hidden]) {
+  animation: cof-fade-in-up var(--dur-slow) var(--ease-out);
+}
+
+/* Capability chips and the metrics-source badge ease between states. */
+.cap,
+.src {
+  transition:
+    color var(--dur) var(--ease-out),
+    border-color var(--dur) var(--ease-out),
+    opacity var(--dur) var(--ease-out);
+}
+
+/* Test view hover affordances: suites, cases and failures highlight on hover. */
+.suite > summary,
+.case,
+.case-fail > summary {
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.suite > summary:hover {
+  background: color-mix(in srgb, var(--text-color-default, #1f2328) 6%, var(--background-color-muted, #f6f8fa));
+}
+.case:hover,
+.case-fail > summary:hover {
+  background: color-mix(in srgb, var(--text-color-default, #1f2328) 4%, transparent);
+}
+.suite-row {
+  transition: border-color var(--dur) var(--ease-out);
+}
+
+/* Loading overlay card scales in gently behind the fade. */
+.loading-card {
+  animation: cof-pop var(--dur-slow) var(--ease-out);
+}
+
+/* Accessibility: respect a user's reduced-motion preference. Keeps end states
+   but strips transitions/animations (spinners collapse to a single frame). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
