@@ -1393,3 +1393,151 @@ button.is-restarting .btn-spin::before {
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Run tab: async-profiler flame graph
+--------------------------------------------------------------------------- */
+#run-flame {
+  display: none;
+  padding: 0.75rem;
+}
+#run-flame.active {
+  display: block;
+}
+.flame-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+.flame-ctl {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 12px;
+  color: var(--text-color-muted, #656d76);
+}
+.flame-ctl select {
+  font-size: 12px;
+  padding: 0.15rem 0.3rem;
+  border-radius: 5px;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  background: var(--background-color-default, #fff);
+  color: var(--text-color-default, #1f2328);
+}
+.flame-search {
+  font-size: 12px;
+  padding: 0.2rem 0.45rem;
+  border-radius: 5px;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  background: var(--background-color-default, #fff);
+  color: var(--text-color-default, #1f2328);
+  min-width: 9rem;
+}
+.flame-auto {
+  font-size: 12px;
+  color: var(--text-color-muted, #656d76);
+  gap: 0.35rem;
+}
+.muted.ok {
+  color: var(--true-color-green, #1a7f37);
+}
+.muted.err {
+  color: var(--true-color-red, #cf222e);
+}
+.flame-empty {
+  margin: 1rem 0;
+}
+.flame-info {
+  font-size: 11.5px;
+  color: var(--text-color-muted, #656d76);
+  min-height: 1.2em;
+  margin-bottom: 0.35rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.flame-info code {
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+  color: var(--text-color-default, #1f2328);
+}
+.flame-graph {
+  position: relative;
+  width: 100%;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  border-radius: 6px;
+  background: var(--background-color-muted, #f6f8fa);
+  overflow: hidden;
+}
+.flame-frame {
+  position: absolute;
+  height: 21px;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, #000 14%, transparent);
+  border-radius: 2px;
+  overflow: hidden;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 19px;
+  color: #1b1300;
+  transition: filter var(--dur-fast) var(--ease-out);
+}
+.flame-frame:hover {
+  filter: brightness(1.12);
+}
+.flame-frame > span {
+  display: block;
+  padding: 0 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.flame-frame.match {
+  outline: 2px solid var(--true-color-blue, #0969da);
+  outline-offset: -2px;
+}
+.flame-hotspots {
+  margin-top: 0.9rem;
+}
+.hot-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-color-muted, #656d76);
+  margin-bottom: 0.4rem;
+}
+.hot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0.4rem;
+  font-size: 12px;
+  border-radius: 4px;
+}
+.hot-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--true-color-orange, #bc4c00) 16%, transparent);
+  border-radius: 4px;
+  z-index: 0;
+}
+.hot-name {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+  color: var(--text-color-default, #1f2328);
+}
+.hot-pct {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  color: var(--text-color-muted, #656d76);
+  font-variant-numeric: tabular-nums;
+}

@@ -69,11 +69,30 @@ const devtoolsInput = document.getElementById("in-devtools");
 const setRandomport = document.getElementById("set-randomport");
 const randomportInput = document.getElementById("in-randomport");
 const openBrowserInput = document.getElementById("in-openbrowser");
+const autoProfileInput = document.getElementById("in-autoprofile");
 const btnOpenBrowser = document.getElementById("btn-open-browser");
 const btnFix = document.getElementById("btn-fix");
 const btnStopMaven = document.getElementById("btn-stop-maven");
 const btnStopRun = document.getElementById("btn-stop-run");
 const btnRun = document.getElementById("btn-run");
+// Run-tab flame graph (async-profiler) controls.
+const flameEvent = document.getElementById("flame-event");
+const flameDuration = document.getElementById("flame-duration");
+const btnProfile = document.getElementById("btn-profile");
+const btnProfileStop = document.getElementById("btn-profile-stop");
+const flameStatus = document.getElementById("flame-status");
+const flameSearch = document.getElementById("flame-search");
+const btnFlameReset = document.getElementById("btn-flame-reset");
+const btnFlameFix = document.getElementById("btn-flame-fix");
+const flameUnavailable = document.getElementById("flame-unavailable");
+const flameMsg = document.getElementById("flame-msg");
+const flameCmd = document.getElementById("flame-cmd");
+const flameCopied = document.getElementById("flame-copied");
+const flameDocs = document.getElementById("flame-docs");
+const flameEmpty = document.getElementById("flame-empty");
+const flameInfo = document.getElementById("flame-info");
+const flameGraph = document.getElementById("flame-graph");
+const flameHotspots = document.getElementById("flame-hotspots");
 // Running spinners on each trigger button and tab. The Test tab keeps its
 // badge/progress feedback too; the spinner shows only while the run is busy.
 const btnSpin = {
@@ -158,6 +177,22 @@ if (jdtlsCmd) {
   };
 }
 
+if (flameCmd) {
+  flameCmd.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(flameCmd.textContent.trim());
+      flameCopied.hidden = false;
+      setTimeout(() => (flameCopied.hidden = true), 1500);
+    } catch {
+      const r = document.createRange();
+      r.selectNodeContents(flameCmd);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+  };
+}
+
 // Click the status command to copy the full (untruncated) command.
 cmdEl.addEventListener("click", async () => {
   const text = cmdEl.dataset.copy;
@@ -200,11 +235,23 @@ document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => showTab(t.da
 
 // Test tab: Graphical / Console sub-toggle (graphical is the default).
 function showTestView(view) {
-  document.querySelectorAll(".subtab").forEach((t) => t.classList.toggle("active", t.dataset.tview === view));
+  document
+    .querySelectorAll(".subtab[data-tview]")
+    .forEach((t) => t.classList.toggle("active", t.dataset.tview === view));
   document.getElementById("tests").classList.toggle("active", view === "graphical");
   document.getElementById("test-console").classList.toggle("active", view === "console");
 }
-document.querySelectorAll(".subtab").forEach((t) => (t.onclick = () => showTestView(t.dataset.tview)));
+document.querySelectorAll(".subtab[data-tview]").forEach((t) => (t.onclick = () => showTestView(t.dataset.tview)));
+
+// Run tab: Console / Flame graph sub-toggle (console is the default).
+function showRunView(view) {
+  document
+    .querySelectorAll(".subtab[data-rview]")
+    .forEach((t) => t.classList.toggle("active", t.dataset.rview === view));
+  document.getElementById("run-console").classList.toggle("active", view === "console");
+  document.getElementById("run-flame").classList.toggle("active", view === "flame");
+}
+document.querySelectorAll(".subtab[data-rview]").forEach((t) => (t.onclick = () => showRunView(t.dataset.rview)));
 
 // Aside sub-tabs (Live JVM Metrics / Settings)
 function showAsideTab(name) {
@@ -387,6 +434,10 @@ function renderStatus(s) {
   btnOpenBrowser.title = run.appPort
     ? `Open http://127.0.0.1:${run.appPort} in your browser`
     : "The app isn't running yet";
+  // The flame-graph Record button needs both async-profiler installed and the
+  // app actually running (the run lane busy).
+  runActive = !!(run.busy || run.appPort);
+  updateProfileButton();
   // The two grouped Stop buttons are global, not tied to the active tab:
   // the Maven Stop covers build/test/package; the Run Stop covers run.
   const mvnBusy = laneActive(s, "build") || laneActive(s, "test") || laneActive(s, "package");
@@ -1018,6 +1069,14 @@ function applySettingsState(s) {
   openBrowserInput.checked = s.openBrowser === true;
   fullBuildSetting = s.fullBuild === true;
   reflectTestToggles();
+  if (autoProfileInput) autoProfileInput.checked = s.autoProfile === true;
+  if (flameEvent && typeof s.autoProfileEvent === "string" && document.activeElement !== flameEvent) {
+    flameEvent.value = s.autoProfileEvent;
+  }
+  if (flameDuration && s.autoProfileDuration != null && document.activeElement !== flameDuration) {
+    const want = String(s.autoProfileDuration);
+    if ([...flameDuration.options].some((o) => o.value === want)) flameDuration.value = want;
+  }
   if (document.activeElement !== springInput && typeof s.springProfiles === "string") {
     springInput.value = s.springProfiles;
   }
@@ -1082,6 +1141,7 @@ function applyEnv(env) {
     warmDocs.href = install.url || "https://github.com/apache/maven-mvnd";
   }
   applySettingsState(env && env.settings);
+  applyProfilerEnv(env && env.profiler);
 }
 
 async function post(path, body) {
@@ -1344,6 +1404,9 @@ function saveSettings() {
     randomPort: randomportInput.checked,
     openBrowser: openBrowserInput.checked,
     fullBuild: fullbuildInput.checked,
+    autoProfile: autoProfileInput ? autoProfileInput.checked : false,
+    autoProfileEvent: flameEvent ? flameEvent.value : "cpu",
+    autoProfileDuration: flameDuration ? Number(flameDuration.value) : 30,
   });
 }
 warmInput.addEventListener("change", saveSettings);
@@ -1351,6 +1414,9 @@ devtoolsInput.addEventListener("change", saveSettings);
 randomportInput.addEventListener("change", saveSettings);
 openBrowserInput.addEventListener("change", saveSettings);
 springInput.addEventListener("change", saveSettings);
+if (autoProfileInput) autoProfileInput.addEventListener("change", saveSettings);
+if (flameEvent) flameEvent.addEventListener("change", saveSettings);
+if (flameDuration) flameDuration.addEventListener("change", saveSettings);
 
 // "Full build" persists the affected-vs-full-suite preference for the Test button.
 fullbuildInput.addEventListener("change", () => {
@@ -1420,6 +1486,7 @@ es.addEventListener("status", (e) => {
   followLaneActivity(s);
 });
 es.addEventListener("metrics", (e) => renderMetrics(JSON.parse(e.data)));
+es.addEventListener("profile", (e) => renderProfileState(JSON.parse(e.data)));
 es.addEventListener("test-progress", (e) => {
   renderTestProgress(JSON.parse(e.data));
 });
@@ -1465,6 +1532,7 @@ fetch(`/api/state?${qs}`)
     renderStatus(s.status);
     renderMetrics(s.metrics);
     applyEnv(s.env);
+    if (s.profile) renderProfileState(s.profile);
     if (s.status && s.status.test) lastRunnerLabel = s.status.test.runnerLabel;
     renderTests(s.tests, { runnerLabel: lastRunnerLabel });
     for (const l of s.console || []) appendLine(l.line, l.stream, l.op);
@@ -1537,3 +1605,231 @@ document.addEventListener("click", (e) => {
   e.preventDefault();
   post("/api/open-url", { url: a.href });
 });
+
+// ---------------------------------------------------------------------------
+// Run tab: async-profiler flame graph
+// ---------------------------------------------------------------------------
+let profilerEnv = null; // env.profiler capability snapshot
+let runActive = false; // app currently running (run lane busy / has a port)
+let profileState = { status: "idle" };
+let lastFlameFinishedAt = 0;
+let flameRootNode = null; // full tree root from the last run
+let flameZoomNode = null; // currently displayed (zoomed) subtree root
+let flameTotal = 0; // grand-total samples (for absolute %)
+const profileSpin = btnProfile && btnProfile.querySelector(".btn-spin");
+
+const EVENT_LABELS = { cpu: "CPU", alloc: "allocations", wall: "wall clock", lock: "lock contention" };
+const eventLabel = (e) => EVENT_LABELS[e] || e || "CPU";
+const fmtInt = (n) => Number(n || 0).toLocaleString();
+
+// Enable Record only when async-profiler is available AND the app is running AND
+// no run is already in flight.
+function updateProfileButton() {
+  if (!btnProfile) return;
+  const avail = !!(profilerEnv && profilerEnv.available && profilerEnv.supported);
+  const running = profileState.status === "running";
+  btnProfile.disabled = !avail || !runActive || running;
+  btnProfile.title = !avail
+    ? "async-profiler isn't available"
+    : !runActive
+      ? "Start the app with Run before recording a flame graph"
+      : running
+        ? "A profiling run is already in progress"
+        : "Record a flame graph from the running app";
+}
+
+// Show / hide the install banner and gate the controls on the profiler snapshot.
+function applyProfilerEnv(p) {
+  profilerEnv = p || null;
+  const supported = !!(p && p.supported);
+  const available = !!(p && p.available);
+  if (flameUnavailable) {
+    if (!supported) {
+      flameUnavailable.hidden = false;
+      flameMsg.textContent = "async-profiler has no Windows build, so flame graphs aren't available on this platform.";
+      flameCmd.hidden = true;
+      flameDocs.href = (p && p.install && p.install.url) || "https://github.com/async-profiler/async-profiler";
+    } else if (!available) {
+      flameUnavailable.hidden = false;
+      const inst = (p && p.install) || {};
+      const os = inst.os ? ` on ${inst.os}` : "";
+      flameMsg.innerHTML =
+        `<strong>async-profiler</strong> isn't installed${os}, so flame graphs are disabled. ` +
+        (inst.cmd ? "Install it to enable them:" : "Install it (and reopen the canvas) to enable them:");
+      if (inst.cmd) {
+        flameCmd.textContent = inst.cmd;
+        flameCmd.hidden = false;
+      } else {
+        flameCmd.hidden = true;
+      }
+      flameDocs.href = inst.url || "https://github.com/async-profiler/async-profiler";
+    } else {
+      flameUnavailable.hidden = true;
+    }
+  }
+  updateProfileButton();
+}
+
+// Apply a profile-state snapshot (from SSE `profile` or /api/state). Drives the
+// status line, the Stop button, the Record spinner, and triggers a data fetch
+// when a run completes.
+function renderProfileState(p) {
+  if (!p) return;
+  profileState = p;
+  const running = p.status === "running";
+  if (btnProfileStop) btnProfileStop.hidden = !running;
+  if (profileSpin) profileSpin.hidden = !running;
+  if (flameStatus) {
+    if (running) {
+      flameStatus.textContent = `Sampling ${eventLabel(p.event)}${p.pid ? ` (pid ${p.pid})` : ""} for ${p.duration}s\u2026`;
+      flameStatus.className = "muted";
+    } else if (p.status === "done") {
+      flameStatus.textContent = `${fmtInt(p.total)} samples \u00b7 ${eventLabel(p.event)} \u00b7 ${p.duration}s`;
+      flameStatus.className = "muted ok";
+    } else if (p.status === "error") {
+      flameStatus.textContent = p.error || "Profiling failed.";
+      flameStatus.className = "muted err";
+    } else {
+      flameStatus.textContent = "";
+      flameStatus.className = "muted";
+    }
+  }
+  updateProfileButton();
+  if (p.status === "done" && p.hasGraph && p.finishedAt && p.finishedAt !== lastFlameFinishedAt) {
+    lastFlameFinishedAt = p.finishedAt;
+    fetchFlameData();
+  }
+}
+
+async function fetchFlameData() {
+  try {
+    const r = await fetch(`/api/profile/data?${qs}`);
+    const d = await r.json();
+    if (d && d.flame) renderFlameData(d);
+  } catch {
+    /* leave the previous graph in place */
+  }
+}
+
+function renderFlameData(d) {
+  flameRootNode = d.flame;
+  flameZoomNode = flameRootNode;
+  flameTotal = d.total || (d.flame && d.flame.v) || 0;
+  if (flameEmpty) flameEmpty.hidden = true;
+  if (flameGraph) flameGraph.hidden = false;
+  if (flameSearch) flameSearch.hidden = false;
+  if (btnFlameReset) btnFlameReset.hidden = false;
+  if (btnFlameFix) btnFlameFix.hidden = false;
+  renderFlame();
+  renderHotspots(d.top || []);
+}
+
+// Warm-hued, stable per-frame colour (orange→yellow) derived from the name hash.
+function frameColor(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  const hue = 12 + (h % 42); // 12..53: reds → oranges → yellows
+  const sat = 72 + (h % 14); // 72..85%
+  const lig = 48 + (h % 12); // 48..59%
+  return `hsl(${hue} ${sat}% ${lig}%)`;
+}
+
+const FLAME_ROW = 22;
+// Lay out the current (zoom) subtree as absolutely-positioned divs: width is the
+// fraction of the zoom root's samples, top is depth * row height.
+function renderFlame() {
+  if (!flameZoomNode || !flameGraph) return;
+  const total = flameZoomNode.v || 1;
+  const q = (flameSearch && flameSearch.value.trim().toLowerCase()) || "";
+  const rows = [];
+  let maxDepth = 0;
+  (function layout(node, depth, x0) {
+    if (depth > maxDepth) maxDepth = depth;
+    rows.push({ node, depth, x: x0, w: node.v / total });
+    let cx = x0;
+    for (const ch of node.c || []) {
+      layout(ch, depth + 1, cx);
+      cx += ch.v / total;
+    }
+  })(flameZoomNode, 0, 0);
+  flameGraph.style.height = (maxDepth + 1) * FLAME_ROW + "px";
+  const frag = document.createDocumentFragment();
+  for (const f of rows) {
+    const div = document.createElement("div");
+    div.className = "flame-frame";
+    div.style.left = (f.x * 100).toFixed(4) + "%";
+    div.style.width = Math.max(0, f.w * 100).toFixed(4) + "%";
+    div.style.top = f.depth * FLAME_ROW + "px";
+    div.style.background = frameColor(f.node.n);
+    if (q && f.node.n.toLowerCase().includes(q)) div.classList.add("match");
+    const span = document.createElement("span");
+    span.textContent = f.node.n;
+    div.appendChild(span);
+    div.title = f.node.n;
+    div.onclick = () => {
+      flameZoomNode = f.node;
+      renderFlame();
+    };
+    div.onmouseenter = () => showFrameInfo(f.node);
+    frag.appendChild(div);
+  }
+  flameGraph.replaceChildren(frag);
+}
+
+function showFrameInfo(node) {
+  if (!flameInfo) return;
+  flameInfo.hidden = false;
+  const pct = flameTotal ? (node.v / flameTotal) * 100 : 0;
+  flameInfo.innerHTML = `<code>${esc(node.n)}</code> &middot; ${fmtInt(node.v)} samples (${pct.toFixed(2)}%)`;
+}
+
+function renderHotspots(top) {
+  if (!flameHotspots) return;
+  if (!top.length) {
+    flameHotspots.innerHTML = "";
+    return;
+  }
+  const rows = top
+    .map((h) => {
+      const pct = (h.pct * 100).toFixed(1);
+      const bar = Math.min(100, h.pct * 100).toFixed(1);
+      return (
+        `<div class="hot"><span class="hot-bar" style="width:${bar}%"></span>` +
+        `<span class="hot-name" title="${esc(h.name)}">${esc(h.name)}</span>` +
+        `<span class="hot-pct">${pct}%</span></div>`
+      );
+    })
+    .join("");
+  flameHotspots.innerHTML = `<div class="hot-head">Top self-time hotspots</div>${rows}`;
+}
+
+// Start a profiling run using the currently-selected event + duration (the manual
+// Record button). Auto-record at startup is handled by the backend.
+async function startProfileRun() {
+  const event = flameEvent ? flameEvent.value : "cpu";
+  const duration = (flameDuration && Number(flameDuration.value)) || 30;
+  if (flameStatus) {
+    flameStatus.textContent = "Starting\u2026";
+    flameStatus.className = "muted";
+  }
+  const r = await postJson("/api/profile", { event, duration });
+  if (r && r.ok === false && r.error && flameStatus) {
+    flameStatus.textContent = r.error;
+    flameStatus.className = "muted err";
+  }
+}
+
+if (btnProfile) btnProfile.onclick = () => startProfileRun();
+if (btnProfileStop) btnProfileStop.onclick = () => post("/api/profile/stop", {});
+if (btnFlameReset)
+  btnFlameReset.onclick = () => {
+    if (!flameRootNode) return;
+    flameZoomNode = flameRootNode;
+    renderFlame();
+  };
+if (flameSearch) flameSearch.oninput = () => renderFlame();
+if (btnFlameFix)
+  btnFlameFix.onclick = () => {
+    post("/api/fix", { kind: "profile" });
+    appendLine("[canvas] asked Copilot to analyze the flame-graph hotspots.", "stdout", "run");
+  };
