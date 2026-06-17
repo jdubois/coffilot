@@ -286,7 +286,9 @@ function esc(s) {
   return String(s == null ? "" : s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 // Main tabs (Build / Test / Package / Run)
@@ -1221,18 +1223,18 @@ async function loadScans() {
   scansListEl.querySelectorAll("button[data-scan]").forEach((b) => (b.onclick = () => runScan(b.dataset.scan)));
 }
 
-async function runScan(id) {
-  scansResultEl.innerHTML = `<span class="muted">Running ${esc(id)}\u2026</span>`;
-  const r = await postJson("/api/scan", { tool: id });
+async function runScan(scanKey) {
+  scansResultEl.innerHTML = `<span class="muted">Running ${esc(scanKey)}\u2026</span>`;
+  const r = await postJson("/api/scan", { tool: scanKey });
   if (!r || r.ok === false) {
     scansResultEl.innerHTML = `<span style="color:var(--true-color-red,#cf222e)">Scan failed: ${esc((r && r.error) || "unknown error")}</span>`;
     return;
   }
-  lastScan = { tool: r.tool || id, result: r.result };
+  lastScan = { tool: r.tool || scanKey, result: r.result };
   const text = typeof r.result === "string" ? r.result : JSON.stringify(r.result, null, 2);
   scansResultEl.innerHTML =
     `<div style="display:flex;align-items:center;gap:0.5rem;justify-content:space-between">` +
-    `<strong>${esc(r.label || id)}</strong>` +
+    `<strong>${esc(r.label || scanKey)}</strong>` +
     `<button class="fix fix-copilot tiny" id="scan-send">Fix findings with Copilot</button></div>` +
     `<pre>${esc(text)}</pre>`;
   const send = document.getElementById("scan-send");
