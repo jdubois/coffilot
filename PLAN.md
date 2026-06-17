@@ -41,6 +41,10 @@ Shipped in the extension today:
   cross-platform detected.
 - Live JVM metrics tiered BootUI → Actuator → Quarkus Micrometer/health → process,
   with a source badge.
+- Live log viewer on the Run console (minimum-severity filter + text search, with
+  severity-colored lines and inherited levels for stack traces) and runtime log-level
+  control via Spring Boot Actuator `/loggers` (a Loggers side tab + the `set_log_level`
+  action), so loggers can be changed live without a restart.
 - On-demand CPU / allocation / wall-clock / lock-contention flame graph of the
   running app via async-profiler (`asprof`), rendered interactively (zoom, hover,
   search) in the Run tab with a top-hotspots list; an "Automatically record at
@@ -57,7 +61,7 @@ Shipped in the extension today:
   native-access warnings.
 - Agent-facing actions: `build_app`, `run_tests`, `run_affected_tests`,
   `package_app`, `start_app`, `stop_app`, `get_status`, `get_metrics`,
-  `profile_app`, `fix_issue`, `run_scan`.
+  `profile_app`, `fix_issue`, `run_scan`, `set_log_level`.
 
 ## Known limitations
 

@@ -121,7 +121,7 @@
       </button>
     </div>
 
-    <div id="workspace">
+    <div id="workspace" class="aside-rail">
       <div id="left">
         <pre id="build-console" class="lpane term active" aria-label="Build output"></pre>
 
@@ -183,7 +183,22 @@
             <button class="subtab" data-rview="flame">Flame graph</button>
           </div>
           <div class="subpane-wrap">
-            <pre id="run-console" class="tsub term active" aria-label="Run output"></pre>
+            <section id="run-console-view" class="tsub active" aria-label="Run output">
+              <div class="log-bar" id="log-bar">
+                <label class="log-level-label" for="in-log-level">Level</label>
+                <select id="in-log-level" title="Show this severity and above">
+                  <option value="">All</option>
+                  <option value="ERROR">Error</option>
+                  <option value="WARN">Warn</option>
+                  <option value="INFO">Info</option>
+                  <option value="DEBUG">Debug</option>
+                  <option value="TRACE">Trace</option>
+                </select>
+                <input id="in-log-search" type="search" placeholder="Filter log text…" autocomplete="off" />
+                <span id="log-count" class="muted log-count"></span>
+              </div>
+              <pre id="run-console" class="term" aria-label="Run output"></pre>
+            </section>
             <section id="run-flame" class="tsub" aria-label="CPU flame graph">
               <div class="flame-bar">
                 <label class="flame-ctl">
@@ -247,7 +262,7 @@
           </div>
         </section>
       </div>
-      <aside>
+      <aside id="aside">
         <div class="aside-tabs">
           <button class="atab active" data-atab="metrics">
             <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
@@ -259,7 +274,15 @@
                 d="M0 10a8 8 0 1 1 15.547 2.661c-.442 1.253-1.845 1.602-2.932 1.25C11.309 13.488 9.475 13 8 13c-1.474 0-3.31.488-4.615.911-1.087.352-2.49.003-2.932-1.25A8 8 0 0 1 0 10m8-7a7 7 0 0 0-6.603 9.329c.203.575.923.876 1.68.63C4.397 12.533 6.358 12 8 12s3.604.532 4.923.96c.757.245 1.477-.056 1.68-.631A7 7 0 0 0 8 3"
               />
             </svg>
-            Live JVM
+            <span class="atab-label">Live JVM</span>
+          </button>
+          <button class="atab" data-atab="loggers">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M5 11.5a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9a.5.5 0 0 1-.5-.5m-3-4a.5.5 0 0 1 .5-.5h12a.5.5 0 0 1 0 1H2.5a.5.5 0 0 1-.5-.5m-2-4a.5.5 0 0 1 .5-.5h15a.5.5 0 0 1 0 1H.5a.5.5 0 0 1-.5-.5"
+              />
+            </svg>
+            <span class="atab-label">Loggers</span>
           </button>
           <button class="atab" data-atab="settings">
             <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
@@ -270,145 +293,171 @@
                 d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.42 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115z"
               />
             </svg>
-            Settings
+            <span class="atab-label">Settings</span>
+          </button>
+          <button id="aside-toggle" class="aside-toggle" type="button" aria-label="Hide panel" title="Hide panel">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 1 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06"
+              />
+            </svg>
           </button>
         </div>
 
-        <div id="atab-metrics" class="apane active">
-          <h2>Live JVM metrics<span id="metrics-src" class="src" hidden></span></h2>
-          <div id="metrics">
-            <p class="muted">App not running. Click <strong>Run</strong> to start it (dev profile activates BootUI).</p>
+        <div class="aside-body">
+          <div id="atab-metrics" class="apane active">
+            <h2>Live JVM metrics<span id="metrics-src" class="src" hidden></span></h2>
+            <div id="metrics">
+              <p class="muted">Application isn&rsquo;t running or doesn&rsquo;t expose metrics.</p>
+            </div>
+            <p class="hint" id="metrics-hint">
+              To get metrics, add <strong>Spring Boot Actuator</strong> or <strong>Quarkus Micrometer/health</strong>.
+              For even richer metrics with Spring Boot, add
+              <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a>.
+            </p>
           </div>
-          <p class="hint" id="metrics-hint">
-            Metrics are read from the running app's <code>/bootui/api/**</code> endpoints &mdash; reused directly from
-            BootUI.
-          </p>
-        </div>
 
-        <div id="atab-settings" class="apane">
-          <!-- Java language server (JDTLS): powers Copilot's Java code
+          <div id="atab-loggers" class="apane">
+            <h2>Log levels<span id="loggers-src" class="src" hidden></span></h2>
+            <div id="loggers-controls" hidden>
+              <input id="loggers-search" type="search" placeholder="Search a package or class…" autocomplete="off" />
+              <p class="hint loggers-help">
+                Configured loggers are listed below. Search to set a level on any package; changes apply live, no
+                restart.
+              </p>
+            </div>
+            <div id="loggers-list">
+              <p class="muted">App not running. Click <strong>Run</strong> to control its log levels.</p>
+            </div>
+          </div>
+
+          <div id="atab-settings" class="apane">
+            <!-- Java language server (JDTLS): powers Copilot's Java code
                intelligence (go-to-definition, find references, hover). Not part
                of this extension — the CLI launches it — so we report whether
                it's actually available and offer to set it up if not. Kept at the
                top so its status is the first thing visible in Settings. -->
-          <div class="set-row jdtls-row" id="set-jdtls" hidden>
-            <div class="switch-row">
-              <span class="jdtls-dot" id="jdtls-dot"></span>
-              <span class="switch-label">Java IntelliSense (JDTLS)</span>
-              <span id="jdtls-state" class="mcp-state"></span>
-              <span
-                class="info"
-                id="jdtls-info"
-                tabindex="0"
-                data-tip="JDTLS gives Copilot Java go-to-definition, find references and hover. Checking availability…"
-                >&#9432;</span
-              >
+            <div class="set-row jdtls-row" id="set-jdtls" hidden>
+              <div class="switch-row">
+                <span class="jdtls-dot" id="jdtls-dot"></span>
+                <span class="switch-label">Java IntelliSense (JDTLS)</span>
+                <span id="jdtls-state" class="mcp-state"></span>
+                <span
+                  class="info"
+                  id="jdtls-info"
+                  tabindex="0"
+                  data-tip="JDTLS gives Copilot Java go-to-definition, find references and hover. Checking availability…"
+                  >&#9432;</span
+                >
+              </div>
+              <button id="btn-setup-jdtls" class="fix tiny" hidden>Set up JDTLS</button>
+              <div id="jdtls-banner" class="banner setting-banner" hidden>
+                <span id="jdtls-msg"></span>
+                <code id="jdtls-cmd" title="Click to copy" hidden></code>
+                <span id="jdtls-copied" class="copied" hidden>copied</span>
+                <a id="jdtls-docs" href="#" target="_blank" rel="noopener">docs</a>
+              </div>
             </div>
-            <button id="btn-setup-jdtls" class="fix tiny" hidden>Set up JDTLS</button>
-            <div id="jdtls-banner" class="banner setting-banner" hidden>
-              <span id="jdtls-msg"></span>
-              <code id="jdtls-cmd" title="Click to copy" hidden></code>
-              <span id="jdtls-copied" class="copied" hidden>copied</span>
-              <a id="jdtls-docs" href="#" target="_blank" rel="noopener">docs</a>
+
+            <!-- Run config profile (Spring Boot / Quarkus only) -->
+            <div class="set-row" id="set-spring" hidden>
+              <label class="cap-label" id="lbl-profiles">Spring Boot profiles</label>
+              <span class="combo">
+                <input
+                  id="in-profiles"
+                  size="14"
+                  value="dev"
+                  autocomplete="off"
+                  title="Config profile(s) to activate when running (Spring spring-boot.run.profiles / Quarkus quarkus.profile)."
+                />
+                <div class="combo-menu" id="spring-menu" hidden></div>
+              </span>
             </div>
-          </div>
 
-          <!-- Run config profile (Spring Boot / Quarkus only) -->
-          <div class="set-row" id="set-spring" hidden>
-            <label class="cap-label" id="lbl-profiles">Spring Boot profiles</label>
-            <span class="combo">
-              <input
-                id="in-profiles"
-                size="14"
-                value="dev"
-                autocomplete="off"
-                title="Config profile(s) to activate when running (Spring spring-boot.run.profiles / Quarkus quarkus.profile)."
-              />
-              <div class="combo-menu" id="spring-menu" hidden></div>
-            </span>
-          </div>
-
-          <!-- Keep JVM warm -->
-          <div class="set-row switch-row">
-            <label class="switch disabled" id="warm-toggle">
-              <input type="checkbox" id="in-warm" disabled />
-              <span class="track"><span class="thumb"></span></span>
-              <span class="switch-label" id="warm-label">Keep JVM warm</span>
-            </label>
-            <span class="info" id="warm-info" tabindex="0" data-tip="Checking the warm-JVM tier…">&#9432;</span>
-          </div>
-          <div id="warm-banner" class="banner setting-banner" hidden>
-            <span id="warm-msg"
-              >The Maven Daemon (<strong>mvnd</strong>) isn't installed, so <strong>Keep&nbsp;JVM&nbsp;warm</strong> is
-              disabled.</span
-            >
-            <code id="warm-cmd" title="Click to copy" hidden></code>
-            <span id="warm-copied" class="copied" hidden>copied</span>
-            <a id="warm-docs" href="#" target="_blank" rel="noopener">install guide</a>
-          </div>
-
-          <!-- Enable Spring Boot DevTools (Spring only) -->
-          <div class="set-row switch-row" id="set-devtools" hidden>
-            <label class="switch" id="devtools-toggle">
-              <input type="checkbox" id="in-devtools" />
-              <span class="track"><span class="thumb"></span></span>
-              <span class="switch-label">Enable Spring Boot DevTools</span>
-            </label>
-            <span
-              class="info"
-              id="devtools-info"
-              tabindex="0"
-              data-tip="Watch the running module's sources and recompile on save so DevTools restarts the app in place."
-              >&#9432;</span
-            >
-          </div>
-
-          <!-- Use a random HTTP port (Spring Boot / Quarkus only) -->
-          <div class="set-row switch-row" id="set-randomport" hidden>
-            <label class="switch" id="randomport-toggle">
-              <input type="checkbox" id="in-randomport" />
-              <span class="track"><span class="thumb"></span></span>
-              <span class="switch-label">Use a random HTTP port</span>
-            </label>
-            <span
-              class="info"
-              tabindex="0"
-              data-tip="Run the app on a free port the console picks (server.port) instead of the default, to avoid conflicts."
-              >&#9432;</span
-            >
-          </div>
-
-          <!-- Dev setup proposals (moved here from the top banners) -->
-          <div class="set-row set-proposals">
-            <button id="btn-add-bootui" class="fix tiny" hidden>Add BootUI to dev profile</button>
-            <button id="btn-add-devtools" class="fix tiny" hidden>Add DevTools to dev profile</button>
-          </div>
-
-          <!-- BootUI MCP server (advisor scans); the toggle is enabled once a
-               running BootUI app (dev profile) exposes its MCP endpoint. -->
-          <div id="mcp" class="mcp-settings">
-            <div class="switch-row">
-              <label class="switch disabled" id="mcp-toggle-label">
-                <input type="checkbox" id="mcp-toggle" disabled />
+            <!-- Keep JVM warm -->
+            <div class="set-row switch-row">
+              <label class="switch disabled" id="warm-toggle">
+                <input type="checkbox" id="in-warm" disabled />
                 <span class="track"><span class="thumb"></span></span>
-                <span class="switch-label">BootUI MCP server</span>
+                <span class="switch-label" id="warm-label">Keep JVM warm</span>
               </label>
-              <span id="mcp-state" class="mcp-state"></span>
+              <span class="info" id="warm-info" tabindex="0" data-tip="Checking the warm-JVM tier…">&#9432;</span>
+            </div>
+            <div id="warm-banner" class="banner setting-banner" hidden>
+              <span id="warm-msg"
+                >The Maven Daemon (<strong>mvnd</strong>) isn't installed, so
+                <strong>Keep&nbsp;JVM&nbsp;warm</strong> is disabled.</span
+              >
+              <code id="warm-cmd" title="Click to copy" hidden></code>
+              <span id="warm-copied" class="copied" hidden>copied</span>
+              <a id="warm-docs" href="#" target="_blank" rel="noopener">install guide</a>
+            </div>
+
+            <!-- Enable Spring Boot DevTools (Spring only) -->
+            <div class="set-row switch-row" id="set-devtools" hidden>
+              <label class="switch" id="devtools-toggle">
+                <input type="checkbox" id="in-devtools" />
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-label">Enable Spring Boot DevTools</span>
+              </label>
+              <span
+                class="info"
+                id="devtools-info"
+                tabindex="0"
+                data-tip="Watch the running module's sources and recompile on save so DevTools restarts the app in place."
+                >&#9432;</span
+              >
+            </div>
+
+            <!-- Use a random HTTP port (Spring Boot / Quarkus only) -->
+            <div class="set-row switch-row" id="set-randomport" hidden>
+              <label class="switch" id="randomport-toggle">
+                <input type="checkbox" id="in-randomport" />
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-label">Use a random HTTP port</span>
+              </label>
               <span
                 class="info"
                 tabindex="0"
-                data-tip="Run BootUI's MCP server inside the running app so its advisor scans (architecture, security, Hibernate, …) can analyze the project from this console."
+                data-tip="Run the app on a free port the console picks (server.port) instead of the default, to avoid conflicts."
                 >&#9432;</span
               >
-              <button id="mcp-register" class="fix tiny" style="margin-left: auto" hidden>Register with Copilot</button>
             </div>
-            <div id="mcp-scans" class="scans">
-              <span class="muted" style="font-size: 12px"
-                >Start a BootUI app (dev profile) with <strong>Run</strong> to manage its MCP server and advisor
-                scans.</span
-              >
+
+            <!-- Dev setup proposals (moved here from the top banners) -->
+            <div class="set-row set-proposals">
+              <button id="btn-add-bootui" class="fix tiny" hidden>Add BootUI to dev profile</button>
+              <button id="btn-add-devtools" class="fix tiny" hidden>Add DevTools to dev profile</button>
             </div>
-            <div id="mcp-result"></div>
+
+            <!-- BootUI MCP server (advisor scans); the toggle is enabled once a
+               running BootUI app (dev profile) exposes its MCP endpoint. -->
+            <div id="mcp" class="mcp-settings">
+              <div class="switch-row">
+                <label class="switch disabled" id="mcp-toggle-label">
+                  <input type="checkbox" id="mcp-toggle" disabled />
+                  <span class="track"><span class="thumb"></span></span>
+                  <span class="switch-label">BootUI MCP server</span>
+                </label>
+                <span id="mcp-state" class="mcp-state"></span>
+                <span
+                  class="info"
+                  tabindex="0"
+                  data-tip="Run BootUI's MCP server inside the running app so its advisor scans (architecture, security, Hibernate, …) can analyze the project from this console."
+                  >&#9432;</span
+                >
+                <button id="mcp-register" class="fix tiny" style="margin-left: auto" hidden>
+                  Register with Copilot
+                </button>
+              </div>
+              <div id="mcp-scans" class="scans">
+                <span class="muted" style="font-size: 12px"
+                  >Start a BootUI app (dev profile) with <strong>Run</strong> to manage its MCP server and advisor
+                  scans.</span
+                >
+              </div>
+              <div id="mcp-result"></div>
+            </div>
           </div>
         </div>
       </aside>
