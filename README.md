@@ -46,6 +46,15 @@ wins; when neither is found the console says so and stays disabled until one is 
 - **Live JVM metrics** &mdash; once the app is up, the panel shows heap / non-heap,
   threads, health, profiles and startup info, sourced from the richest endpoint
   available (BootUI → Actuator → Quarkus Micrometer/health → process).
+- **Flame graph (with async-profiler)** &mdash; when [async-profiler](https://github.com/async-profiler/async-profiler)
+  (`asprof`) is installed, the Run tab's **Flame graph** view records an on-demand
+  CPU / allocation / wall-clock / lock-contention profile of the running app's JVM
+  and renders an interactive flame graph (zoom, hover, search) plus a **Top
+  hotspots** list. An **Analyze hotspots with Copilot** button sends the hottest
+  methods to the agent. An **Automatically record at startup** toggle (off by
+  default) kicks off a recording on its own each time the app becomes reachable.
+  Degrades gracefully with an install hint when the profiler
+  is missing (and is unavailable on Windows, which async-profiler does not support).
 - **Fix with Copilot** &mdash; on a compile error, failing tests, or a startup
   crash, a button pushes a context-rich request back into the chat so the agent
   can diagnose and fix it.
@@ -141,8 +150,8 @@ In a Copilot app session on a Maven or Gradle project, open the **Coffilot** can
 5. **Stop** when done.
 
 The agent can drive the same flow with the `build_app`, `run_tests`,
-`package_app`, `start_app`, `stop_app`, `get_status`, `get_metrics`, `fix_issue`
-and `run_scan` actions.
+`package_app`, `start_app`, `stop_app`, `get_status`, `get_metrics`, `profile_app`,
+`fix_issue` and `run_scan` actions.
 
 ## How it works
 

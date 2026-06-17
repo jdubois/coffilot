@@ -151,7 +151,73 @@
               Open in browser
             </button>
           </div>
-          <pre id="run-console" class="term" aria-label="Run output"></pre>
+          <div class="subtabs" role="tablist" aria-label="Run view">
+            <button class="subtab active" data-rview="console">Console</button>
+            <button class="subtab" data-rview="flame">Flame graph</button>
+          </div>
+          <div class="subpane-wrap">
+            <pre id="run-console" class="tsub term active" aria-label="Run output"></pre>
+            <section id="run-flame" class="tsub" aria-label="CPU flame graph">
+              <div class="flame-bar">
+                <label class="flame-ctl">
+                  Event
+                  <select id="flame-event" title="What async-profiler samples">
+                    <option value="cpu">CPU</option>
+                    <option value="alloc">Allocations</option>
+                    <option value="wall">Wall clock</option>
+                    <option value="lock">Lock contention</option>
+                  </select>
+                </label>
+                <label class="flame-ctl">
+                  Duration
+                  <select id="flame-duration" title="Sampling duration">
+                    <option value="15">15s</option>
+                    <option value="30" selected>30s</option>
+                    <option value="60">60s</option>
+                    <option value="90">90s</option>
+                    <option value="120">120s</option>
+                  </select>
+                </label>
+                <button id="btn-profile" class="primary tiny"><span class="btn-spin" hidden></span>Record</button>
+                <button id="btn-profile-stop" class="danger tiny" hidden>Stop</button>
+                <label
+                  class="switch flame-auto"
+                  id="autoprofile-toggle"
+                  title="Automatically start a recording when the app becomes reachable"
+                >
+                  <input type="checkbox" id="in-autoprofile" />
+                  <span class="track"><span class="thumb"></span></span>
+                  <span class="switch-label">Automatically record at startup</span>
+                </label>
+                <span id="flame-status" class="muted"></span>
+                <input
+                  id="flame-search"
+                  class="flame-search"
+                  type="search"
+                  placeholder="Search frames…"
+                  hidden
+                  autocomplete="off"
+                />
+                <button id="btn-flame-reset" class="tiny" hidden title="Reset zoom">Reset zoom</button>
+                <button id="btn-flame-fix" class="fix tiny" hidden style="margin-left: auto">
+                  Analyze hotspots with Copilot
+                </button>
+              </div>
+              <div id="flame-unavailable" class="banner setting-banner" hidden>
+                <span id="flame-msg"></span>
+                <code id="flame-cmd" title="Click to copy" hidden></code>
+                <span id="flame-copied" class="copied" hidden>copied</span>
+                <a id="flame-docs" href="#" target="_blank" rel="noopener">install guide</a>
+              </div>
+              <p id="flame-empty" class="muted flame-empty">
+                Start the app with <strong>Run</strong>, then click <strong>Record</strong> to capture a flame graph
+                from the live JVM.
+              </p>
+              <div id="flame-info" class="flame-info" hidden></div>
+              <div id="flame-graph" class="flame-graph" hidden></div>
+              <div id="flame-hotspots" class="flame-hotspots"></div>
+            </section>
+          </div>
         </section>
       </div>
       <aside>
