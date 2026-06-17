@@ -45,16 +45,23 @@ Shipped in the extension today:
   severity-colored lines and inherited levels for stack traces) and runtime log-level
   control via Spring Boot Actuator `/loggers` (a Loggers side tab + the `set_log_level`
   action), so loggers can be changed live without a restart.
+- On-demand CPU / allocation / wall-clock / lock-contention flame graph of the
+  running app via async-profiler (`asprof`), rendered interactively (zoom, hover,
+  search) in the Run tab with a top-hotspots list; an "Automatically record at
+  startup" toggle (off by default) records on each app start. Detected and degraded
+  gracefully when the profiler is absent (and unavailable on Windows).
 - "Fix with Copilot" for compile, package, test, plain-Java, Spring Boot and Quarkus
-  startup failures, and for BootUI advisor-scan findings.
+  startup failures, for flame-graph hotspots, and for BootUI advisor-scan findings.
 - BootUI MCP server toggle + advisor scans when the running app exposes BootUI.
 - Per-project persisted settings (warm JVM, Spring profiles, devtools, random port,
-  auto-open browser) and an always-visible Settings panel.
+  auto-open browser, auto-record flame graph at startup) and an always-visible
+  Settings panel.
 - `--enable-native-access=ALL-UNNAMED` applied to the build-tool JVM (via
   `MAVEN_OPTS` / `GRADLE_OPTS`) and, for Maven, the app JVM to silence JDK
   native-access warnings.
 - Agent-facing actions: `build_app`, `run_tests`, `package_app`, `start_app`,
-  `stop_app`, `get_status`, `get_metrics`, `fix_issue`, `run_scan`, `set_log_level`.
+  `stop_app`, `get_status`, `get_metrics`, `profile_app`, `fix_issue`, `run_scan`,
+  `set_log_level`.
 
 ## Known limitations
 
@@ -69,6 +76,11 @@ Shipped in the extension today:
 - **No live per-test progress for Gradle.** Maven's Surefire console output drives the
   class-by-class progress bar; Gradle's graphical test view fills in from the final
   JUnit XML report instead.
+- **The flame graph needs async-profiler installed** and resolves the app JVM via
+  `lsof` on the detected HTTP port (falling back to the run lane's child for
+  plain-`java` runs), so a port-less app started through a forked wrapper can't be
+  attached to. On macOS the `cpu` event maps to `itimer` (no perf_events), and the
+  whole feature is unavailable on Windows (async-profiler has no Windows build).
 
 ## Roadmap
 
