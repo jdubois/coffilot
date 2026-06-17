@@ -109,8 +109,8 @@ Near-term, roughly in priority order:
 
 - [x] Mask obvious secrets in streamed build/run output and in "fix" context.
 - [x] Persist recent lane history / last results across reloads.
-- [ ] Surface test output filtering (only-failures, search) in the graphical view.
-- [ ] Make the metrics poll interval and endpoints configurable from Settings.
+- [x] Surface test output filtering (only-failures, search) in the graphical view.
+- [x] Make the metrics poll interval configurable from Settings.
 - [x] Add a lightweight automated check for the iframe UI (jsdom smoke test of
       `public/index.html` + `public/app.js`) wired into CI alongside `npm run check`,
       plus `node:test` unit tests for the pure parsers/normalizers and an

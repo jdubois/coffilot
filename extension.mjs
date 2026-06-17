@@ -921,7 +921,22 @@ const SETTINGS_KEYS = [
   "autoProfileEvent",
   "autoProfileDuration",
   "maskSecrets",
+  "metricsPollMs",
 ];
+
+// Live-metrics polling cadence bounds (ms). Kept conservative so the UI stays
+// responsive without hammering the running app's actuator/metrics endpoints.
+const METRICS_POLL_MIN = 500;
+const METRICS_POLL_MAX = 30000;
+const METRICS_POLL_DEFAULT = 2500;
+
+// Clamp a requested metrics poll interval to the supported range, falling back
+// to the default for non-finite input. Pure.
+export function clampMetricsPollMs(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n)) return METRICS_POLL_DEFAULT;
+  return Math.min(METRICS_POLL_MAX, Math.max(METRICS_POLL_MIN, Math.round(n)));
+}
 
 function settingsPaths() {
   const home = process.env.COPILOT_HOME || path.join(os.homedir(), ".copilot");
@@ -946,6 +961,8 @@ function defaultSettings() {
     // Mask obvious secret shapes in streamed build/run output and in the
     // "Fix with Copilot" context. On by default.
     maskSecrets: true,
+    // Live-metrics polling cadence in milliseconds (clamped on use).
+    metricsPollMs: METRICS_POLL_DEFAULT,
   };
 }
 
@@ -1968,11 +1985,19 @@ function applySettings(body) {
   if (Number.isFinite(Number(body.autoProfileDuration))) {
     settings.autoProfileDuration = Math.min(120, Math.max(3, Math.round(Number(body.autoProfileDuration))));
   }
+  if (body.metricsPollMs != null && Number.isFinite(Number(body.metricsPollMs))) {
+    settings.metricsPollMs = clampMetricsPollMs(body.metricsPollMs);
+  }
   persistSettings();
 
   if (settings.devtools !== prev.devtools) {
     if (settings.devtools) maybeStartLiveReload();
     else stopLiveReload();
+  }
+
+  // Apply a changed polling cadence immediately if a poll loop is running.
+  if (settings.metricsPollMs !== prev.metricsPollMs && metricsTimer) {
+    startMetricsPolling();
   }
 
   broadcast("status", statusSnapshot());
@@ -4219,7 +4244,7 @@ function startMetricsPolling() {
   // refreshMetrics is async; neither setInterval nor a bare call awaits it, so
   // guard both so a failed poll can never escape as an unhandled rejection.
   const poll = () => Promise.resolve(refreshMetrics()).catch(() => {});
-  metricsTimer = setInterval(poll, 2500);
+  metricsTimer = setInterval(poll, clampMetricsPollMs(settings.metricsPollMs));
   poll();
 }
 

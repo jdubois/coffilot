@@ -126,6 +126,64 @@ test("renderTests renders a graphical report with a failure", () => {
   assert.doesNotThrow(() => win.renderTests(null, { running: true }));
 });
 
+test("filterTestReport applies only-failures and search filters", () => {
+  const report = {
+    summary: { tests: 3, passed: 2, failures: 1, errors: 0, skipped: 0, timeSec: 0.3, files: 1 },
+    suites: [
+      {
+        name: "com.example.AlphaTest",
+        tests: 2,
+        failures: 1,
+        errors: 0,
+        skipped: 0,
+        timeSec: 0.2,
+        cases: [
+          { name: "ok", timeSec: 0.1, status: "passed" },
+          { name: "boom", timeSec: 0.1, status: "failed" },
+        ],
+      },
+      {
+        name: "com.example.BetaTest",
+        tests: 1,
+        failures: 0,
+        errors: 0,
+        skipped: 0,
+        timeSec: 0.1,
+        cases: [{ name: "fine", timeSec: 0.1, status: "passed" }],
+      },
+    ],
+  };
+  assert.equal(typeof win.filterTestReport, "function", "filterTestReport should be a global");
+
+  // No filter returns the report unchanged.
+  assert.equal(win.filterTestReport(report, { failuresOnly: false, query: "" }), report);
+
+  // Only-failures drops the all-passing suite and keeps only failing cases.
+  const failed = win.filterTestReport(report, { failuresOnly: true, query: "" });
+  assert.equal(failed.suites.length, 1);
+  assert.equal(failed.suites[0].name, "com.example.AlphaTest");
+  assert.deepEqual(
+    failed.suites[0].cases.map((c) => c.name),
+    ["boom"],
+  );
+
+  // A query matching a suite name keeps all of that suite's cases.
+  const beta = win.filterTestReport(report, { failuresOnly: false, query: "beta" });
+  assert.equal(beta.suites.length, 1);
+  assert.equal(beta.suites[0].cases.length, 1);
+
+  // A query matching a case name keeps only that case.
+  const ok = win.filterTestReport(report, { failuresOnly: false, query: "ok" });
+  assert.equal(ok.suites.length, 1);
+  assert.deepEqual(
+    ok.suites[0].cases.map((c) => c.name),
+    ["ok"],
+  );
+
+  // Summary is preserved (chips keep showing run totals).
+  assert.deepEqual(failed.summary, report.summary);
+});
+
 test("renderStatus tolerates an idle status snapshot", () => {
   assert.doesNotThrow(() =>
     win.renderStatus({

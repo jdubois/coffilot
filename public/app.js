@@ -36,6 +36,9 @@ const fullbuildInput = document.getElementById("in-fullbuild");
 const continuousToggle = document.getElementById("continuous-toggle");
 const continuousInput = document.getElementById("in-continuous");
 const testSelectionEl = document.getElementById("test-selection");
+const testFilterEl = document.getElementById("test-filter");
+const testSearchEl = document.getElementById("test-search");
+const failuresOnlyInput = document.getElementById("in-failures-only");
 const warmToggle = document.getElementById("warm-toggle");
 const warmInput = document.getElementById("in-warm");
 const warmLabel = document.getElementById("warm-label");
@@ -76,6 +79,7 @@ const devtoolsInput = document.getElementById("in-devtools");
 const setRandomport = document.getElementById("set-randomport");
 const randomportInput = document.getElementById("in-randomport");
 const maskSecretsInput = document.getElementById("in-masksecrets");
+const metricsPollInput = document.getElementById("in-metricspoll");
 const openBrowserInput = document.getElementById("in-openbrowser");
 const autoProfileInput = document.getElementById("in-autoprofile");
 const btnOpenBrowser = document.getElementById("btn-open-browser");
@@ -1293,18 +1297,59 @@ function renderTestProgress(p) {
   testsEl.innerHTML = html;
 }
 
+// Last rendered graphical test report + opts, kept so the only-failures /
+// search filters can re-render without a new test run.
+let lastTestReportData = null;
+let lastTestRenderOpts = {};
+
+// Read the current test-view filter from the controls.
+function currentTestFilter() {
+  return {
+    failuresOnly: !!(failuresOnlyInput && failuresOnlyInput.checked),
+    query: testSearchEl ? testSearchEl.value.trim().toLowerCase() : "",
+  };
+}
+
+// Pure: return a shallow-filtered copy of a test report keeping only the suites
+// and cases that match the only-failures + search-query filter. A suite whose
+// own name matches the query keeps all its cases; otherwise only matching cases
+// are kept and empty suites are dropped. The summary is left untouched so the
+// chips keep showing run totals.
+function filterTestReport(report, filter) {
+  if (!report || !report.suites) return report;
+  const f = filter || {};
+  const q = (f.query || "").toLowerCase();
+  if (!f.failuresOnly && !q) return report;
+  const suites = [];
+  for (const suite of report.suites) {
+    const isFail = (c) => c.status === "failed" || c.status === "error";
+    const suiteMatches = q && suite.name && suite.name.toLowerCase().includes(q);
+    let cases = suite.cases || [];
+    if (f.failuresOnly) cases = cases.filter(isFail);
+    if (q && !suiteMatches) cases = cases.filter((c) => c.name && c.name.toLowerCase().includes(q));
+    if (cases.length) suites.push({ ...suite, cases });
+  }
+  return { ...report, suites };
+}
+
 function renderTests(report, opts) {
   opts = opts || {};
   if (report === null && opts.running) {
     testsEl.innerHTML = '<p class="empty">Running tests\u2026</p>';
     tabBadge.hidden = true;
+    if (testFilterEl) testFilterEl.hidden = true;
+    lastTestReportData = null;
     return;
   }
   if (!report) {
     testsEl.innerHTML = '<p class="empty">No test run yet. Click <strong>Test</strong> to run the suite.</p>';
     tabBadge.hidden = true;
+    if (testFilterEl) testFilterEl.hidden = true;
+    lastTestReportData = null;
     return;
   }
+  lastTestReportData = report;
+  lastTestRenderOpts = opts;
   const s = report.summary;
   // A non-zero exit with no executed tests means the build failed before any test
   // ran — almost always a compile error. Show that plainly instead of a misleading
@@ -1319,6 +1364,7 @@ function renderTests(report, opts) {
     tabBadge.hidden = false;
     tabBadge.textContent = "!";
     tabBadge.className = "badge bad";
+    if (testFilterEl) testFilterEl.hidden = true;
     return;
   }
   const failed = s.failures + s.errors;
@@ -1339,10 +1385,21 @@ function renderTests(report, opts) {
   if (!report.suites.length) {
     html += '<p class="empty">No test reports found for this run.</p>';
     testsEl.innerHTML = html;
+    if (testFilterEl) testFilterEl.hidden = true;
     return;
   }
 
-  for (const suite of report.suites) {
+  // Show the filter controls now that we have suites to filter, then render the
+  // filtered view (only-failures + search).
+  if (testFilterEl) testFilterEl.hidden = false;
+  const view = filterTestReport(report, currentTestFilter());
+  if (!view.suites.length) {
+    html += '<p class="empty">No tests match the current filter.</p>';
+    testsEl.innerHTML = html;
+    return;
+  }
+
+  for (const suite of view.suites) {
     const bad = suite.failures + suite.errors;
     const open = bad > 0 ? " open" : "";
     html += `<details class="suite"${open}>`;
@@ -1576,6 +1633,9 @@ function applySettingsState(s) {
   devtoolsInput.checked = s.devtools === true;
   randomportInput.checked = s.randomPort === true;
   if (maskSecretsInput) maskSecretsInput.checked = s.maskSecrets !== false;
+  if (metricsPollInput && document.activeElement !== metricsPollInput) {
+    metricsPollInput.value = Number(s.metricsPollMs) || 2500;
+  }
   openBrowserInput.checked = s.openBrowser === true;
   fullBuildSetting = s.fullBuild === true;
   reflectTestToggles();
@@ -1990,6 +2050,7 @@ function saveSettings() {
     devtools: devtoolsInput.checked,
     randomPort: randomportInput.checked,
     maskSecrets: maskSecretsInput ? maskSecretsInput.checked : true,
+    metricsPollMs: metricsPollInput ? Number(metricsPollInput.value) || 2500 : 2500,
     openBrowser: openBrowserInput.checked,
     fullBuild: fullbuildInput.checked,
     autoProfile: autoProfileInput ? autoProfileInput.checked : false,
@@ -2001,11 +2062,20 @@ warmInput.addEventListener("change", saveSettings);
 devtoolsInput.addEventListener("change", saveSettings);
 randomportInput.addEventListener("change", saveSettings);
 if (maskSecretsInput) maskSecretsInput.addEventListener("change", saveSettings);
+if (metricsPollInput) metricsPollInput.addEventListener("change", saveSettings);
 openBrowserInput.addEventListener("change", saveSettings);
 springInput.addEventListener("change", saveSettings);
 if (autoProfileInput) autoProfileInput.addEventListener("change", saveSettings);
 if (flameEvent) flameEvent.addEventListener("change", saveSettings);
 if (flameDuration) flameDuration.addEventListener("change", saveSettings);
+
+// Test-view filters (client-only): re-render the last report when the
+// only-failures toggle or the search box changes. No server round-trip.
+function rerenderTestFilter() {
+  if (lastTestReportData) renderTests(lastTestReportData, lastTestRenderOpts);
+}
+if (failuresOnlyInput) failuresOnlyInput.addEventListener("change", rerenderTestFilter);
+if (testSearchEl) testSearchEl.addEventListener("input", rerenderTestFilter);
 
 // "Full build" persists the affected-vs-full-suite preference for the Test button.
 fullbuildInput.addEventListener("change", () => {

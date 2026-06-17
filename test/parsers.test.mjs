@@ -20,6 +20,7 @@ const {
   maskSecrets,
   buildHistoryEntry,
   clampHistory,
+  clampMetricsPollMs,
 } = await import("../extension.mjs");
 
 // ---------------------------------------------------------------------------
@@ -327,4 +328,17 @@ test("a lane history entry survives a JSON round-trip unchanged", () => {
   const entry = buildHistoryEntry(lane, { tailLines: ["started", "stopped"], now: 42 });
   const restored = JSON.parse(JSON.stringify({ run: clampHistory([], entry) }));
   assert.deepEqual(restored.run[0], entry);
+});
+
+// ---------------------------------------------------------------------------
+// Metrics poll interval clamping
+// ---------------------------------------------------------------------------
+
+test("clampMetricsPollMs bounds the interval and defaults non-finite input", () => {
+  assert.equal(clampMetricsPollMs(2500), 2500);
+  assert.equal(clampMetricsPollMs(100), 500); // below min
+  assert.equal(clampMetricsPollMs(99999), 30000); // above max
+  assert.equal(clampMetricsPollMs(1234.6), 1235); // rounded
+  assert.equal(clampMetricsPollMs("abc"), 2500); // non-finite -> default
+  assert.equal(clampMetricsPollMs(undefined), 2500);
 });

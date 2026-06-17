@@ -154,6 +154,19 @@
             </div>
           </div>
           <div id="test-selection" class="test-selection" hidden></div>
+          <div id="test-filter" class="test-filter" hidden>
+            <input
+              type="search"
+              id="test-search"
+              class="test-search"
+              placeholder="Filter tests\u2026"
+              aria-label="Filter tests by name"
+            />
+            <label class="chip-toggle" id="failures-only-toggle">
+              <input type="checkbox" id="in-failures-only" />
+              <span>Only failures</span>
+            </label>
+          </div>
           <div class="subpane-wrap">
             <div id="tests" class="tsub active">
               <p class="empty">No test run yet. Click <strong>Test</strong> to run the suite.</p>
@@ -544,6 +557,19 @@
                 data-tip="Redact likely secrets (tokens, credentials in URLs, key=value secrets) from the console and from 'Fix with Copilot' context. Heuristic, not exhaustive."
                 >&#9432;</span
               >
+            </div>
+
+            <!-- Live-metrics polling cadence -->
+            <div class="set-row" id="set-metricspoll">
+              <label class="cap-label" for="in-metricspoll">Metrics poll (ms)</label>
+              <input
+                id="in-metricspoll"
+                type="number"
+                min="500"
+                max="30000"
+                step="500"
+                title="How often the Live JVM panel refreshes metrics from the running app (500–30000 ms)."
+              />
             </div>
 
             <!-- Dev setup proposals (moved here from the top banners) -->
