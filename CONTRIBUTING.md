@@ -29,10 +29,15 @@ package / run the target Java project.
 ```
 extension.mjs            The extension: SDK wiring, canvas + actions, loopback HTTP
                          server, Maven/Gradle runner, JUnit report parser, metrics/MCP
-                         proxy, and the "fix with Copilot" bridge.
-public/index.html        The iframe UI markup (toolbar, Build/Test/Package/Run tabs,
-                         live console, graphical test results, metrics + MCP panels);
-                         links public/styles.css and public/app.js.
+                         proxy, the Debug lane (JDWP injection + attach), and the
+                         "fix with Copilot" bridge.
+jdwp.mjs                 The self-contained JDWP debug engine: a loopback JDWP client
+                         and a DebugSession (breakpoints, stepping, stack, locals,
+                         evaluate, snapshots). Pure (takes a log callback); no external
+                         DAP server or language server. Drives the Debug lane.
+public/index.html        The iframe UI markup (toolbar, Build/Test/Package/Run/Debug
+                         tabs, live console, graphical test results, metrics + MCP
+                         panels); links public/styles.css and public/app.js.
 public/styles.css        The iframe styles, using the canvas theme tokens. Served
                          unauthenticated (no secrets) so the iframe can load it.
 public/app.js            The iframe client logic. Served unauthenticated (no secrets);

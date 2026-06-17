@@ -33,6 +33,15 @@ wins; when neither is found the console says so and stays disabled until one is 
   Optionally opens a browser window at the app once it is up.
 - **Parallel lanes** &mdash; Build / Test / Package share one build lane while Run
   is independent, so you can keep the app running while you re-test.
+- **Debug** &mdash; launches the app exactly like Run but with the **JDWP** agent
+  enabled (`-agentlib:jdwp=…server=y,address=127.0.0.1:<port>`, loopback only) and a
+  self-contained JDWP debugger attached &mdash; no external DAP server or language
+  server required. The Debug tab drives breakpoints, continue, step in/over/out,
+  pause, the paused call stack, frame-local variables and a dotted-path evaluator.
+  Debug and Run are **mutually exclusive** (they share the single app slot), and
+  Copilot can drive the whole session through agent actions (set a breakpoint,
+  continue, inspect variables, …). Live reload is disabled while debugging so a
+  recompile can't drop the session.
 - **Stop** &mdash; terminates the running app / build process.
 - **Profiles** &mdash; the toolbar scans the project for available run profiles —
   **Spring Boot** profiles (`application-<profile>.*`) or **Quarkus** profiles
@@ -138,11 +147,16 @@ In a Copilot app session on a Maven or Gradle project, open the **Coffilot** can
 3. Once the app is up, watch the **Live JVM metrics** panel populate (badge:
    `BootUI` / `Actuator` / `Quarkus` / `process`).
 4. If something fails, click **Fix with Copilot** to hand the error to the agent.
-5. **Stop** when done.
+5. Or **Debug** instead of Run to launch under the debugger: open the **Debug** tab,
+   add a breakpoint (class binary name + line), and use Continue / Step / Pause; the
+   paused call stack, frame variables and an evaluator appear inline.
+6. **Stop** when done.
 
 The agent can drive the same flow with the `build_app`, `run_tests`,
 `package_app`, `start_app`, `stop_app`, `get_status`, `get_metrics`, `fix_issue`
-and `run_scan` actions.
+and `run_scan` actions, plus the debug actions `start_debug`, `stop_debug`,
+`set_breakpoint`, `remove_breakpoint`, `debug_continue`, `debug_step`,
+`debug_stack`, `get_variables`, `debug_evaluate` and `debug_status`.
 
 ## How it works
 
@@ -157,6 +171,12 @@ Coffilot is a Node process (the extension) that:
   proxying [BootUI](https://github.com/jdubois/boot-ui)'s sanitized `/bootui/api/**`
   DTOs when present and falling back to Spring Boot Actuator, then to Quarkus
   Micrometer/health (`/q/*`), then to coarse process metrics;
+- for **Debug**, relaunches the app with the JDWP agent enabled (injected per build
+  tool: directly into the `java` argv for plain Java, via
+  `-Dspring-boot.run.jvmArguments` for Spring Maven, a generated Gradle init-script
+  for Spring/app Gradle, or Quarkus's built-in `-Ddebug` for Quarkus) and attaches a
+  self-contained JDWP client (`jdwp.mjs`, loopback only) that the UI and agent
+  actions drive;
 - pushes contextual "fix this" turns back into the chat through the Copilot SDK.
 
 The loopback HTTP server that backs the iframe binds to `127.0.0.1` only. See
