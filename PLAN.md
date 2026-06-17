@@ -77,8 +77,10 @@ Shipped in the extension today:
 
 ## Known limitations
 
-- **State is in-memory** and single-app (one build lane + one Run at a time). It is
-  reset on extension reload rather than persisted.
+- **Live state is in-memory** and single-app (one build lane + one Run at a time).
+  Live processes (a running app, an attached debugger) do not survive an extension
+  reload, but each lane's recent terminal results are persisted and restored so the
+  canvas shows the last Build/Test/Package/Run outcome immediately after a reload.
 - **Run output is raw build-tool / app stdout**, but it now passes through a
   conservative secret masker before streaming to the iframe and before sending
   "fix" context (toggle via the `maskSecrets` setting). Masking is heuristic, so
@@ -106,7 +108,7 @@ Shipped in the extension today:
 Near-term, roughly in priority order:
 
 - [x] Mask obvious secrets in streamed build/run output and in "fix" context.
-- [ ] Persist recent lane history / last results across reloads.
+- [x] Persist recent lane history / last results across reloads.
 - [ ] Surface test output filtering (only-failures, search) in the graphical view.
 - [ ] Make the metrics poll interval and endpoints configurable from Settings.
 - [x] Add a lightweight automated check for the iframe UI (jsdom smoke test of

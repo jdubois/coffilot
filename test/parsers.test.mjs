@@ -18,6 +18,8 @@ const {
   promFirstLabel,
   quarkusMetrics,
   maskSecrets,
+  buildHistoryEntry,
+  clampHistory,
 } = await import("../extension.mjs");
 
 // ---------------------------------------------------------------------------
@@ -277,4 +279,52 @@ test("maskSecrets leaves ordinary build output untouched", () => {
 test("maskSecrets is null-safe", () => {
   assert.equal(maskSecrets(null), null);
   assert.equal(maskSecrets(undefined), undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Lane history (de)serialization
+// ---------------------------------------------------------------------------
+
+test("buildHistoryEntry captures a lane's terminal state compactly", () => {
+  const lane = { op: "test", phase: "failed", command: "./mvnw -B test", exitCode: 1 };
+  const entry = buildHistoryEntry(lane, {
+    testSummary: { tests: 3, failures: 1, errors: 0, skipped: 0 },
+    tailLines: ["a", "b", "c"],
+    now: 1700000000000,
+  });
+  assert.equal(entry.op, "test");
+  assert.equal(entry.phase, "failed");
+  assert.equal(entry.command, "./mvnw -B test");
+  assert.equal(entry.exitCode, 1);
+  assert.equal(entry.ts, 1700000000000);
+  assert.deepEqual(entry.testSummary, { tests: 3, failures: 1, errors: 0, skipped: 0 });
+  assert.deepEqual(entry.tail, ["a", "b", "c"]);
+});
+
+test("buildHistoryEntry defaults and bounds the console tail", () => {
+  const lane = { op: "build", phase: "idle", command: "", exitCode: null };
+  const entry = buildHistoryEntry(lane);
+  assert.equal(entry.command, "");
+  assert.equal(entry.exitCode, null);
+  assert.equal(entry.testSummary, null);
+  assert.deepEqual(entry.tail, []);
+  const long = Array.from({ length: 100 }, (_, i) => `line ${i}`);
+  const bounded = buildHistoryEntry(lane, { tailLines: long });
+  assert.equal(bounded.tail.length, 40);
+  assert.equal(bounded.tail[bounded.tail.length - 1], "line 99");
+});
+
+test("clampHistory prepends newest and bounds the list", () => {
+  let list = [];
+  for (let i = 0; i < 8; i++) list = clampHistory(list, { ts: i }, 5);
+  assert.equal(list.length, 5);
+  assert.equal(list[0].ts, 7); // newest first
+  assert.equal(list[4].ts, 3);
+});
+
+test("a lane history entry survives a JSON round-trip unchanged", () => {
+  const lane = { op: "run", phase: "stopped", command: "./gradlew bootRun", exitCode: 0 };
+  const entry = buildHistoryEntry(lane, { tailLines: ["started", "stopped"], now: 42 });
+  const restored = JSON.parse(JSON.stringify({ run: clampHistory([], entry) }));
+  assert.deepEqual(restored.run[0], entry);
 });

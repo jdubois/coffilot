@@ -132,6 +132,13 @@ The loopback control endpoints are mostly safe to `curl` for inspection
 conversation** — don't call them casually. The HTTP server binds to `127.0.0.1`
 only; keep it that way.
 
+Coffilot persists a little per-project state under
+`$COPILOT_HOME/extensions/coffilot/artifacts/` (keyed by a hash of the project
+path): `settings-<hash>.json` (the Settings panel), `lasttest-<hash>.json` (the
+last full-suite test total for the progress bar), and `history-<hash>.json`
+(recent Build/Test/Package/Run results, restored on reload). These are safe to
+delete to reset that state.
+
 ## Submitting a change
 
 1. Open or claim an issue describing the change before you write code.

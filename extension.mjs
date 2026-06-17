@@ -1006,6 +1006,77 @@ function persistLastTestTotal(total) {
   }
 }
 
+// Recent per-lane run history, persisted so the canvas can show the last result
+// for each lane immediately after an extension reload (state is otherwise
+// in-memory). Bounded in both entry count and console-tail length to keep the
+// file small, mirroring the CONSOLE_CAP philosophy.
+const HISTORY_CAP = 5; // entries kept per lane
+const HISTORY_TAIL = 40; // console lines kept per entry
+const HISTORY_OPS = ["build", "test", "package", "run", "debug"];
+
+function historyFile() {
+  const { dir } = settingsPaths();
+  const key = createHash("sha1").update(workspacePath).digest("hex").slice(0, 16);
+  return path.join(dir, `history-${key}.json`);
+}
+
+// Build a compact, serializable history entry from a lane's terminal state.
+// Pure (no I/O) so it can be unit-tested.
+export function buildHistoryEntry(lane, { testSummary = null, tailLines = [], now = Date.now() } = {}) {
+  return {
+    op: lane.op,
+    phase: lane.phase,
+    command: lane.command || "",
+    exitCode: lane.exitCode == null ? null : lane.exitCode,
+    ts: now,
+    testSummary: testSummary || null,
+    tail: Array.isArray(tailLines) ? tailLines.slice(-HISTORY_TAIL).map((l) => String(l)) : [],
+  };
+}
+
+// Prepend an entry and bound the list to the most recent `cap`. Pure.
+export function clampHistory(list, entry, cap = HISTORY_CAP) {
+  const next = [entry, ...(Array.isArray(list) ? list : [])];
+  return next.slice(0, Math.max(1, cap));
+}
+
+function loadHistory() {
+  try {
+    const saved = JSON.parse(readFileSync(historyFile(), "utf8"));
+    const out = {};
+    for (const op of HISTORY_OPS) out[op] = Array.isArray(saved[op]) ? saved[op] : [];
+    return out;
+  } catch {
+    const out = {};
+    for (const op of HISTORY_OPS) out[op] = [];
+    return out;
+  }
+}
+
+function persistHistory() {
+  try {
+    const { dir } = settingsPaths();
+    mkdirSync(dir, { recursive: true });
+    const out = {};
+    for (const op of HISTORY_OPS) out[op] = lanes[op] ? lanes[op].history : [];
+    writeFileSync(historyFile(), JSON.stringify(out, null, 2));
+  } catch (e) {
+    session.log(`[coffilot] failed to persist lane history: ${e.message}`, { level: "warn" });
+  }
+}
+
+// Append the just-finished lane's terminal state to its history and persist.
+function recordLaneHistory(op) {
+  const lane = lanes[op];
+  if (!lane) return;
+  const entry = buildHistoryEntry(lane, {
+    testSummary: op === "test" ? lastTest : null,
+    tailLines: tail(op, HISTORY_TAIL),
+  });
+  lane.history = clampHistory(lane.history, entry);
+  persistHistory();
+}
+
 const settings = loadSettings();
 
 // Reload persisted settings into the existing object after a background root
@@ -1424,6 +1495,7 @@ function newLane(op) {
     exitCode: null,
     child: null, // the process this op currently owns (null when not running)
     console: [], // { line, stream, op }
+    history: [], // recent terminal results, most-recent first (persisted)
   };
 }
 
@@ -1450,6 +1522,28 @@ const app = {
 // Latest unit-test results (from a foreground Test run).
 let lastTest = null; // summary { tests, failures, errors, skipped }
 let lastTestReport = null; // full { summary, suites: [{ name, cases: [...] }] }
+
+// Restore persisted per-lane history so the canvas can show each lane's last
+// result immediately after a reload. For the batch lanes (build/test/package)
+// we also reflect the most recent terminal phase/command/exit in the lane so the
+// header is populated; the run/debug lanes stay "idle" because no JVM is live
+// this session. The test lane's last summary is restored for the progress view.
+function restoreLaneHistory() {
+  const saved = loadHistory();
+  for (const op of HISTORY_OPS) {
+    const lane = lanes[op];
+    lane.history = Array.isArray(saved[op]) ? saved[op] : [];
+    const latest = lane.history[0];
+    if (!latest) continue;
+    if (op === "build" || op === "test" || op === "package") {
+      lane.phase = latest.phase || "idle";
+      lane.command = latest.command || "";
+      lane.exitCode = latest.exitCode == null ? null : latest.exitCode;
+    }
+    if (op === "test" && latest.testSummary) lastTest = latest.testSummary;
+  }
+}
+restoreLaneHistory();
 
 // Build, Test and Package share the Maven lane: at most one runs at a time.
 function mvnLaneBusy() {
@@ -1981,6 +2075,7 @@ function laneStatus(op) {
     s.attaching = debug.attaching;
   }
   if (op === "test") s.lastTest = lastTest;
+  s.history = lane.history;
   return s;
 }
 
@@ -2184,6 +2279,7 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
       lane.child = null;
       lane.phase = "failed";
       lane.exitCode = -1;
+      recordLaneHistory(op);
       broadcast("status", statusSnapshot());
       resolve(-1);
     });
@@ -2215,6 +2311,7 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
       } else {
         lane.phase = code === 0 ? "idle" : "failed";
       }
+      recordLaneHistory(op);
       broadcast("status", statusSnapshot());
       resolve(code);
     });
@@ -3206,6 +3303,7 @@ function failRunLane(msg, op = "run") {
   pushConsole(`[coffilot] ${msg}`, "stderr", op);
   lanes[op].phase = "failed";
   lanes[op].exitCode = -1;
+  recordLaneHistory(op);
   broadcast("status", statusSnapshot());
 }
 
