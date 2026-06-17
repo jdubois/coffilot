@@ -51,8 +51,16 @@ copilot-extension.json   Manifest ({ "name": "coffilot", "version": 1 }) used by
 ## Develop and test
 
 The extension is discovered from `.github/extensions/<name>/` (relative to a git
-root) or `$COPILOT_HOME/extensions/<name>/`. Coffilot drives a _separate_ Maven or
-Gradle project, so develop against a checkout of a Java app:
+root) or `$COPILOT_HOME/extensions/<name>/`.
+
+This repo ships a `.github/extensions/coffilot/extension.mjs` wrapper that loads
+the root `extension.mjs`, so **opening this repository** in the Copilot app loads
+Coffilot automatically — handy for verifying it boots. (If you also keep a
+`~/.copilot/extensions/coffilot` symlink, remove it while working here so Coffilot
+isn't loaded twice.)
+
+Coffilot drives a _separate_ Maven or Gradle project, so to exercise it against a
+real build, develop against a checkout of a Java app:
 
 1. Symlink or copy this repo into the target project's extensions folder:
 

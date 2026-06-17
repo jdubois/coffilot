@@ -31,6 +31,11 @@ const exitEl = document.getElementById("exit");
 const metricsEl = document.getElementById("metrics");
 const testsEl = document.getElementById("tests");
 const tabBadge = document.getElementById("tab-tests-badge");
+const fullbuildToggle = document.getElementById("fullbuild-toggle");
+const fullbuildInput = document.getElementById("in-fullbuild");
+const continuousToggle = document.getElementById("continuous-toggle");
+const continuousInput = document.getElementById("in-continuous");
+const testSelectionEl = document.getElementById("test-selection");
 const warmToggle = document.getElementById("warm-toggle");
 const warmInput = document.getElementById("in-warm");
 const warmLabel = document.getElementById("warm-label");
@@ -74,11 +79,8 @@ const openBrowserInput = document.getElementById("in-openbrowser");
 const autoProfileInput = document.getElementById("in-autoprofile");
 const btnOpenBrowser = document.getElementById("btn-open-browser");
 const btnFix = document.getElementById("btn-fix");
-const btnStopMaven = document.getElementById("btn-stop-maven");
-const btnStopRun = document.getElementById("btn-stop-run");
 const btnRun = document.getElementById("btn-run");
 const btnDebug = document.getElementById("btn-debug");
-const btnStopDebug = document.getElementById("btn-stop-debug");
 // Debug-tab controls + state.
 const dbgStateEl = document.getElementById("dbg-state");
 const dbgLocEl = document.getElementById("dbg-loc");
@@ -165,6 +167,11 @@ let caps = {};
 // Whether a Maven/Gradle build tool is present. When false the canvas runs
 // in degraded mode: Build/Test/Package/Run stay disabled.
 let toolPresent = true;
+// Persisted "Full build" preference (env.settings.fullBuild), on by default.
+// Tracked here so renderStatus can show the toggle unchecked while continuous
+// testing overrides it, then restore the user's choice once continuous testing
+// is turned off.
+let fullBuildSetting = true;
 // Last JDTLS availability snapshot (env.jdtls), used for the toolchain pill.
 let jdtlsState = {};
 
@@ -247,8 +254,8 @@ function showTab(name) {
   if (!consoles[name]) return;
   activeTab = name;
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
-  document.getElementById("build-console").classList.toggle("active", name === "build");
-  document.getElementById("package-console").classList.toggle("active", name === "package");
+  document.getElementById("build-pane").classList.toggle("active", name === "build");
+  document.getElementById("package-pane").classList.toggle("active", name === "package");
   document.getElementById("test-pane").classList.toggle("active", name === "test");
   document.getElementById("run-pane").classList.toggle("active", name === "run");
   document.getElementById("debug-pane").classList.toggle("active", name === "debug");
@@ -343,7 +350,8 @@ document.addEventListener("keydown", (e) => {
 asideDrawer.addEventListener("change", () => setAsideOpen(!asideDrawer.matches));
 // Initial state: open on a wide canvas, collapsed on a narrow one. No loggers
 // sync here (it would touch state declared later in this module) — polling is
-// driven by tab activation and the metrics tab is the default.
+// driven by tab activation and the Settings tab is the default, so loggers
+// polling stays off until that tab is opened.
 workspaceEl.classList.toggle("aside-open", !asideDrawer.matches);
 syncAsideMode();
 
@@ -497,24 +505,19 @@ function clearStopping(which) {
   stopTimers[which] = null;
 }
 
-function applyStopButton(btn, which, busy) {
-  // The process has actually stopped: drop the optimistic state.
-  if (stopping[which] && !busy) clearStopping(which);
-  const isStopping = stopping[which];
-  btn.disabled = !busy || isStopping;
-  btn.classList.toggle("is-stopping", isStopping);
-  const spin = btn.querySelector(".btn-spin");
-  if (spin) spin.hidden = !isStopping;
-  const label = btn.querySelector(".btn-label");
-  if (label) label.textContent = isStopping ? "Stopping\u2026" : "Stop";
-  const appLike = which !== "maven";
-  if (isStopping) {
-    btn.title = appLike ? "Stopping the app\u2026" : "Stopping the build\u2026";
-  } else if (busy) {
-    btn.title = appLike ? "Stop the running app" : "Stop the running build, test or package";
-  } else {
-    btn.title = appLike ? "The app isn't running" : "No build is running";
-  }
+// Each lane's primary button doubles as Build/Test/Package/Run/Debug (idle) and
+// Stop (while that lane is busy), so there's exactly one action per lane.
+const laneLabel = { build: "Build", test: "Run tests", package: "Package", run: "Run", debug: "Debug" };
+function setLaneButton(op, { label, danger, disabled, busyState, title }) {
+  const btn = triggerButton[op];
+  if (!btn) return;
+  const lbl = btn.querySelector(".btn-label");
+  if (lbl) lbl.textContent = label;
+  btn.classList.toggle("danger", !!danger);
+  btn.classList.toggle("primary", !danger);
+  btn.classList.toggle("is-stopping", busyState === "stopping");
+  btn.disabled = !!disabled;
+  btn.title = title || "";
 }
 
 // Optimistic "restarting" state for the trigger buttons. Clicking a trigger
@@ -593,12 +596,11 @@ function renderStatus(s) {
   // app actually running (the run lane busy).
   runActive = !!(run.busy || run.appPort);
   updateProfileButton();
-  // The two grouped Stop buttons are global, not tied to the active tab:
-  // the Maven Stop covers build/test/package; the Run Stop covers run.
+  // Drop the optimistic "stopping" state once the process has actually exited.
   const mvnBusy = laneActive(s, "build") || laneActive(s, "test") || laneActive(s, "package");
-  applyStopButton(btnStopMaven, "maven", mvnBusy);
-  applyStopButton(btnStopRun, "run", laneActive(s, "run"));
-  applyStopButton(btnStopDebug, "debug", laneActive(s, "debug"));
+  if (stopping.run && !laneActive(s, "run")) clearStopping("run");
+  if (stopping.debug && !laneActive(s, "debug")) clearStopping("debug");
+  if (stopping.maven && !mvnBusy) clearStopping("maven");
   // Per-lane spinners on the trigger buttons and tabs (global, so they reflect
   // activity regardless of which tab is showing). The `is-restarting` class
   // turns the trigger's spinner into a rotating restart glyph without touching
@@ -611,53 +613,74 @@ function renderStatus(s) {
       triggerButton[op].classList.toggle("is-restarting", !!restarting[op]);
     }
   }
-  // While a build op runs the lane is serialized, so grey out the other
-  // Build/Test/Package buttons (the running one stays active — click it again
-  // to restart). Everything is disabled when no build tool is present.
+  // Each lane's primary button: it triggers the lane when idle and becomes a red
+  // Stop while that lane is busy. Build/Test/Package share one serialized Maven
+  // lane, so while one runs its siblings are greyed out until it stops.
   const busyMvnOp = ["build", "test", "package"].find((op) => laneActive(s, op));
   for (const op of ["build", "test", "package"]) {
-    const btn = mvnButtons[op];
-    if (!btn) continue;
-    // The running op stays clickable (to restart); idle siblings are greyed out
-    // until it stops, and the op itself is locked while its restart is in flight.
-    btn.disabled = !toolPresent || (!!busyMvnOp && op !== busyMvnOp) || !!restarting[op];
-    btn.title = !toolPresent
-      ? "Coffilot needs a Maven or Gradle project."
-      : restarting[op]
-        ? "Restarting\u2026"
-        : op === busyMvnOp
-          ? `Restart the running ${op}`
-          : btn.disabled
-            ? `Stop the running ${busyMvnOp} first`
-            : "";
+    if (!toolPresent) {
+      setLaneButton(op, { label: laneLabel[op], disabled: true, title: "Coffilot needs a Maven or Gradle project." });
+    } else if (op === busyMvnOp) {
+      const isStopping = stopping.maven;
+      setLaneButton(op, {
+        label: isStopping ? "Stopping\u2026" : "Stop",
+        danger: true,
+        disabled: isStopping,
+        busyState: isStopping ? "stopping" : "stop",
+        title: isStopping ? "Stopping the build\u2026" : `Stop the running ${op}`,
+      });
+    } else if (busyMvnOp) {
+      setLaneButton(op, { label: laneLabel[op], disabled: true, title: `Stop the running ${busyMvnOp} first` });
+    } else {
+      setLaneButton(op, { label: laneLabel[op], disabled: !!restarting[op] });
+    }
   }
-  // Run and Debug share the single app slot, so they're mutually exclusive:
-  // each trigger restarts its own lane but is locked out while the other owns
-  // the app.
+  // Run and Debug share the single app slot, so they're mutually exclusive: each
+  // trigger restarts its own lane but is locked out while the other owns the app.
   const runLaneActive = laneActive(s, "run");
   const debugLaneActive = laneActive(s, "debug");
-  if (!toolPresent) btnRun.disabled = true;
-  else btnRun.disabled = !!restarting.run || debugLaneActive;
-  if (toolPresent) {
-    btnRun.title = restarting.run
-      ? "Restarting\u2026"
-      : debugLaneActive
-        ? "Stop the debugger first"
-        : runLaneActive
-          ? "Restart the running app"
-          : "";
+  if (!toolPresent) {
+    setLaneButton("run", { label: laneLabel.run, disabled: true, title: "Coffilot needs a Maven or Gradle project." });
+  } else if (runLaneActive) {
+    const isStopping = stopping.run;
+    setLaneButton("run", {
+      label: isStopping ? "Stopping\u2026" : "Stop",
+      danger: true,
+      disabled: isStopping,
+      busyState: isStopping ? "stopping" : "stop",
+      title: isStopping ? "Stopping the app\u2026" : "Stop the running app",
+    });
+  } else {
+    setLaneButton("run", {
+      label: laneLabel.run,
+      disabled: !!restarting.run || debugLaneActive,
+      title: debugLaneActive ? "Stop the debugger first" : "",
+    });
   }
-  if (!toolPresent) btnDebug.disabled = true;
-  else btnDebug.disabled = !!restarting.debug || runLaneActive;
-  if (toolPresent) {
-    btnDebug.title = restarting.debug
-      ? "Restarting\u2026"
-      : runLaneActive
-        ? "Stop the running app first"
-        : debugLaneActive
-          ? "Restart the debug session"
-          : "";
+  if (!toolPresent) {
+    setLaneButton("debug", {
+      label: laneLabel.debug,
+      disabled: true,
+      title: "Coffilot needs a Maven or Gradle project.",
+    });
+  } else if (debugLaneActive) {
+    const isStopping = stopping.debug;
+    setLaneButton("debug", {
+      label: isStopping ? "Stopping\u2026" : "Stop",
+      danger: true,
+      disabled: isStopping,
+      busyState: isStopping ? "stopping" : "stop",
+      title: isStopping ? "Stopping the debugger\u2026" : "Stop the debug session",
+    });
+  } else {
+    setLaneButton("debug", {
+      label: laneLabel.debug,
+      disabled: !!restarting.debug || runLaneActive,
+      title: runLaneActive ? "Stop the running app first" : "",
+    });
   }
+  // Test-view toggles (Full build / Continuous testing) reflect server state.
+  reflectTestToggles();
   renderDebug(debugSnap, s);
   // Header (phase / command / exit / fix) follows the active tab; while the
   // active tab's lane is restarting, show a steady "restarting" phase instead of
@@ -729,7 +752,7 @@ function renderDebug(d, s) {
   d = d || debugSnap || {};
   const attached = !!d.active;
   const paused = !!d.paused;
-  const laneBusy = !!(d.laneBusy || (s && s.debug && s.debug.busy));
+  const debugBusy = !!(d.laneBusy || (s && s.debug && s.debug.busy));
 
   let state = "not started";
   let cls = "idle";
@@ -742,7 +765,7 @@ function renderDebug(d, s) {
   } else if (attached) {
     state = "running";
     cls = "running";
-  } else if (laneBusy) {
+  } else if (debugBusy) {
     state = "launching\u2026";
     cls = "running";
   }
@@ -1282,6 +1305,21 @@ function renderTests(report, opts) {
     return;
   }
   const s = report.summary;
+  // A non-zero exit with no executed tests means the build failed before any test
+  // ran — almost always a compile error. Show that plainly instead of a misleading
+  // "0 tests / no reports" view, and point at the console + Fix button. (A Stop
+  // leaves buildExit null, so an interrupted run never shows as a build failure.)
+  if (report.buildExit != null && report.buildExit !== 0 && s.tests === 0) {
+    testsEl.innerHTML =
+      '<p class="empty bad">Build failed (exit ' +
+      report.buildExit +
+      ") before any tests ran \u2014 check the Maven console above for the error" +
+      ", or click <strong>Fix with Copilot</strong>.</p>";
+    tabBadge.hidden = false;
+    tabBadge.textContent = "!";
+    tabBadge.className = "badge bad";
+    return;
+  }
   const failed = s.failures + s.errors;
   // Tab badge
   tabBadge.hidden = false;
@@ -1325,6 +1363,54 @@ function renderTests(report, opts) {
     html += `</details>`;
   }
   testsEl.innerHTML = html;
+}
+
+// Affected-test selection banner. `sel` is the server's
+// computeAffectedTests() result (or an error/skip variant).
+function renderTestSelection(sel) {
+  if (!testSelectionEl) return;
+  if (!sel || !sel.ok) {
+    testSelectionEl.hidden = false;
+    testSelectionEl.className = "test-selection warn";
+    testSelectionEl.textContent = (sel && sel.message) || "Affected-test selection is unavailable.";
+    return;
+  }
+  if (!sel.sources || !sel.sources.length) {
+    testSelectionEl.hidden = false;
+    testSelectionEl.className = "test-selection warn";
+    testSelectionEl.textContent =
+      sel.changedFiles && sel.changedFiles.length
+        ? "No changed Java/Kotlin sources vs HEAD — nothing to test."
+        : "No uncommitted changes vs HEAD — nothing to test.";
+    return;
+  }
+  const n = (sel.tests || []).length;
+  const files = sel.sources.length;
+  let txt = `Affected: ${n} test class${n === 1 ? "" : "es"} affected by ${files} changed source${files === 1 ? "" : "s"} vs HEAD`;
+  if (sel.fallback) txt += " · name-based (run Build for dependency-accurate selection)";
+  testSelectionEl.hidden = false;
+  testSelectionEl.className = "test-selection" + (n ? "" : " warn");
+  testSelectionEl.textContent = txt;
+}
+
+function hideTestSelection() {
+  if (testSelectionEl) testSelectionEl.hidden = true;
+}
+
+// Sync the two Test-view toggles with server + settings state. Continuous
+// testing always uses affected selection, so while it's on the Full build
+// toggle is forced off and greyed out; turning it off restores the user's
+// persisted choice. Both are disabled when no build tool is present.
+function reflectTestToggles() {
+  if (!fullbuildToggle || !continuousToggle) return;
+  const cont = !!(statusSnap && statusSnap.continuous && statusSnap.continuous.enabled);
+  continuousInput.checked = cont;
+  continuousInput.disabled = !toolPresent;
+  continuousToggle.classList.toggle("disabled", !toolPresent);
+  const fbDisabled = !toolPresent || cont;
+  fullbuildInput.checked = cont ? false : fullBuildSetting;
+  fullbuildInput.disabled = fbDisabled;
+  fullbuildToggle.classList.toggle("disabled", fbDisabled);
 }
 
 function populateModules(modules) {
@@ -1489,6 +1575,8 @@ function applySettingsState(s) {
   devtoolsInput.checked = s.devtools === true;
   randomportInput.checked = s.randomPort === true;
   openBrowserInput.checked = s.openBrowser === true;
+  fullBuildSetting = s.fullBuild === true;
+  reflectTestToggles();
   if (autoProfileInput) autoProfileInput.checked = s.autoProfile === true;
   if (flameEvent && typeof s.autoProfileEvent === "string" && document.activeElement !== flameEvent) {
     flameEvent.value = s.autoProfileEvent;
@@ -1522,6 +1610,7 @@ function applyEnv(env) {
   toolPresent = !!(env && env.buildTool);
   if (noToolBanner) noToolBanner.hidden = toolPresent;
   btnRun.disabled = !toolPresent;
+  btnDebug.disabled = !toolPresent;
   for (const op of ["build", "test", "package"]) {
     if (mvnButtons[op]) mvnButtons[op].disabled = !toolPresent;
   }
@@ -1529,6 +1618,8 @@ function applyEnv(env) {
 
   // Maven profiles are Maven-only; hide the control for Gradle / no tool.
   const profilesSupported = !!(env && env.profilesSupported);
+  const setMvnProfiles = document.getElementById("set-mvn-profiles");
+  if (setMvnProfiles) setMvnProfiles.hidden = !profilesSupported;
   if (mvnProfilesLabel) mvnProfilesLabel.hidden = !profilesSupported;
   if (mvnProfilesCombo) mvnProfilesCombo.hidden = !profilesSupported;
 
@@ -1739,64 +1830,80 @@ async function restartLane(op, body) {
   }
 }
 
-document.getElementById("btn-build").onclick = () => {
-  showTab("build");
-  triggerLane("build", "/api/build", { warm: warm(), mavenProfiles: mvnProfiles() });
-};
-document.getElementById("btn-test").onclick = () => {
-  showTab("test");
-  triggerLane("test", "/api/test", { warm: warm(), mavenProfiles: mvnProfiles() });
-};
-document.getElementById("btn-package").onclick = () => {
-  showTab("package");
-  triggerLane("package", "/api/package", { warm: warm(), mavenProfiles: mvnProfiles() });
-};
-document.getElementById("btn-run").onclick = () => {
-  showTab("run");
-  triggerLane("run", "/api/run", {
-    module: document.getElementById("in-module").value.trim(),
-    profiles: document.getElementById("in-profiles").value.trim(),
-    mavenProfiles: mvnProfiles(),
-  });
-};
-// Two grouped Stop buttons: the Maven Stop kills the shared build/test/
-// package lane; the Run Stop kills the independent app. They are global,
-// so you can stop a build without killing the running app, or vice versa.
-btnStopMaven.onclick = () => {
-  if (btnStopMaven.disabled) return;
+// Stop a lane. `which` is the lane group: "run" (the app) or "maven" (the shared
+// build/test/package lane). `op` is the specific Maven op that's running.
+function stopLane(which, op) {
+  if (stopping[which]) return;
+  if (which === "run") {
+    clearRestarting("run");
+    markStopping("run", "run");
+    post("/api/stop", { op: "run" });
+    return;
+  }
+  if (which === "debug") {
+    clearRestarting("debug");
+    markStopping("debug", "debug");
+    post("/api/debug/stop", {});
+    return;
+  }
   const s = statusSnap || {};
-  const op = ["build", "test", "package"].find((o) => s[o] && s[o].busy) || activeTab;
+  const target = op || ["build", "test", "package"].find((o) => s[o] && s[o].busy) || activeTab;
   // A Stop wins over any in-flight restart of the build group.
   ["build", "test", "package"].forEach(clearRestarting);
-  markStopping("maven", op);
+  markStopping("maven", target);
   post("/api/stop", { op: "maven" });
-};
-btnStopRun.onclick = () => {
-  if (btnStopRun.disabled) return;
-  clearRestarting("run");
-  markStopping("run", "run");
-  post("/api/stop", { op: "run" });
-};
+}
+
+// One button per lane: it starts the lane when idle, or stops it while busy.
+function laneAction(op) {
+  if (op === "run") {
+    if (laneBusy("run")) return stopLane("run");
+    showTab("run");
+    triggerLane("run", "/api/run", {
+      module: document.getElementById("in-module").value.trim(),
+      profiles: document.getElementById("in-profiles").value.trim(),
+      mavenProfiles: mvnProfiles(),
+    });
+    return;
+  }
+  if (op === "debug") {
+    if (laneBusy("debug")) return stopLane("debug");
+    showTab("debug");
+    triggerLane("debug", "/api/debug/start", {
+      module: document.getElementById("in-module").value.trim(),
+      profiles: document.getElementById("in-profiles").value.trim(),
+      mavenProfiles: mvnProfiles(),
+      suspend: dbgSuspendInput.checked,
+    });
+    return;
+  }
+  // build / test / package share the serialized Maven lane.
+  const busyOp = ["build", "test", "package"].find(laneBusy);
+  if (busyOp === op) return stopLane("maven", op); // this lane is running → stop it
+  if (busyOp) return; // a sibling is running (the button is disabled anyway)
+  showTab(op);
+  if (op === "test") {
+    // Continuous testing always uses affected selection; otherwise the Full build
+    // toggle decides between the affected subset (off) and the whole suite (on).
+    const continuousOn = !!(statusSnap && statusSnap.continuous && statusSnap.continuous.enabled);
+    const affected = continuousOn || !fullbuildInput.checked;
+    if (!affected) hideTestSelection();
+    triggerLane("test", "/api/test", { affected, warm: warm(), mavenProfiles: mvnProfiles() });
+    return;
+  }
+  triggerLane(op, "/api/" + op, { warm: warm(), mavenProfiles: mvnProfiles() });
+}
+
+document.getElementById("btn-build").onclick = () => laneAction("build");
+document.getElementById("btn-test").onclick = () => laneAction("test");
+document.getElementById("btn-package").onclick = () => laneAction("package");
+document.getElementById("btn-run").onclick = () => laneAction("run");
 
 // --- Debug lane controls ---------------------------------------------------
 // The Debug trigger launches the app with JDWP and attaches the debugger; it is
-// mutually exclusive with Run (the backend rejects if the app is already up).
-btnDebug.onclick = () => {
-  if (btnDebug.disabled) return;
-  showTab("debug");
-  triggerLane("debug", "/api/debug/start", {
-    module: document.getElementById("in-module").value.trim(),
-    profiles: document.getElementById("in-profiles").value.trim(),
-    mavenProfiles: mvnProfiles(),
-    suspend: dbgSuspendInput.checked,
-  });
-};
-btnStopDebug.onclick = () => {
-  if (btnStopDebug.disabled) return;
-  clearRestarting("debug");
-  markStopping("debug", "debug");
-  post("/api/debug/stop", {});
-};
+// mutually exclusive with Run (the backend rejects if the app is already up). The
+// single lane button starts the session when idle and stops it while busy.
+btnDebug.onclick = () => laneAction("debug");
 btnDbgContinue.onclick = () => post("/api/debug/continue", {});
 btnDbgStepOver.onclick = () => post("/api/debug/step", { depth: "over" });
 btnDbgStepInto.onclick = () => post("/api/debug/step", { depth: "into" });
@@ -1881,6 +1988,7 @@ function saveSettings() {
     devtools: devtoolsInput.checked,
     randomPort: randomportInput.checked,
     openBrowser: openBrowserInput.checked,
+    fullBuild: fullbuildInput.checked,
     autoProfile: autoProfileInput ? autoProfileInput.checked : false,
     autoProfileEvent: flameEvent ? flameEvent.value : "cpu",
     autoProfileDuration: flameDuration ? Number(flameDuration.value) : 30,
@@ -1894,6 +2002,27 @@ springInput.addEventListener("change", saveSettings);
 if (autoProfileInput) autoProfileInput.addEventListener("change", saveSettings);
 if (flameEvent) flameEvent.addEventListener("change", saveSettings);
 if (flameDuration) flameDuration.addEventListener("change", saveSettings);
+
+// "Full build" persists the affected-vs-full-suite preference for the Test button.
+fullbuildInput.addEventListener("change", () => {
+  fullBuildSetting = fullbuildInput.checked === true;
+  saveSettings();
+});
+// "Continuous testing" starts/stops the server-side watch loop. The endpoint
+// returns the authoritative continuous state; apply it immediately (don't wait
+// for the status SSE) so the Full build toggle re-enables and the Test button's
+// affected/full decision is correct the instant the loop stops.
+continuousInput.addEventListener("change", async () => {
+  if (continuousInput.disabled) return;
+  const res = await postJson("/api/test/continuous", {
+    enabled: continuousInput.checked,
+    mavenProfiles: mvnProfiles(),
+  });
+  if (res && res.continuous && statusSnap) {
+    statusSnap.continuous = res.continuous;
+    reflectTestToggles();
+  }
+});
 
 btnFix.onclick = async () => {
   const kind = btnFix.dataset.kind;
@@ -1962,6 +2091,9 @@ es.addEventListener("test-progress", (e) => {
 es.addEventListener("tests", (e) => {
   const report = JSON.parse(e.data);
   renderTests(report, { runnerLabel: lastRunnerLabel });
+});
+es.addEventListener("tests-selection", (e) => {
+  renderTestSelection(JSON.parse(e.data));
 });
 es.addEventListener("env", (e) => {
   // The backend resolves the project root in the background after startup; apply
