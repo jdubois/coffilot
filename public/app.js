@@ -1922,10 +1922,14 @@ function applyJdks(env) {
   if (want && [...jdkSelect.options].some((o) => o.value === want)) jdkSelect.value = want;
 
   if (jdkInfo) {
-    jdkInfo.dataset.tip = activeJdkInfo
-      ? `Active JDK: ${activeJdkInfo.version || "unknown"}${activeJdkInfo.home ? ` (${activeJdkInfo.home})` : ""}. ` +
-        "Used for Build / Test / Package / Run / Debug. Change applies to the next launch."
-      : "Choose the JDK used for Build / Test / Package / Run / Debug.";
+    if (activeJdkInfo) {
+      const home = activeJdkInfo.home ? ` (${activeJdkInfo.home})` : "";
+      jdkInfo.dataset.tip =
+        `Active JDK: ${activeJdkInfo.version || "unknown"}${home}. ` +
+        "Used for Build / Test / Package / Run / Debug. Change applies to the next launch.";
+    } else {
+      jdkInfo.dataset.tip = "Choose the JDK used for Build / Test / Package / Run / Debug.";
+    }
   }
 
   // Install banner: only when SDKMAN is present but a single JDK is installed

@@ -705,8 +705,8 @@ function probeJavaVersion(bin) {
     const m = out.match(/version "([^"]+)"/); // e.g. "21.0.2" or legacy "1.8.0_392"
     if (m) {
       const parts = m[1].split(".");
-      // Pre-Java-9 versions are "1.MAJOR.x" (e.g. 1.8 == Java 8), so the real major
-      // is the second component there; Java 9+ uses "MAJOR.x.y" directly.
+      // Pre-Java-9 versions are "1.MAJOR.x" (e.g. "1.8" == Java 8), so the real
+      // major is the second component there; Java 9+ uses "MAJOR.x.y" directly.
       const major = parts[0] === "1" ? parseInt(parts[1], 10) : parseInt(parts[0], 10);
       result = { version: m[1], major: Number.isNaN(major) ? null : major };
     }
@@ -2070,13 +2070,13 @@ function applySettings(body) {
     const want = body.jdkHome ? String(body.jdkHome) : null;
     if (want !== settings.jdkHome) {
       if (appBusy()) {
-        session.log("[Coffilot] JDK change ignored while the app is running — stop it first.", { level: "warn" });
+        session.log("[coffilot] JDK change ignored while the app is running — stop it first.", { level: "warn" });
       } else if (want === null) {
         settings.jdkHome = null;
       } else if (isKnownJdkHome(want)) {
         settings.jdkHome = want;
       } else {
-        session.log(`[Coffilot] ignoring unrecognized JDK selection ${want} (not a discovered JDK).`, {
+        session.log(`[coffilot] ignoring unrecognized JDK selection ${want} (not a discovered JDK).`, {
           level: "warn",
         });
       }
