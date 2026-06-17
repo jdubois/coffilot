@@ -73,12 +73,19 @@ const GRADLE_MARKERS = [
 // __dirname points into the coffilot repo for a user/global install; and the host
 // launches us with cwd=<COPILOT_HOME>, not the project. We fall back to __dirname
 // (project-embedded install at <repo>/.github/extensions/coffilot) and cwd.
-// These five are `let`, not `const`, because the "Check again" control
-// (recheckBuildTool / POST /api/recheck) re-resolves them at runtime: detection
-// runs once at startup, and if the session's primary working directory isn't
-// available yet the project root / build tool would otherwise stay wrong until an
-// extension reload.
-let workspacePath = findProjectRoot(await getSessionPrimaryDir());
+// These five are `let`, not `const`, because they are re-resolved at runtime: a
+// background refinement runs once the loopback server is up
+// (refineWorkspaceFromSession), and the "Check again" control (recheckBuildTool /
+// POST /api/recheck) re-runs detection on demand.
+//
+// Startup resolves the root *synchronously* from the install location only —
+// deliberately skipping the session's primary-working-directory RPC here so the
+// canvas registration and its loopback server are never blocked on that
+// round-trip (which delayed the canvas appearing when a session is opened). That
+// fast path is already correct for a project-embedded install; for a user/global
+// install the authoritative root arrives a moment later via the background
+// refinement kicked off after the server starts listening.
+let workspacePath = findProjectRoot(null);
 
 // Auto-detect the build tool from the project. Maven wins when both are present,
 // per Coffilot's "prefer Maven" rule; null means neither was found (degraded UI).
@@ -96,15 +103,12 @@ function wrapperFileNameFor(tool) {
   return tool === "gradle" ? (isWindows ? "gradlew.bat" : "gradlew") : isWindows ? "mvnw.cmd" : "mvnw";
 }
 
-// Re-resolve the project root and build tool at runtime (driven by the canvas's
-// "Check again" control). Startup detection is a single shot, so a project that
-// wasn't visible then — or a user/global install whose primary working directory
-// the host reported late — would otherwise be stuck in the degraded "no Maven or
-// Gradle" state until an extension reload. This re-queries the session's primary
-// directory, re-walks for a build marker, and refreshes every workspace-derived
-// cache so the UI can recover without a reload. Returns the new env snapshot.
-async function recheckBuildTool() {
-  workspacePath = findProjectRoot(await getSessionPrimaryDir());
+// Re-resolve the project root and refresh every workspace-derived cache so they
+// recompute against the new root. Shared by the background startup refinement and
+// the "Check again" control. Returns true if the resolved root changed.
+function applyWorkspace(primary) {
+  const before = workspacePath;
+  workspacePath = findProjectRoot(primary);
   buildTool = detectBuildTool(workspacePath);
   TOOL_LABEL = buildTool === "gradle" ? "Gradle" : buildTool === "maven" ? "Maven" : null;
   wrapperName = wrapperFileNameFor(buildTool);
@@ -116,8 +120,42 @@ async function recheckBuildTool() {
   mavenProfiles = null;
   springProfiles = null;
   quarkusProfiles = null;
+  return workspacePath !== before;
+}
+
+// Re-resolve the project root and build tool at runtime (driven by the canvas's
+// "Check again" control). A project that wasn't visible at startup — or a
+// user/global install whose primary working directory the host reported late —
+// would otherwise be stuck in the degraded "no Maven or Gradle" state until an
+// extension reload. This re-queries the session's primary directory, re-walks for
+// a build marker, and refreshes every workspace-derived cache so the UI can
+// recover without a reload. Returns the new env snapshot.
+async function recheckBuildTool() {
+  applyWorkspace(await getSessionPrimaryDir());
   session.log(`[coffilot] re-checked build tool: ${TOOL_LABEL || "none"} at ${workspacePath}`, { level: "info" });
   return envSnapshot();
+}
+
+// Background project-root refinement, kicked off once the loopback server is
+// listening (see the bottom of this file). Startup resolves the root
+// synchronously from the install location so the canvas and its server come up
+// immediately; this fills in the authoritative root from the session's primary
+// working directory — the RPC round-trip we keep off the startup path — for
+// user/global installs. When the root changes it reloads settings (keyed by the
+// root) and pushes the refreshed env to any open iframe so the UI self-heals
+// without waiting for a focus refresh or "Check again".
+async function refineWorkspaceFromSession() {
+  let primary = null;
+  try {
+    primary = await getSessionPrimaryDir();
+  } catch (e) {
+    session.log(`[coffilot] background project detection failed: ${e.message}`, { level: "warn" });
+    return;
+  }
+  if (!applyWorkspace(primary)) return;
+  reloadSettingsInPlace();
+  session.log(`[coffilot] detected build tool: ${TOOL_LABEL || "none"} at ${workspacePath}`, { level: "info" });
+  broadcast("env", envSnapshot());
 }
 
 // Silence the JDK native-access warnings (JEP 472) that Jansi (Maven's native
@@ -797,6 +835,18 @@ function persistLastTestTotal(total) {
 }
 
 const settings = loadSettings();
+
+// Reload persisted settings into the existing object after a background root
+// refinement (refineWorkspaceFromSession) lands a different project root. The
+// settings file is keyed by the workspace path, so a late root change points at a
+// different file. Mutated in place because `settings` is a const shared by
+// reference throughout.
+function reloadSettingsInPlace() {
+  const fresh = loadSettings();
+  for (const k of Object.keys(settings)) delete settings[k];
+  Object.assign(settings, fresh);
+}
+
 // Estimate for the progress bar: persisted full-reactor total from the last
 // foreground Test run.
 let lastTestTotal = loadLastTestTotal();
@@ -3529,9 +3579,21 @@ const server = createServer(async (req, res) => {
   res.end("Not found");
 });
 
-const serverUrl = await new Promise((resolve) => {
-  server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${server.address().port}`));
+let serverUrl = null;
+const serverReady = new Promise((resolve) => {
+  server.listen(0, "127.0.0.1", () => {
+    serverUrl = `http://127.0.0.1:${server.address().port}`;
+    resolve();
+  });
 });
+await serverReady;
+
+// Now that the canvas is registered and its loopback server is listening, refine
+// the project root from the session's primary working directory in the
+// background. Kept off the synchronous startup path on purpose so opening a
+// session surfaces the canvas immediately; the UI self-heals via the broadcast
+// env (and its focus refresh / "Check again").
+void refineWorkspaceFromSession();
 
 // ---------------------------------------------------------------------------
 // Canvas declaration
@@ -3716,6 +3778,10 @@ function makeCanvas() {
       },
     ],
     open: async (ctx) => {
+      // The loopback server is started after this canvas is declared; wait for it
+      // so the returned URL is always live, even if the host opens the canvas
+      // during the brief startup window.
+      await serverReady;
       const inst = instanceFor(ctx.instanceId);
       return {
         title: "Coffilot",
