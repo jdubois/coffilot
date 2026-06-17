@@ -666,10 +666,9 @@ function renderMetrics(m) {
     lastHeapPct = 0;
     metricsSrc.hidden = true;
     renderMcp(null);
-    metricsEl.innerHTML =
-      '<p class="muted">App not running. Click <strong>Run</strong> to start it (Spring\u2019s <code>dev</code> profile activates BootUI).</p>';
+    metricsEl.innerHTML = '<p class="muted">Application isn\u2019t running or doesn\u2019t expose metrics.</p>';
     metricsHint.innerHTML =
-      "Run a Spring Boot app with the <code>dev</code> profile for rich BootUI metrics, a Quarkus app for Micrometer metrics, or anything exposing Actuator for a subset.";
+      'To get metrics, add <strong>Spring Boot Actuator</strong> or <strong>Quarkus Micrometer/health</strong>. For even richer metrics with Spring Boot, add <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a>.';
     return;
   }
   const tier = m.metricsTier || "process";

@@ -281,13 +281,12 @@
           <div id="atab-metrics" class="apane active">
             <h2>Live JVM metrics<span id="metrics-src" class="src" hidden></span></h2>
             <div id="metrics">
-              <p class="muted">
-                App not running. Click <strong>Run</strong> to start it (dev profile activates BootUI).
-              </p>
+              <p class="muted">Application isn&rsquo;t running or doesn&rsquo;t expose metrics.</p>
             </div>
             <p class="hint" id="metrics-hint">
-              Metrics are read from the running app's <code>/bootui/api/**</code> endpoints &mdash; reused directly from
-              BootUI.
+              To get metrics, add <strong>Spring Boot Actuator</strong> or <strong>Quarkus Micrometer/health</strong>.
+              For even richer metrics with Spring Boot, add
+              <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a>.
             </p>
           </div>
 
