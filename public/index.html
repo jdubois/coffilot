@@ -110,10 +110,15 @@
         </section>
 
         <section id="test-pane" class="lpane col">
-          <div class="subtabs" role="tablist" aria-label="Test view">
-            <button class="subtab active" data-tview="graphical">Graphical</button>
-            <button class="subtab" data-tview="console">Console</button>
-            <div class="test-toggles">
+          <div class="lane-bar">
+            <button id="btn-test" class="primary lane-action">
+              <span class="btn-spin" hidden></span><span class="btn-label">Run tests</span>
+            </button>
+            <div class="subtabs" role="tablist" aria-label="Test view">
+              <button class="subtab active" data-tview="graphical">Graphical</button>
+              <button class="subtab" data-tview="console">Console</button>
+            </div>
+            <div class="lane-controls">
               <label class="switch" id="fullbuild-toggle">
                 <input type="checkbox" id="in-fullbuild" checked />
                 <span class="track"><span class="thumb"></span></span>
@@ -139,9 +144,6 @@
                 >&#9432;</span
               >
             </div>
-            <button id="btn-test" class="primary lane-action">
-              <span class="btn-spin" hidden></span><span class="btn-label">Run tests</span>
-            </button>
           </div>
           <div id="test-selection" class="test-selection" hidden></div>
           <div class="subpane-wrap">
@@ -153,22 +155,31 @@
         </section>
 
         <section id="run-pane" class="lpane col">
-          <div class="run-bar">
+          <div class="lane-bar">
             <button id="btn-run" class="primary lane-action">
               <span class="btn-spin" hidden></span><span class="btn-label">Run</span>
             </button>
-            <label class="switch" id="openbrowser-toggle">
-              <input type="checkbox" id="in-openbrowser" />
-              <span class="track"><span class="thumb"></span></span>
-              <span class="switch-label">Open browser when the app starts</span>
-            </label>
-            <button id="btn-open-browser" class="tiny" disabled title="Open the running app in your browser">
-              Open in browser
-            </button>
-          </div>
-          <div class="subtabs" role="tablist" aria-label="Run view">
-            <button class="subtab active" data-rview="console">Console</button>
-            <button class="subtab" data-rview="flame">Flame graph</button>
+            <div class="subtabs" role="tablist" aria-label="Run view">
+              <button class="subtab active" data-rview="console">Console</button>
+              <button class="subtab" data-rview="flame">Flame graph</button>
+            </div>
+            <div class="lane-controls">
+              <label class="switch" id="openbrowser-toggle">
+                <input type="checkbox" id="in-openbrowser" />
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-label">Auto open browser</span>
+              </label>
+              <span
+                class="info"
+                id="openbrowser-info"
+                tabindex="0"
+                data-tip="When the app starts, automatically open it in your browser."
+                >&#9432;</span
+              >
+              <button id="btn-open-browser" class="tiny" disabled title="Open the running app in your browser">
+                Open in browser
+              </button>
+            </div>
           </div>
           <div class="subpane-wrap">
             <section id="run-console-view" class="tsub active" aria-label="Run output">

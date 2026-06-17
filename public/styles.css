@@ -228,11 +228,6 @@ select {
   min-width: 84px;
   text-align: center;
 }
-/* In the Test subtab bar, the Run tests button follows the right-aligned
-   Full build / Continuous testing toggles; give it a little breathing room. */
-.subtabs #btn-test {
-  margin-left: 0.4rem;
-}
 
 /* Module picker in Settings: a full-width, prominent context selector. */
 #set-module select {
@@ -396,14 +391,12 @@ select {
   min-height: 0;
 }
 
-/* Test tab: Graphical / Console sub-toggle */
+/* Sub-view toggles shown inline in a lane bar (Test: Graphical/Console;
+   Run: Console/Flame graph). */
 .subtabs {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--border-color-default, #d0d7de);
-  flex: 0 0 auto;
 }
 .subtab {
   padding: 0.15rem 0.6rem;
@@ -419,15 +412,15 @@ select {
   color: var(--text-color-default, #1f2328);
   border-color: var(--true-color-blue, #0969da);
 }
-/* Test-view toolbar toggles pushed to the right edge: "Full build" (affected
-   vs full suite) and "Continuous testing". */
-.test-toggles {
+/* Right-aligned lane controls grouped at the right edge of a lane bar:
+   the Test toggles (Full build / Continuous) and the Run browser controls. */
+.lane-controls {
   margin-left: auto;
   display: flex;
   align-items: center;
   gap: 0.6rem;
 }
-.test-toggles .switch {
+.lane-controls .switch {
   font-size: 12px;
   gap: 0.4rem;
 }
@@ -464,16 +457,6 @@ select {
   overflow: hidden;
 }
 
-/* Run tab: browser controls bar */
-.run-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--border-color-default, #d0d7de);
-  flex: 0 0 auto;
-}
 /* Run tab: live log filter bar (severity + text search) */
 .log-bar {
   display: flex;
