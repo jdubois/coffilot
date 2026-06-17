@@ -231,14 +231,11 @@ select {
 .lane-action-end {
   margin-left: auto;
 }
-.lane-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-.lane-field-label {
-  color: var(--text-color-muted, #656d76);
-  font-size: 12px;
+
+/* Module picker in Settings: a full-width, prominent context selector. */
+#set-module select {
+  width: 100%;
+  max-width: 280px;
 }
 
 /* Custom combobox (replaces native <datalist>, whose popup mis-positions
