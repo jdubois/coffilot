@@ -31,6 +31,9 @@ const exitEl = document.getElementById("exit");
 const metricsEl = document.getElementById("metrics");
 const testsEl = document.getElementById("tests");
 const tabBadge = document.getElementById("tab-tests-badge");
+const tabBuildBadge = document.getElementById("tab-build-badge");
+const tabRunBadge = document.getElementById("tab-run-badge");
+const tabPackageBadge = document.getElementById("tab-package-badge");
 const fullbuildToggle = document.getElementById("fullbuild-toggle");
 const fullbuildInput = document.getElementById("in-fullbuild");
 const continuousToggle = document.getElementById("continuous-toggle");
@@ -639,6 +642,47 @@ function renderStatus(s) {
   // trigger restarts its own lane but is locked out while the other owns the app.
   const runLaneActive = laneActive(s, "run");
   const debugLaneActive = laneActive(s, "debug");
+  // Build tab badge: a red compile-error count when the Build (compile) lane fails,
+  // else a plain "!". Hidden while the lane is active/restarting.
+  const buildLane = s.build || {};
+  const buildCompileErrs = buildLane.compileErrors || 0;
+  if (buildLane.phase === "failed" && !laneActive(s, "build")) {
+    tabBuildBadge.hidden = false;
+    tabBuildBadge.textContent = buildCompileErrs > 0 ? String(buildCompileErrs) : "!";
+    tabBuildBadge.className = "badge bad";
+    tabBuildBadge.title =
+      buildCompileErrs > 0
+        ? buildCompileErrs + " compilation error" + (buildCompileErrs === 1 ? "" : "s")
+        : "Build failed \u2014 check the console or click Fix with Copilot.";
+  } else {
+    tabBuildBadge.hidden = true;
+  }
+  // Run tab badge: a red warning when a Run fails (the app never started — a compile
+  // error or a startup crash, since a clean stop leaves phase "stopped"). Shows the
+  // compile-error count when we could parse one, else a plain "!" like the other
+  // tabs. Hidden while the lane is active/restarting.
+  const runCompileErrs = run.compileErrors || 0;
+  if (run.phase === "failed" && !runLaneActive) {
+    tabRunBadge.hidden = false;
+    tabRunBadge.textContent = runCompileErrs > 0 ? String(runCompileErrs) : "!";
+    tabRunBadge.className = "badge bad";
+    tabRunBadge.title =
+      runCompileErrs > 0
+        ? runCompileErrs + " compilation error" + (runCompileErrs === 1 ? "" : "s")
+        : "Run failed \u2014 check the console or click Fix with Copilot.";
+  } else {
+    tabRunBadge.hidden = true;
+  }
+  // Package tab badge: a red warning when packaging fails (mirrors the other tabs'
+  // failure badges). Hidden while the lane is active/restarting.
+  if ((s.package || {}).phase === "failed" && !laneActive(s, "package")) {
+    tabPackageBadge.hidden = false;
+    tabPackageBadge.textContent = "!";
+    tabPackageBadge.className = "badge bad";
+    tabPackageBadge.title = "Packaging failed \u2014 check the console or click Fix with Copilot.";
+  } else {
+    tabPackageBadge.hidden = true;
+  }
   if (!toolPresent) {
     setLaneButton("run", { label: laneLabel.run, disabled: true, title: "Coffilot needs a Maven or Gradle project." });
   } else if (runLaneActive) {

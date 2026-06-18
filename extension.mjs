@@ -1895,6 +1895,43 @@ function broadcast(event, data) {
   }
 }
 
+// Count distinct compilation-error diagnostics in a lane's console. Handles Java
+// (Maven compiler plugin "[ERROR] …/Foo.java:[12,15] …", which is re-printed in the
+// final "Failed to execute goal" summary, and javac/Gradle "…/Foo.java:12: error:
+// …") and Kotlin (Gradle "e:"-prefixed "…/Foo.kt:12:5 …" or older "…/Foo.kt: (12, 5):
+// …", and Maven [ERROR]/error: forms). Each error is keyed by its "file:position" so
+// a double-print counts once, and [WARNING]/"w:" diagnostics are skipped. Used to
+// badge the Run tab when a run fails to compile before the app ever starts.
+function compileErrorCount(op) {
+  const seen = new Set();
+  for (const e of lanes[op].console) {
+    const l = e.line;
+    if (/\[WARNING\]/.test(l) || /^\s*w:/.test(l)) continue;
+    let m = l.match(/([^\s/\\]+\.java:\[\d+,\d+\])/);
+    if (m) {
+      seen.add(m[1]);
+      continue;
+    }
+    m = l.match(/([^\s/\\]+\.java:\d+):\s*error:/);
+    if (m) {
+      seen.add(m[1]);
+      continue;
+    }
+    // Kotlin lines merely mention a .kt source in stack traces/logs too, so only
+    // count when the line is clearly an error (Gradle "e:" prefix, or Maven [ERROR]/
+    // error:).
+    if (!(/^\s*e:/.test(l) || /\[ERROR\]/.test(l) || /\berror:/i.test(l))) continue;
+    m = l.match(/([^\s/\\]+\.kt:\d+:\d+)/);
+    if (m) {
+      seen.add(m[1]);
+      continue;
+    }
+    m = l.match(/([^\s/\\]+\.kt): ?\((\d+), ?(\d+)\)/);
+    if (m) seen.add(`${m[1]}:${m[2]}:${m[3]}`);
+  }
+  return seen.size;
+}
+
 function fixInfo(op) {
   const lane = lanes[op];
   if (op === "build" && lane.phase === "failed") {
@@ -1946,10 +1983,22 @@ function laneStatus(op) {
     busy: lane.child !== null,
     fix: fixInfo(op),
   };
+  // The Build lane is the pure compile step — surface its compile-error count so the
+  // Build tab can badge a failed compile (like Test badges failing tests).
+  if (op === "build" && lane.phase === "failed") {
+    const ce = compileErrorCount("build");
+    if (ce > 0) s.compileErrors = ce;
+  }
   if (op === "run") {
     s.runMode = app.runMode;
     s.appPort = app.appPort;
     s.appUp = app.appUp;
+    // A failed run that broke during compilation never started the app — surface the
+    // compile-error count so the Run tab can badge it (like the Test tab does).
+    if (lane.phase === "failed") {
+      const ce = compileErrorCount("run");
+      if (ce > 0) s.compileErrors = ce;
+    }
   }
   if (op === "debug") {
     s.runMode = app.runMode;
@@ -4678,7 +4727,7 @@ function codeBlock(lines, lang = "") {
 /** Console lines that look like build/compiler/startup errors. */
 function errorLines(op, max = 60) {
   const re =
-    /\[ERROR\]|BUILD FAILURE|BUILD FAILED|error:|Caused by:|Exception|cannot find symbol|incompatible types|APPLICATION FAILED TO START|Error creating bean|Port \d+ was already in use|FAILED/;
+    /\[ERROR\]|BUILD FAILURE|BUILD FAILED|error:|Caused by:|Exception|cannot find symbol|incompatible types|APPLICATION FAILED TO START|Error creating bean|Port \d+ was already in use|FAILED|^\s*e: /;
   return lanes[op].console
     .map((e) => e.line)
     .filter((l) => re.test(l))
