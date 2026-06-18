@@ -457,6 +457,20 @@
             </svg>
             <span class="atab-label">BootUI</span>
           </button>
+          <button
+            class="atab"
+            data-atab="quarkus"
+            title="Quarkus: register the standalone Quarkus Agent MCP server with Copilot and trigger its capabilities"
+          >
+            <!-- Lightning bolt: a nod to Quarkus' "supersonic subatomic" mark,
+               drawn monochrome via currentColor like the other rail icons. -->
+            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M11.251.068a.5.5 0 0 1 .227.58L9.677 6.5H13a.5.5 0 0 1 .364.843l-8 8.5a.5.5 0 0 1-.842-.49L6.323 9.5H3a.5.5 0 0 1-.364-.843l8-8.5a.5.5 0 0 1 .615-.09z"
+              />
+            </svg>
+            <span class="atab-label">Quarkus</span>
+          </button>
           <button class="atab active" data-atab="settings" title="Per-project settings">
             <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
               <path
@@ -606,6 +620,35 @@
             </p>
             <div id="scans-list" class="scans"></div>
             <div id="scans-result"></div>
+          </div>
+
+          <div id="atab-quarkus" class="apane">
+            <h2>Quarkus Agent MCP<span id="quarkus-mcp-state" class="mcp-state"></span></h2>
+            <p class="hint" id="quarkus-desc">
+              Register the standalone
+              <a href="https://github.com/quarkusio/quarkus-agent-mcp" target="_blank" rel="noopener"
+                >Quarkus Agent MCP</a
+              >
+              server with the Copilot CLI so the agent gets Quarkus extension skills, documentation search, the Dev UI
+              proxy and structured exceptions. Coffilot only detects and registers it &mdash; the server runs as a
+              separate process. Needs JBang or Java 21+; docs search also needs Docker/Podman.
+            </p>
+            <!-- Quarkus Agent MCP: register the standalone quarkus-agent MCP
+               server with the Copilot CLI and trigger its capabilities. The
+               server is external (JBang / java), so this panel doesn't depend on
+               the app running. -->
+            <div id="quarkus-mcp" class="mcp-settings">
+              <div class="switch-row">
+                <span class="switch-label">Quarkus Agent MCP server</span>
+                <button id="quarkus-mcp-register" class="fix fix-copilot tiny" style="margin-left: auto" hidden>
+                  Register with Copilot
+                </button>
+              </div>
+              <div id="quarkus-mcp-scans" class="scans"></div>
+            </div>
+            <p class="hint" id="quarkus-empty" hidden>
+              No Quarkus module detected. Open a Quarkus project to register its Agent MCP server with Copilot.
+            </p>
           </div>
 
           <div id="atab-settings" class="apane active">

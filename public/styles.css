@@ -828,6 +828,21 @@ aside h2 {
   font-weight: 600;
   text-align: right;
 }
+/* SmallRye / MicroProfile health checks (Quarkus tier): the per-component
+   breakdown (datasource, readiness, …) listed under the overall Health status. */
+.hc-name {
+  padding-left: 0.75rem;
+  font-weight: 400;
+}
+.hc-status.ok {
+  color: var(--true-color-green, #1a7f37);
+}
+.hc-status.down {
+  color: var(--true-color-red, #cf222e);
+}
+.hc-status.unknown {
+  color: var(--text-color-muted, #656d76);
+}
 .bar {
   height: 8px;
   border-radius: 999px;
@@ -923,6 +938,20 @@ aside h2 {
   font-size: 12px;
 }
 #mcp .mcp-state:empty {
+  display: none;
+}
+/* Quarkus Agent MCP panel (its own aside tab) */
+#quarkus-mcp {
+  margin-top: 0.6rem;
+}
+#quarkus-mcp-state {
+  margin-left: 0.5rem;
+  color: var(--text-color-muted, #656d76);
+  font-style: italic;
+  font-size: 12px;
+  font-weight: 400;
+}
+#quarkus-mcp-state:empty {
   display: none;
 }
 .scans {

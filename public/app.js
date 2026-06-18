@@ -185,6 +185,11 @@ const mcpToggle = document.getElementById("mcp-toggle");
 const mcpToggleLabel = document.getElementById("mcp-toggle-label");
 const mcpState = document.getElementById("mcp-state");
 const mcpRegisterBtn = document.getElementById("mcp-register");
+const quarkusMcpPanel = document.getElementById("quarkus-mcp");
+const quarkusMcpState = document.getElementById("quarkus-mcp-state");
+const quarkusMcpScansEl = document.getElementById("quarkus-mcp-scans");
+const quarkusMcpRegisterBtn = document.getElementById("quarkus-mcp-register");
+const quarkusEmptyEl = document.getElementById("quarkus-empty");
 const scansSrc = document.getElementById("scans-src");
 const scansHint = document.getElementById("scans-hint");
 const scansListEl = document.getElementById("scans-list");
@@ -380,6 +385,7 @@ function showAsideTab(name) {
   document.getElementById("atab-loggers").classList.toggle("active", name === "loggers");
   document.getElementById("atab-spring").classList.toggle("active", name === "spring");
   document.getElementById("atab-scans").classList.toggle("active", name === "scans");
+  document.getElementById("atab-quarkus").classList.toggle("active", name === "quarkus");
   document.getElementById("atab-settings").classList.toggle("active", name === "settings");
   syncLoggersPolling();
   syncAsideWide();
@@ -408,7 +414,9 @@ function rememberAsideState() {
 function applyAsideState(s) {
   if (asideStateApplied || !s) return;
   asideStateApplied = true;
-  asideTabPref = ["metrics", "loggers", "spring", "scans", "settings"].includes(s.asideTab) ? s.asideTab : "settings";
+  asideTabPref = ["metrics", "loggers", "spring", "scans", "quarkus", "settings"].includes(s.asideTab)
+    ? s.asideTab
+    : "settings";
   asideOpenPref = s.asideOpen === true;
   showAsideTab(asideTabPref);
   // The remembered open state applies to the in-flow layout only; on a narrow
@@ -467,36 +475,40 @@ syncAsideMode();
 const ASIDE_ALWAYS = new Set(["settings"]);
 // Canonical left-to-right order, applied within both the available and the
 // unavailable group. Settings always leads the available group (it's never
-// unavailable); "quarkus" reserves the trailing slot for a future Quarkus tab.
+// unavailable); "quarkus" takes the trailing slot for the Quarkus Agent MCP tab.
 const ASIDE_ORDER = ["settings", "metrics", "loggers", "spring", "scans", "quarkus"];
 const ASIDE_REASON = {
   metrics:
     "Live JVM metrics need a running app that exposes metrics — Spring Boot Actuator/BootUI or Quarkus Micrometer. Click to learn more.",
-  loggers: "Live log levels need a running Spring Boot app with the Actuator /loggers endpoint. Click to learn more.",
+  loggers:
+    "Live log levels need a running Spring Boot app (Actuator /loggers) or a Quarkus app with the logging-manager extension. Click to learn more.",
   spring:
     "The Spring Boot tab needs a Spring Boot module — version advisor and DevTools live reload. Click to learn more.",
   scans: "The BootUI panel needs a running BootUI app — Run a module with the BootUI starter. Click to learn more.",
+  quarkus:
+    "The Quarkus panel needs a Quarkus module — open a Quarkus project to register its Agent MCP server with Copilot. Click to learn more.",
 };
 // metrics / loggers / scans are each gated on the running app exposing the right
 // capability (see updateAsideAvailability callers); the BootUI (scans) tab is
 // available only while a BootUI app is actually up, exactly like the other two.
-// The spring tab is gated statically on the project having a Spring Boot module,
-// so it reads caps (not the running-app avail) and stays usable before/after Run.
-let lastMetricsAvail = null;
-function refreshAsideAvailability() {
-  updateAsideAvailability(lastMetricsAvail);
-}
+// quarkus and spring are gated on the project (a Quarkus / Spring Boot module),
+// not the running app, so they come from caps rather than the metrics snapshot.
+// Each source updates only its own keys, so availabilities are merged rather than
+// replaced wholesale.
+const asideAvail = { metrics: false, loggers: false, scans: false, spring: false, quarkus: false };
 function updateAsideAvailability(avail) {
+  if (avail) Object.assign(asideAvail, avail);
   let anyUnavailable = false;
   document.querySelectorAll(".atab").forEach((btn) => {
     const name = btn.dataset.atab;
-    const ok = ASIDE_ALWAYS.has(name) || (name === "spring" ? !!(caps && caps.springBoot) : !!(avail && avail[name]));
+    const ok = ASIDE_ALWAYS.has(name) || !!asideAvail[name];
     if (!ok) anyUnavailable = true;
     btn.classList.toggle("unavailable", !ok);
     btn.setAttribute("aria-disabled", ok ? "false" : "true");
     // Available group sorts before the unavailable group; the canonical index
     // fixes the order within each group regardless of DOM order. The separator
-    // (.atab-sep, order 50) sits between the two ranges.
+    // (.atab-sep, order 50) sits between the two ranges. Settings is first in
+    // ASIDE_ORDER, so it stays pinned to the top of the bar.
     const rank = ASIDE_ORDER.indexOf(name);
     btn.style.order = String((ok ? 0 : 100) + (rank === -1 ? ASIDE_ORDER.length : rank));
     if (!btn.dataset.titleAvail) btn.dataset.titleAvail = btn.getAttribute("title") || "";
@@ -1133,12 +1145,11 @@ function renderMetrics(m) {
   // The metrics tier is the single source of truth for which tool panels are
   // reachable, so refresh the bar's availability on every snapshot.
   const tier = nowUp ? m.metricsTier || "process" : null;
-  lastMetricsAvail = {
+  updateAsideAvailability({
     metrics: nowUp && tier !== "process",
-    loggers: nowUp && (tier === "bootui" || tier === "actuator"),
+    loggers: nowUp && (tier === "bootui" || tier === "actuator" || tier === "quarkus"),
     scans: nowUp && tier === "bootui",
-  };
-  updateAsideAvailability(lastMetricsAvail);
+  });
   if (nowUp !== appRunning) {
     appRunning = nowUp;
     // Reflect the app coming up / going down in the Loggers tab if it's open.
@@ -1182,6 +1193,15 @@ function renderMetrics(m) {
   if (o.activeProfiles && o.activeProfiles.length) html += row("Profiles", esc(o.activeProfiles.join(", ")));
   if (o.startupTimeMillis != null) html += row("Uptime", (o.startupTimeMillis / 1000).toFixed(2) + " s");
   if (m.health) html += row("Health", esc(m.health.status) || "\u2014");
+  if (m.health && Array.isArray(m.health.checks) && m.health.checks.length) {
+    for (const c of m.health.checks) {
+      const statusCls = c.status === "UP" ? "ok" : c.status === "DOWN" ? "down" : "unknown";
+      html += row(
+        `<span class="hc-name">${esc(c.name || "check")}</span>`,
+        `<span class="hc-status ${statusCls}">${esc(c.status) || "\u2014"}</span>`,
+      );
+    }
+  }
   if (m.threads) html += row("Threads", `${m.threads.totalThreads} (${m.threads.daemonThreads} daemon)`);
   if (heap.usedBytes != null || heap.maxBytes != null) {
     html += `<h2 style="margin-top:0.75rem">Heap</h2>`;
@@ -1206,8 +1226,9 @@ function renderMetrics(m) {
     renderMcp(m.mcp);
     renderScans(true);
   } else if (tier === "quarkus") {
-    metricsHint.innerHTML =
-      "Metrics read from Quarkus Micrometer (<code>/q/metrics</code>) and SmallRye Health (<code>/q/health</code>).";
+    metricsHint.innerHTML = m.memory
+      ? "Metrics read from Quarkus Micrometer (<code>/q/metrics</code>) and SmallRye Health (<code>/q/health</code>)."
+      : "Health read from Quarkus SmallRye Health (<code>/q/health</code>). Add <code>quarkus-micrometer-registry-prometheus</code> to surface heap, threads and uptime here.";
     renderMcp(null);
     renderScans(false);
   } else {
@@ -1537,10 +1558,92 @@ function wireScanSend(sendId, entry) {
 }
 let lastScan = null;
 
+// ---- Quarkus Agent MCP panel ------------------------------------------
+// Unlike the BootUI panel (which mirrors an MCP server living inside the running
+// app), the Quarkus Agent MCP server is an external process the Copilot CLI
+// launches. So this panel is driven purely by static capability — it shows for
+// Quarkus projects and offers to register the server + one-click capability
+// prompts, regardless of whether the app is currently running.
+const QUARKUS_MCP_CAPS = [
+  {
+    kind: "quarkus-skills",
+    label: "Extension skills",
+    title:
+      "Ask Copilot to load this project's Quarkus extension skills (patterns, testing, pitfalls) via quarkus_skills.",
+  },
+  {
+    kind: "quarkus-docs",
+    label: "Search docs",
+    title: "Ask Copilot to search the Quarkus documentation via quarkus_searchDocs (needs Docker/Podman).",
+  },
+  {
+    kind: "quarkus-exception",
+    label: "Last exception",
+    title:
+      "Ask Copilot to fetch the running dev-mode app's last exception via devui-exceptions_getLastException and fix it.",
+  },
+];
+
+function sendQuarkusMcpFix(kind) {
+  return post("/api/fix", { kind });
+}
+
+function renderQuarkusMcp() {
+  const q = caps.quarkusAgentMcp || {};
+  const isQuarkus = !!caps.quarkus;
+  // The Quarkus tab is gated on the project being a Quarkus module (not on the
+  // app running), so its rail availability comes from caps, merged into the
+  // shared availability state alongside the runtime-driven tabs.
+  updateAsideAvailability({ quarkus: isQuarkus });
+  quarkusMcpPanel.hidden = !isQuarkus;
+  quarkusEmptyEl.hidden = isQuarkus;
+  if (!isQuarkus) {
+    quarkusMcpState.textContent = "";
+    return;
+  }
+  if (q.available) {
+    if (quarkusMcpRegisterBtn.hidden) {
+      quarkusMcpRegisterBtn.disabled = false;
+      quarkusMcpRegisterBtn.textContent = "Register with Copilot";
+    }
+    quarkusMcpRegisterBtn.hidden = false;
+    quarkusMcpRegisterBtn.dataset.runner = q.runner || "jbang";
+    quarkusMcpState.textContent = q.runner === "java" ? "via java" : "via JBang";
+    quarkusMcpState.title =
+      q.runner === "java"
+        ? "JBang wasn't detected; the java -jar launcher will be used."
+        : "JBang is available to launch the Quarkus Agent MCP server.";
+  } else {
+    quarkusMcpRegisterBtn.hidden = true;
+    quarkusMcpState.textContent = "JBang/Java not found";
+    quarkusMcpState.title =
+      "Install JBang (jbang.dev) or Java 21+ so the Quarkus Agent MCP server can be launched, then re-open this canvas.";
+  }
+  // Build the capability buttons via the DOM (textContent / setAttribute) so the
+  // labels and titles are never interpolated into an HTML string.
+  quarkusMcpScansEl.replaceChildren(
+    ...QUARKUS_MCP_CAPS.map((c) => {
+      const btn = document.createElement("button");
+      btn.className = "tiny";
+      btn.textContent = c.label;
+      btn.title = c.title;
+      btn.onclick = () => sendQuarkusMcpFix(c.kind);
+      return btn;
+    }),
+  );
+}
+
+quarkusMcpRegisterBtn.onclick = async () => {
+  quarkusMcpRegisterBtn.disabled = true;
+  quarkusMcpRegisterBtn.textContent = "Asked Copilot \u2713";
+  await post("/api/fix", { kind: "register-quarkus-mcp", runner: quarkusMcpRegisterBtn.dataset.runner || "jbang" });
+};
+
 // ---- Runtime log levels (Loggers aside tab) ----------------------------
-// Lists the running app's loggers from Spring Boot Actuator /loggers and lets
-// you change a level live (no restart). Self-describes by capability: degrades to
-// a hint when the app is down or exposes no /loggers endpoint.
+// Lists the running app's loggers from Spring Boot Actuator /loggers or the Quarkus
+// logging-manager extension and lets you change a level live (no restart).
+// Self-describes by capability: degrades to a hint when the app is down or exposes
+// no logger endpoint.
 const loggersListEl = document.getElementById("loggers-list");
 const loggersControls = document.getElementById("loggers-controls");
 const loggersSearch = document.getElementById("loggers-search");
@@ -1549,6 +1652,12 @@ const LOGGER_LEVELS = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
 let appRunning = false;
 let loggersData = null;
 let loggersTimer = null;
+// Tracks whether the user already pressed "Fix with Copilot" on the current
+// no-endpoint view, so the 5s poll re-render doesn't reset the button. Cleared when
+// the app goes down or loggers become available. loggersUnavailKey guards against
+// rebuilding an identical unavailable view on every poll.
+let loggersFixAsked = false;
+let loggersUnavailKey = null;
 
 function loggersTabActive() {
   const pane = document.getElementById("atab-loggers");
@@ -1581,33 +1690,79 @@ async function loadLoggers() {
 }
 
 function renderLoggers(data, force) {
-  if (!data || data.appDown || (!data.available && !appRunning)) {
+  if (!data || data.appDown) {
     loggersSrc.hidden = true;
     loggersControls.hidden = true;
     loggersListEl.innerHTML =
       '<p class="muted">App not running. Click <strong>Run</strong> to control its log levels.</p>';
     loggersData = null;
+    loggersFixAsked = false;
+    loggersUnavailKey = null;
     return;
   }
   if (!data.available) {
-    loggersSrc.hidden = true;
-    loggersControls.hidden = true;
-    loggersListEl.innerHTML =
-      '<p class="muted">No Spring Boot Actuator <code>/loggers</code> endpoint is exposed on the running app, so log ' +
-      "levels can\u2019t be changed here. Add <code>spring-boot-starter-actuator</code> and expose it " +
-      "(<code>management.endpoints.web.exposure.include=loggers</code>).</p>";
-    loggersData = null;
+    renderLoggersUnavailable(data.runMode);
     return;
   }
   loggersData = data;
+  loggersFixAsked = false;
+  loggersUnavailKey = null;
   loggersSrc.hidden = false;
-  loggersSrc.className = "src actuator";
-  loggersSrc.textContent = "Actuator";
+  const quarkus = data.source === "quarkus";
+  loggersSrc.className = quarkus ? "src quarkus" : "src actuator";
+  loggersSrc.textContent = quarkus ? "Quarkus" : "Actuator";
   loggersControls.hidden = false;
   // Don't rebuild the list out from under the user while they're using it
   // (an open select or focused search box) unless explicitly forced.
   if (!force && loggersListEl.contains(document.activeElement)) return;
   renderLoggersList();
+}
+
+// The app is up but exposes no runtime-logger endpoint. Tailor the hint to the
+// framework: Spring Boot and Quarkus each get a one-click "Fix with Copilot" that
+// asks the agent to add the missing dependency; anything else just explains the
+// feature only works for those two.
+function renderLoggersUnavailable(runMode) {
+  loggersSrc.hidden = true;
+  loggersControls.hidden = true;
+  loggersData = null;
+  const key = (runMode || "other") + ":" + (loggersFixAsked ? "asked" : "open");
+  if (key === loggersUnavailKey) return;
+  loggersUnavailKey = key;
+  let html;
+  let fix = null;
+  if (runMode === "spring") {
+    html =
+      '<p class="muted">No Spring Boot Actuator <code>/loggers</code> endpoint is exposed on the running app, ' +
+      "so log levels can\u2019t be changed here. Add <code>spring-boot-starter-actuator</code> and expose it " +
+      "(<code>management.endpoints.web.exposure.include=loggers</code>).</p>";
+    fix = "install-actuator-loggers";
+  } else if (runMode === "quarkus") {
+    html =
+      '<p class="muted">No Quarkus logging-manager endpoint is exposed on the running app, so log levels ' +
+      "can\u2019t be changed here. Add the <code>quarkus-logging-manager</code> extension.</p>";
+    fix = "install-logging-manager";
+  } else {
+    html =
+      '<p class="muted">Live log-level control works only for Spring Boot apps (via the Actuator ' +
+      "<code>/loggers</code> endpoint) or Quarkus apps (via the <code>quarkus-logging-manager</code> extension).</p>";
+  }
+  if (fix) {
+    html += loggersFixAsked
+      ? '<button class="fix fix-copilot tiny" style="margin-top: 0.4rem" disabled>Asked Copilot \u2713</button>'
+      : '<button id="loggers-fix" class="fix fix-copilot tiny" style="margin-top: 0.4rem">Fix with Copilot</button>';
+  }
+  loggersListEl.innerHTML = html;
+  const btn = fix && document.getElementById("loggers-fix");
+  if (btn) {
+    btn.onclick = () => {
+      loggersFixAsked = true;
+      loggersUnavailKey = null;
+      btn.disabled = true;
+      btn.textContent = "Asked Copilot \u2713";
+      post("/api/fix", { kind: fix, module: moduleSelect.value });
+    };
+  }
 }
 
 function renderLoggersList() {
@@ -1986,7 +2141,7 @@ function updateDevSetup() {
 
   // Keep the Spring Boot tab's availability in step with the build files (it's
   // gated on the project owning a Spring Boot module, not on the running app).
-  refreshAsideAvailability();
+  updateAsideAvailability({ spring: !!(caps && caps.springBoot) });
 }
 
 // --- Spring Boot version + EOL/upgrade advisor (Spring Boot tab) -------------
@@ -2302,6 +2457,16 @@ function applyCaps(c) {
   );
   html += pill("Actuator", !!caps.actuator, "Spring Boot Actuator metrics (static hint; confirmed at runtime).");
   html += pill("BootUI", !!caps.bootui, "BootUI rich metrics + MCP advisor scans.");
+  if (caps.quarkus) {
+    const q = caps.quarkusAgentMcp || {};
+    html += pill(
+      "Quarkus MCP",
+      !!q.available,
+      q.available
+        ? `Quarkus Agent MCP can be launched (${q.runner === "java" ? "java" : "JBang"}) — register it from the Quarkus panel.`
+        : "Quarkus Agent MCP needs JBang or Java 21+ to launch; not detected.",
+    );
+  }
   html += pill(
     "JDTLS",
     !!jdtlsState.available,
@@ -2310,6 +2475,7 @@ function applyCaps(c) {
       : "JDTLS (Java code intelligence) isn't available; set it up from Settings.",
   );
   capsEl.innerHTML = html;
+  renderQuarkusMcp();
 }
 
 // Render the JDTLS availability indicator + setup affordance in Settings.

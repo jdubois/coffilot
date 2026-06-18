@@ -87,11 +87,68 @@ test("renderMetrics handles the 'app down' and a populated Quarkus payload", () 
   );
   // The heap bar should have rendered for the populated payload.
   assert.ok(win.document.getElementById("metrics").innerHTML.includes("Heap"));
+
+  // Health-only Quarkus (smallrye-health, no Micrometer): the per-check breakdown
+  // shows, and the hint points the user at quarkus-micrometer-registry-prometheus.
+  assert.doesNotThrow(() =>
+    win.renderMetrics({
+      appUp: true,
+      metricsTier: "quarkus",
+      overview: {},
+      memory: null,
+      health: {
+        status: "DOWN",
+        checks: [
+          { name: "Database connections health check", status: "UP" },
+          { name: "messaging liveness", status: "DOWN" },
+        ],
+      },
+      threads: null,
+    }),
+  );
+  const healthHtml = win.document.getElementById("metrics").innerHTML;
+  assert.ok(healthHtml.includes("Database connections health check"), "expected the health check name");
+  assert.ok(!healthHtml.includes("Heap"), "no heap row without Micrometer metrics");
+  assert.ok(
+    win.document.getElementById("metrics-hint").innerHTML.includes("quarkus-micrometer-registry-prometheus"),
+    "expected the Micrometer hint when only health is available",
+  );
 });
 
 test("renderMcp tolerates an unavailable MCP server", () => {
   assert.doesNotThrow(() => win.renderMcp(null));
   assert.doesNotThrow(() => win.renderMcp({ available: false }));
+});
+
+test("renderLoggers tailors the no-endpoint hint and fix button per framework", () => {
+  const list = () => win.document.getElementById("loggers-list").innerHTML;
+
+  // Spring Boot: Actuator hint + a Fix button wired to install-actuator-loggers.
+  assert.doesNotThrow(() => win.renderLoggers({ available: false, runMode: "spring" }));
+  assert.ok(list().includes("Actuator"), "expected the Spring Boot Actuator hint");
+  assert.ok(!list().includes("quarkus-logging-manager"), "no Quarkus copy for a Spring app");
+  assert.ok(win.document.getElementById("loggers-fix"), "expected a Fix with Copilot button");
+
+  // Quarkus: logging-manager hint + a Fix button, no Actuator copy.
+  assert.doesNotThrow(() => win.renderLoggers({ available: false, runMode: "quarkus" }));
+  assert.ok(list().includes("quarkus-logging-manager"), "expected the Quarkus logging-manager hint");
+  assert.ok(!/Actuator/.test(list()), "no Spring Boot copy for a Quarkus app");
+  assert.ok(win.document.getElementById("loggers-fix"), "expected a Fix with Copilot button");
+
+  // Plain Java (or unknown): generic message, no fix button.
+  assert.doesNotThrow(() => win.renderLoggers({ available: false, runMode: "java" }));
+  assert.ok(list().includes("only"), "expected the generic 'only Spring Boot or Quarkus' message");
+  assert.equal(win.document.getElementById("loggers-fix"), null, "no fix button for a non-framework app");
+});
+
+test("the Settings tab is pinned to the top of the aside bar", () => {
+  win.updateAsideAvailability({ metrics: true, loggers: false, scans: false });
+  const order = (name) => Number(win.document.querySelector(`.atab[data-atab="${name}"]`).style.order);
+  // Available group sorts below the separator (order 50); within it Settings is
+  // first (rank 0). Unavailable panels are offset by 100 so they sink to the bottom.
+  assert.equal(order("settings"), 0, "Settings is pinned to the top of the bar");
+  assert.ok(order("metrics") > order("settings"), "an available panel sits below Settings");
+  assert.ok(order("scans") > 100, "an unavailable panel sinks below the separator");
 });
 
 test("renderTests renders a graphical report with a failure", () => {
