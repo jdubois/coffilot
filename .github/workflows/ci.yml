@@ -39,8 +39,8 @@ jobs:
         run: |
           node -e "const m = require('./copilot-extension.json'); if (m.name !== 'coffilot' || m.version !== 1) { throw new Error('bad manifest ' + JSON.stringify(m)); }"
 
-  integration-projects:
-    name: Integration project (${{ matrix.project }})
+  e2e-projects:
+    name: E2E (${{ matrix.project }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -58,9 +58,16 @@ jobs:
             tool: maven
           - project: quarkus-rest
             tool: maven
+          - project: failing-tests
+            tool: maven
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -69,12 +76,12 @@ jobs:
           java-version: 17
           cache: ${{ matrix.tool }}
 
-      - name: Build & test (Maven)
-        if: matrix.tool == 'maven'
-        working-directory: integration-tests/${{ matrix.project }}
-        run: ./mvnw -ntp -B test
-
-      - name: Build & test (Gradle)
-        if: matrix.tool == 'gradle'
-        working-directory: integration-tests/${{ matrix.project }}
-        run: ./gradlew test --no-daemon
+      # Drives Coffilot end-to-end: actually builds, tests and packages the
+      # project with its own wrapper using Coffilot's own lane commands, then runs
+      # the produced JUnit reports through Coffilot's own report discovery + parser
+      # (collectSurefireReport) and asserts the results. The failing-tests shard
+      # also covers the failure path (build exits non-zero, report still parses).
+      - name: Build, test, package & validate Coffilot parsing
+        env:
+          COFFILOT_E2E: "1"
+        run: node --test --test-name-pattern "^${{ matrix.project }}:" test/e2e-projects.test.mjs
