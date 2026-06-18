@@ -17,6 +17,7 @@ const {
   promSingle,
   promFirstLabel,
   quarkusMetrics,
+  normalizeQuarkusLoggers,
   maskSecrets,
   buildHistoryEntry,
   clampHistory,
@@ -266,6 +267,34 @@ test("quarkusMetrics surfaces the SmallRye health checks breakdown", () => {
 test("quarkusMetrics defaults the health checks to an empty list", () => {
   const out = quarkusMetrics(null, { status: "UP" });
   assert.deepEqual(out.health, { status: "UP", checks: [] });
+});
+
+test("normalizeQuarkusLoggers maps the listing to the shared shape (ROOT first)", () => {
+  const out = normalizeQuarkusLoggers(
+    [
+      { name: "org.acme.Svc", configuredLevel: "DEBUG", effectiveLevel: "DEBUG" },
+      { name: "", configuredLevel: "INFO", effectiveLevel: "INFO" },
+      { name: "io.quarkus", configuredLevel: null, effectiveLevel: "INFO" },
+    ],
+    ["INFO", "DEBUG"],
+  );
+  assert.equal(out.available, true);
+  assert.equal(out.source, "quarkus");
+  assert.deepEqual(
+    out.loggers.map((l) => l.name),
+    ["ROOT", "io.quarkus", "org.acme.Svc"],
+  );
+  // The empty JBoss root name becomes ROOT and keeps its level.
+  assert.equal(out.loggers[0].configuredLevel, "INFO");
+  // A null configuredLevel normalizes to null (the UI's "inherit" state).
+  assert.equal(out.loggers[1].configuredLevel, null);
+  assert.deepEqual(out.levels, ["INFO", "DEBUG"]);
+});
+
+test("normalizeQuarkusLoggers falls back to JBoss levels and rejects non-arrays", () => {
+  const out = normalizeQuarkusLoggers([{ name: "ROOT", configuredLevel: "INFO", effectiveLevel: "INFO" }], null);
+  assert.ok(out.levels.includes("TRACE") && out.levels.includes("FINEST"));
+  assert.equal(normalizeQuarkusLoggers(null, ["INFO"]), null);
 });
 
 // ---------------------------------------------------------------------------

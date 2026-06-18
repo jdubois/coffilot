@@ -79,9 +79,13 @@ wins; when neither is found the console says so and stays disabled until one is 
 - **Live logs &amp; log levels** &mdash; the Run console doubles as a log viewer with a
   minimum-severity filter and text search (stack-trace lines inherit their parent
   level, and lines are colored by severity). A **Loggers** side tab lists the running
-  app's loggers from Spring Boot Actuator <code>/loggers</code> and lets you change any
+  app's loggers from Spring Boot Actuator <code>/loggers</code> or the Quarkus
+  <code>quarkus-logging-manager</code> extension and lets you change any
   level live &mdash; no restart &mdash; so you can flip a package to <code>DEBUG</code>,
-  reproduce, and dial it back.
+  reproduce, and dial it back. If the running app exposes no logger endpoint, the tab
+  shows a framework-specific hint with a one-click **Fix with Copilot** button that
+  asks the agent to add Spring Boot Actuator or the <code>quarkus-logging-manager</code>
+  extension.
 - **Flame graph (async-profiler or JFR)** &mdash; when [async-profiler](https://github.com/async-profiler/async-profiler)
   (`asprof`) is installed, the Run tab's **Flame graph** view records an on-demand
   CPU / allocation / wall-clock / lock-contention profile of the running app's JVM
@@ -94,9 +98,10 @@ wins; when neither is found the console says so and stays disabled until one is 
   Degrades gracefully with an install hint only when neither async-profiler nor a
   JDK `jcmd` is available.
 - **Fix with Copilot** &mdash; on a compile error, failing tests, a startup
-  crash, or a Quarkus dev-mode build/augmentation failure (where the process stays
-  up waiting for a fix), a button pushes a context-rich request back into the chat
-  so the agent can diagnose and fix it.
+  crash, a Quarkus dev-mode build/augmentation failure (where the process stays
+  up waiting for a fix), or a running app that exposes no runtime-logger endpoint,
+  a button pushes a context-rich request back into the chat so the agent can
+  diagnose and fix it.
 - **Responsive layout** &mdash; on a wide canvas the **Live JVM / Loggers / Settings**
   panel is docked on the right; as the canvas narrows it collapses to an icon rail on
   the right edge, and tapping an icon slides that pane out as an overlay over the main
@@ -145,7 +150,7 @@ The console adapts to whatever the project provides, detected from the build fil
 | **Spring Boot**               | Spring Boot Maven plugin / Gradle plugin          | Run via `spring-boot:run` (Maven) or `bootRun` (Gradle) + editable Spring profiles. (No Spring Boot ⇒ the generic runner uses the Gradle `application` plugin, an executable `java -jar`, or the configured main class via `java -cp`.)                                   |
 | **Quarkus**                   | Quarkus Maven plugin / `io.quarkus` Gradle plugin | Run via `quarkus:dev` (Maven) or `quarkusDev` (Gradle) — dev mode with built-in live reload — + editable Quarkus profile                                                                                                                                                  |
 | **Actuator** (runtime)        | `/actuator/*` or `/management/*` answers          | Live metrics normalized from Actuator — JSON `/metrics` endpoint or the Prometheus scrape (heap, threads, health, uptime) — plus runtime log-level control when `/loggers` is exposed                                                                                     |
-| **Quarkus metrics** (runtime) | `/q/metrics` / `/q/health` answer                 | Live metrics normalized from Quarkus Micrometer (Prometheus) + SmallRye Health                                                                                                                                                                                            |
+| **Quarkus metrics** (runtime) | `/q/metrics` / `/q/health` answer                 | Live metrics normalized from Quarkus Micrometer (Prometheus) + SmallRye Health — plus runtime log-level control when the `quarkus-logging-manager` extension (`/q/logging-manager`) is present                                                                            |
 | **BootUI** (runtime)          | `/bootui/api/*` answers                           | Rich BootUI metrics **and** the REST advisor-scan panel (BootUI tab)                                                                                                                                                                                                      |
 | **Quarkus Agent MCP**         | Quarkus module + JBang or Java 21+ on `PATH`      | A dedicated **Quarkus** tab with a **Register with Copilot** button + one-click capability prompts wiring the external [Quarkus Agent MCP](https://github.com/quarkusio/quarkus-agent-mcp) server (skills, docs search, Dev UI proxy, structured exceptions) into the CLI |
 
@@ -254,7 +259,8 @@ Coffilot is a Node process (the extension) that:
   for Spring/app Gradle, or Quarkus's built-in `-Ddebug` for Quarkus) and attaches a
   self-contained JDWP client (`jdwp.mjs`, loopback only) that the UI and agent
   actions drive;
-- proxies Spring Boot Actuator `/loggers` so the canvas can read and change logger
+- proxies Spring Boot Actuator `/loggers` and the Quarkus logging-manager
+  extension (`/q/logging-manager`) so the canvas can read and change logger
   levels on the running app without a restart;
 - runs BootUI's advisor scans straight from its REST API (`/bootui/api/panels` to
   discover them, `POST /bootui/api/{id}/scan` to run one), surfaced in the **BootUI**
