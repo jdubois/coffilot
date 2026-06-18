@@ -64,7 +64,7 @@ Shipped in the extension today:
 - "Fix with Copilot" for compile, package, test, plain-Java, Spring Boot and Quarkus
   startup failures (including Quarkus dev-mode build/augmentation failures that keep
   the process running), for flame-graph hotspots, and for BootUI advisor-scan findings.
-- BootUI advisor scans run over REST (Scans tab), plus an optional MCP-server
+- BootUI advisor scans run over REST (BootUI tab), plus an optional MCP-server
   toggle/register bridge, when the running app exposes BootUI.
 - Per-project persisted settings (warm JVM, Spring profiles, devtools, random port,
   auto-open browser, auto-record flame graph at startup, and the last-opened

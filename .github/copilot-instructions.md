@@ -62,7 +62,7 @@ are both first-class build tools, auto-detected per project.
   (`/bootui/api/panels` for discovery, `POST /bootui/api/{id}/scan` to run one), the
   MCP-server toggle/register bridge, and the fix-prompt builder.
 - `public/index.html`: the iframe UI markup (Build/Test/Package/Run + Live JVM +
-  Loggers + Scans + Settings tabs, live console, graphical test view, MCP-server
+  Loggers + BootUI + Settings tabs, live console, graphical test view, MCP-server
   bridge). Styles live in
   `public/styles.css` (canvas theme tokens, e.g. `var(--background-color-default, …)`)
   and client logic in `public/app.js`; both are served unauthenticated since they

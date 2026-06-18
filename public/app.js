@@ -92,7 +92,6 @@ const devtoolsToggle = document.getElementById("devtools-toggle");
 const devtoolsInput = document.getElementById("in-devtools");
 const setRandomport = document.getElementById("set-randomport");
 const randomportInput = document.getElementById("in-randomport");
-const setMcp = document.getElementById("mcp");
 const maskSecretsInput = document.getElementById("in-masksecrets");
 const metricsPollInput = document.getElementById("in-metricspoll");
 const openBrowserInput = document.getElementById("in-openbrowser");
@@ -377,6 +376,18 @@ function showAsideTab(name) {
   document.getElementById("atab-scans").classList.toggle("active", name === "scans");
   document.getElementById("atab-settings").classList.toggle("active", name === "settings");
   syncLoggersPolling();
+  syncAsideWide();
+}
+// BootUI scan reports can be wide (severity badges + expandable findings), so the
+// aside grows to a roomier width while scan results are on screen and snaps back
+// to its slim default on any other tab. The default stays the minimal width.
+let hasScanResults = false;
+function syncAsideWide() {
+  workspaceEl.classList.toggle("aside-wide", activeAsideTab() === "scans" && hasScanResults);
+}
+function markScanResults(on) {
+  hasScanResults = on;
+  syncAsideWide();
 }
 // Capture the current panel state as the persisted preference and save it. The
 // open/closed half is only meaningful for the docked (wide) layout — the narrow
@@ -442,16 +453,25 @@ workspaceEl.classList.remove("aside-open");
 syncAsideMode();
 
 // Tool-panel availability. Settings is always usable; the others need a running
-// app with the right capability (see updateAsideAvailability callers). Unavailable
-// panels are greyed and sorted to the bottom of the bar; clicking one still opens
-// it so its in-panel text explains what's missing.
+// app with the right capability (see updateAsideAvailability callers). Available
+// panels sort to the top of the bar and unavailable ones sink below, but within
+// each group the tabs keep a fixed canonical order (ASIDE_ORDER) so they never
+// shuffle relative to one another. Clicking a greyed tab still opens it so its
+// in-panel text explains what's missing.
 const ASIDE_ALWAYS = new Set(["settings"]);
+// Canonical left-to-right order, applied within both the available and the
+// unavailable group. Settings always leads the available group (it's never
+// unavailable); "quarkus" reserves the trailing slot for a future Quarkus tab.
+const ASIDE_ORDER = ["settings", "metrics", "loggers", "scans", "quarkus"];
 const ASIDE_REASON = {
   metrics:
     "Live JVM metrics need a running app that exposes metrics — Spring Boot Actuator/BootUI or Quarkus Micrometer. Click to learn more.",
   loggers: "Live log levels need a running Spring Boot app with the Actuator /loggers endpoint. Click to learn more.",
-  scans: "Advisor scans need a running BootUI app. Click to learn more.",
+  scans: "The BootUI panel needs a running BootUI app — Run a module with the BootUI starter. Click to learn more.",
 };
+// metrics / loggers / scans are each gated on the running app exposing the right
+// capability (see updateAsideAvailability callers); the BootUI (scans) tab is
+// available only while a BootUI app is actually up, exactly like the other two.
 function updateAsideAvailability(avail) {
   let anyUnavailable = false;
   document.querySelectorAll(".atab").forEach((btn) => {
@@ -460,9 +480,11 @@ function updateAsideAvailability(avail) {
     if (!ok) anyUnavailable = true;
     btn.classList.toggle("unavailable", !ok);
     btn.setAttribute("aria-disabled", ok ? "false" : "true");
-    // Available tools keep their DOM order at the top; unavailable ones sink to
-    // the bottom, below the separator (order 2).
-    btn.style.order = ok ? "1" : "3";
+    // Available group sorts before the unavailable group; the canonical index
+    // fixes the order within each group regardless of DOM order. The separator
+    // (.atab-sep, order 50) sits between the two ranges.
+    const rank = ASIDE_ORDER.indexOf(name);
+    btn.style.order = String((ok ? 0 : 100) + (rank === -1 ? ASIDE_ORDER.length : rank));
     if (!btn.dataset.titleAvail) btn.dataset.titleAvail = btn.getAttribute("title") || "";
     btn.title = ok ? btn.dataset.titleAvail : ASIDE_REASON[name] || btn.dataset.titleAvail;
   });
@@ -1172,7 +1194,7 @@ function renderMetrics(m) {
 }
 
 // ---- BootUI MCP server panel (agent bridge only) ----------------------
-// Coffilot reads advisor scans over REST (see the Scans tab); this panel just
+// Coffilot reads advisor scans over REST (see the BootUI tab); this panel just
 // manages the in-app MCP server that exposes those scans to the Copilot CLI as
 // native tools, so the toggle/register controls are all that remain here.
 
@@ -1193,11 +1215,10 @@ function showMcpRegister(show) {
 }
 
 // The MCP server lives inside the running app, so the toggle is only
-// actionable while a BootUI app (dev profile) exposes its endpoint. For
-// Spring Boot modules the row stays visible in Settings even when the
-// endpoint is unavailable (greyed out with an explanation rather than
-// hidden); the whole panel is hidden for non-Spring modules in
-// updateDevSetup(), since BootUI is a Spring-only tier.
+// actionable while a BootUI app (dev profile) exposes its endpoint. The row
+// always stays visible in the BootUI panel; when the endpoint is unavailable
+// it's greyed out and disabled (rather than hidden) so the control is always
+// discoverable.
 function setMcpUnavailable() {
   mcpToggle.checked = false;
   mcpToggle.disabled = true;
@@ -1228,12 +1249,35 @@ async function getJson(path) {
   }
 }
 
-// ---- BootUI advisor scans (Scans aside tab) ---------------------------
+// ---- BootUI advisor scans (BootUI aside tab) --------------------------
 // Read straight from BootUI's REST API: /api/scans lists the advisor scans the
 // running app exposes (sourced from /bootui/api/panels), and /api/scan runs one
 // (POST /bootui/api/{id}/scan). No MCP server round-trip and no enable step — the
 // scans show up whenever a BootUI app is up on the metrics "bootui" tier.
 let scansLoaded = false;
+let currentScans = [];
+
+// A running BootUI app discovers its advisor scans at runtime, but we still show
+// the known set as disabled buttons while no BootUI app is up, so the panel keeps
+// presenting its scan controls (greyed) instead of an empty gap.
+const SCAN_PLACEHOLDERS = [
+  "Architecture",
+  "Spring",
+  "Hibernate",
+  "Memory",
+  "Security",
+  "Pentesting",
+  "REST API",
+  "GraalVM",
+  "CRaC",
+];
+function renderScanPlaceholders() {
+  scansListEl.innerHTML =
+    `<button class="tiny scan-all" disabled title="Available once a BootUI app is running.">Scan all</button>` +
+    SCAN_PLACEHOLDERS.map(
+      (label) => `<button class="tiny" disabled title="Available once a BootUI app is running.">${esc(label)}</button>`,
+    ).join("");
+}
 
 function renderScans(available) {
   if (!available) {
@@ -1241,8 +1285,9 @@ function renderScans(available) {
     scansSrc.hidden = true;
     scansHint.innerHTML =
       'Start a <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a> app (dev profile) with <strong>Run</strong> to run its advisor scans against the live app.';
-    scansListEl.innerHTML = "";
+    renderScanPlaceholders();
     scansResultEl.innerHTML = "";
+    markScanResults(false);
     return;
   }
   scansSrc.hidden = false;
@@ -1253,41 +1298,216 @@ async function loadScans() {
   const st = await getJson("/api/scans");
   const scans = (st && st.scans) || [];
   scansLoaded = true;
+  currentScans = scans;
   if (!scans.length) {
     scansHint.textContent = "No advisor scans are available on the running app.";
     scansListEl.innerHTML = "";
     return;
   }
   scansHint.textContent = "Run a BootUI advisor scan against the running app, then push its findings to Copilot.";
-  scansListEl.innerHTML = scans
-    .map(
-      (s) =>
-        `<button class="tiny" data-scan="${esc(s.id)}" title="${esc(s.description || s.label)}">${esc(s.label)}</button>`,
-    )
-    .join("");
+  scansListEl.innerHTML =
+    `<button class="tiny scan-all" id="scan-all" title="Run every advisor scan in turn.">Scan all</button>` +
+    scans
+      .map(
+        (s) =>
+          `<button class="tiny" data-scan="${esc(s.id)}" title="${esc(s.description || s.label)}">${esc(s.label)}</button>`,
+      )
+      .join("");
   scansListEl.querySelectorAll("button[data-scan]").forEach((b) => (b.onclick = () => runScan(b.dataset.scan)));
+  const all = document.getElementById("scan-all");
+  if (all) all.onclick = runAllScans;
 }
 
 async function runScan(scanKey) {
   scansResultEl.innerHTML = `<span class="muted">Running ${esc(scanKey)}\u2026</span>`;
+  markScanResults(true);
   const r = await postJson("/api/scan", { tool: scanKey });
   if (!r || r.ok === false) {
     scansResultEl.innerHTML = `<span style="color:var(--true-color-red,#cf222e)">Scan failed: ${esc((r && r.error) || "unknown error")}</span>`;
     return;
   }
-  lastScan = { tool: r.tool || scanKey, result: r.result };
-  const text = typeof r.result === "string" ? r.result : JSON.stringify(r.result, null, 2);
-  scansResultEl.innerHTML =
-    `<div style="display:flex;align-items:center;gap:0.5rem;justify-content:space-between">` +
+  const entry = { tool: r.tool || scanKey, result: r.result };
+  lastScan = entry;
+  scansResultEl.innerHTML = scanReportHtml(r, scanKey, "scan-send");
+  wireScanSend("scan-send", entry);
+}
+
+// Run every available advisor scan in turn, appending each report so the user
+// gets one combined run from the prominent "Scan all" button. Each report keeps
+// its own "Fix findings with Copilot" CTA.
+async function runAllScans() {
+  if (!currentScans.length) return;
+  const all = document.getElementById("scan-all");
+  const orig = all ? all.textContent : "Scan all";
+  setScanRowDisabled(true);
+  scansResultEl.innerHTML = "";
+  markScanResults(true);
+  for (let i = 0; i < currentScans.length; i++) {
+    const s = currentScans[i];
+    if (all) all.textContent = `Scanning\u2026 ${i + 1}/${currentScans.length}`;
+    scansResultEl.insertAdjacentHTML(
+      "beforeend",
+      `<div class="muted" id="scan-progress">Running ${esc(s.label)}\u2026</div>`,
+    );
+    const r = await postJson("/api/scan", { tool: s.id });
+    const prog = document.getElementById("scan-progress");
+    if (prog) prog.remove();
+    if (!r || r.ok === false) {
+      scansResultEl.insertAdjacentHTML(
+        "beforeend",
+        `<div class="scan-result-item"><strong>${esc(s.label)}</strong> <span style="color:var(--true-color-red,#cf222e)">scan failed: ${esc((r && r.error) || "unknown error")}</span></div>`,
+      );
+      continue;
+    }
+    const entry = { tool: r.tool || s.id, result: r.result };
+    lastScan = entry;
+    const sendId = `scan-send-${i}`;
+    scansResultEl.insertAdjacentHTML("beforeend", scanReportHtml(r, s.id, sendId));
+    wireScanSend(sendId, entry);
+  }
+  if (all) all.textContent = orig;
+  setScanRowDisabled(false);
+}
+
+function setScanRowDisabled(on) {
+  scansListEl.querySelectorAll("button").forEach((b) => (b.disabled = on));
+}
+
+// Render a scan report as a compact list: one collapsible line per finding
+// (severity badge + title), expanding to its details. Defensive about the report
+// shape — advisors return different DTOs — and falls back to a single collapsible
+// raw-JSON row when no findings array is recognised.
+const SCAN_FINDING_KEYS = ["results", "findings", "violations", "issues", "problems", "items", "messages", "entries"];
+const SCAN_TITLE_KEYS = ["title", "name", "message", "summary", "rule", "description", "id"];
+const SCAN_SKIP_KEYS = new Set(["severity", "level", "priority", "dismissed"]);
+
+function scanReportHtml(r, scanKey, sendId) {
+  const result = r.result;
+  const findings = extractFindings(result);
+  const head =
+    `<div class="scan-result-head">` +
     `<strong>${esc(r.label || scanKey)}</strong>` +
-    `<button class="fix fix-copilot tiny" id="scan-send">Fix findings with Copilot</button></div>` +
-    `<pre>${esc(text)}</pre>`;
-  const send = document.getElementById("scan-send");
+    scanCountsHtml(result, findings) +
+    `<button class="fix fix-copilot tiny" id="${sendId}">Fix findings with Copilot</button>` +
+    `</div>`;
+  let body;
+  if (Array.isArray(findings)) {
+    if (!findings.length) {
+      body = `<p class="scan-empty muted">${esc(scanStatusMessage(result) || "No findings \u2014 looks clean.")}</p>`;
+    } else {
+      body = `<div class="scan-findings">${findings.map(findingRowHtml).join("")}</div>`;
+    }
+  } else {
+    const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+    body =
+      `<details class="scan-finding"><summary><span class="finding-title">View report</span></summary>` +
+      `<div class="finding-body"><pre class="finding-json">${esc(text)}</pre></div></details>`;
+  }
+  return `<div class="scan-result-item">${head}${body}</div>`;
+}
+
+function extractFindings(result) {
+  if (Array.isArray(result)) return result;
+  if (result && typeof result === "object") {
+    for (const k of SCAN_FINDING_KEYS) if (Array.isArray(result[k])) return result[k];
+  }
+  return null;
+}
+
+function scanStatusMessage(result) {
+  if (!result || typeof result !== "object") return "";
+  return (result.scan && result.scan.message) || result.message || result.status || "";
+}
+
+function scanCountsHtml(result, findings) {
+  if (result && Array.isArray(result.severityCounts)) {
+    const badges = result.severityCounts
+      .filter((c) => c && Number(c.count) > 0)
+      .map(
+        (c) => `<span class="sev-badge ${sevClass(c.severity)}">${esc(String(c.severity))} ${Number(c.count)}</span>`,
+      )
+      .join("");
+    if (badges) return `<span class="scan-counts">${badges}</span>`;
+  }
+  if (Array.isArray(findings) && findings.length)
+    return `<span class="scan-counts muted">${findings.length} finding${findings.length === 1 ? "" : "s"}</span>`;
+  return "";
+}
+
+function findingRowHtml(item) {
+  const { sev, title, titleKey } = findingSummary(item);
+  const badge = sev ? `<span class="sev-badge ${sevClass(sev)}">${esc(sev)}</span>` : "";
+  const detail = findingDetailHtml(item, titleKey);
+  if (!detail) return `<div class="scan-finding flat">${badge}<span class="finding-title">${esc(title)}</span></div>`;
+  return (
+    `<details class="scan-finding"><summary>${badge}<span class="finding-title">${esc(title)}</span></summary>` +
+    `<div class="finding-body">${detail}</div></details>`
+  );
+}
+
+function findingSummary(item) {
+  if (item == null) return { sev: "", title: "\u2014", titleKey: null };
+  if (typeof item !== "object") return { sev: "", title: String(item), titleKey: null };
+  const sev = item.severity || item.level || item.priority || "";
+  let title = "Finding";
+  let titleKey = null;
+  for (const k of SCAN_TITLE_KEYS) {
+    const v = item[k];
+    if (v != null && String(v).trim() !== "") {
+      title = String(v);
+      titleKey = k;
+      break;
+    }
+  }
+  return { sev: String(sev), title, titleKey };
+}
+
+function findingDetailHtml(item, titleKey) {
+  if (item == null || typeof item !== "object") return "";
+  const rows = [];
+  for (const [k, v] of Object.entries(item)) {
+    if (k === titleKey || SCAN_SKIP_KEYS.has(k)) continue;
+    if (v == null || v === "" || (Array.isArray(v) && v.length === 0)) continue;
+    rows.push(
+      `<div class="finding-kv"><span class="fk">${esc(prettyKey(k))}</span><span class="fv">${renderScanVal(v)}</span></div>`,
+    );
+  }
+  return rows.join("");
+}
+
+function prettyKey(k) {
+  return String(k)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/^./, (c) => c.toUpperCase());
+}
+
+function renderScanVal(v) {
+  if (Array.isArray(v))
+    return `<ul class="finding-list">${v
+      .map((x) => `<li>${x && typeof x === "object" ? `<code>${esc(JSON.stringify(x))}</code>` : esc(String(x))}</li>`)
+      .join("")}</ul>`;
+  if (v && typeof v === "object") return `<pre class="finding-json">${esc(JSON.stringify(v, null, 2))}</pre>`;
+  const s = String(v);
+  if (/^https?:\/\/\S+$/.test(s)) return `<a href="${esc(s)}" target="_blank" rel="noopener">${esc(s)}</a>`;
+  return esc(s);
+}
+
+function sevClass(sev) {
+  const s = String(sev || "").toLowerCase();
+  if (s.startsWith("crit")) return "sev-critical";
+  if (s.startsWith("high") || s === "error" || s === "blocker") return "sev-high";
+  if (s.startsWith("med") || s.startsWith("warn")) return "sev-medium";
+  if (s.startsWith("low") || s === "minor") return "sev-low";
+  return "sev-info";
+}
+
+function wireScanSend(sendId, entry) {
+  const send = document.getElementById(sendId);
   if (send)
     send.onclick = async () => {
       send.disabled = true;
       send.textContent = "Sent to Copilot \u2713";
-      await post("/api/fix", { kind: "mcp", tool: lastScan.tool, result: lastScan.result });
+      await post("/api/fix", { kind: "mcp", tool: entry.tool, result: entry.result });
     };
 }
 let lastScan = null;
@@ -1707,20 +1927,24 @@ function updateDevSetup() {
   setSpring.hidden = !framework;
   setDevtools.hidden = !spring;
   setRandomport.hidden = !framework;
-  // BootUI (and its MCP advisor scans) is a Spring-only tier, so only surface
-  // the MCP server panel for Spring Boot modules.
-  setMcp.hidden = !spring;
+  // The BootUI MCP server toggle stays visible in the BootUI panel; renderMcp /
+  // setMcpUnavailable grey and disable it until a running BootUI app exposes the
+  // endpoint, so it is never hidden.
 
   // Relabel the run-profile combo and swap its suggestions for the framework.
   if (lblProfiles) lblProfiles.textContent = quarkus ? "Quarkus profile" : "Spring Boot profiles";
   profileItems = quarkus ? quarkusItems : springItems;
 
-  const showBootui = spring && !mod.bootui;
-  btnAddBootui.hidden = !showBootui;
-  if (showBootui) {
-    btnAddBootui.disabled = false;
-    btnAddBootui.textContent = caps.gradle ? "Add BootUI (developmentOnly)" : "Add BootUI to dev profile";
-  }
+  // Activate-BootUI CTA: only available — shown and enabled — for a Spring Boot
+  // module that doesn't depend on BootUI yet. Hidden for non-Spring apps and once
+  // the module already has BootUI (since it's then active).
+  const hasBootui = !!(mod && mod.bootui);
+  const canAddBootui = spring && !hasBootui;
+  btnAddBootui.hidden = !canAddBootui;
+  btnAddBootui.disabled = !canAddBootui;
+  btnAddBootui.textContent = caps.gradle ? "Add BootUI (developmentOnly)" : "Add BootUI to dev profile";
+  btnAddBootui.title =
+    "Add the BootUI starter to this module's dev profile to unlock its console, richer metrics and advisor scans.";
 
   const hasDevtools = spring && !!mod.devtools;
   const showDevtools = spring && !mod.devtools;

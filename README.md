@@ -116,7 +116,7 @@ wins; when neither is found the console says so and stays disabled until one is 
   active JDK is shown as a pill next to the build tool. The change takes effect on
   the next launch, so stop a running app before switching.
 - **Advisor scans (with BootUI)** &mdash; when the running app exposes
-  [BootUI](https://github.com/jdubois/boot-ui), the **Scans** tab lists its advisor
+  [BootUI](https://github.com/jdubois/boot-ui), the **BootUI** tab lists its advisor
   scans (architecture, Spring, security, Hibernate, …) and runs them directly over
   BootUI's REST API; findings can be sent to the agent with one click. A separate
   **Register with Copilot** button can also enable BootUI's in-app MCP server and wire
@@ -135,7 +135,7 @@ The console adapts to whatever the project provides, detected from the build fil
 | **Quarkus**                   | Quarkus Maven plugin / `io.quarkus` Gradle plugin | Run via `quarkus:dev` (Maven) or `quarkusDev` (Gradle) — dev mode with built-in live reload — + editable Quarkus profile                                                                                                                |
 | **Actuator** (runtime)        | `/actuator/*` or `/management/*` answers          | Live metrics normalized from Actuator — JSON `/metrics` endpoint or the Prometheus scrape (heap, threads, health, uptime) — plus runtime log-level control when `/loggers` is exposed                                                   |
 | **Quarkus metrics** (runtime) | `/q/metrics` / `/q/health` answer                 | Live metrics normalized from Quarkus Micrometer (Prometheus) + SmallRye Health                                                                                                                                                          |
-| **BootUI** (runtime)          | `/bootui/api/*` answers                           | Rich BootUI metrics **and** the REST advisor-scan panel (Scans tab)                                                                                                                                                                     |
+| **BootUI** (runtime)          | `/bootui/api/*` answers                           | Rich BootUI metrics **and** the REST advisor-scan panel (BootUI tab)                                                                                                                                                                    |
 
 A capability summary is shown in the status bar (including the active build tool), and
 the metrics panel carries a small badge (`BootUI` / `Actuator` / `Quarkus` / `process`)
@@ -245,7 +245,7 @@ Coffilot is a Node process (the extension) that:
 - proxies Spring Boot Actuator `/loggers` so the canvas can read and change logger
   levels on the running app without a restart;
 - runs BootUI's advisor scans straight from its REST API (`/bootui/api/panels` to
-  discover them, `POST /bootui/api/{id}/scan` to run one), surfaced in the **Scans**
+  discover them, `POST /bootui/api/{id}/scan` to run one), surfaced in the **BootUI**
   tab — no in-app MCP server required;
 - pushes contextual "fix this" turns back into the chat through the Copilot SDK.
 

@@ -4499,8 +4499,10 @@ function killChild(child) {
  * in a SEPARATE process, not in the spawned client's process group. So killing
  * the client (killChild) stops the streaming wrapper but can leave the daemon
  * compiling/testing in the background (CPU stays high, the run never really
- * stops). The Run lane never hits this because it runs the app as a direct child
- * in the killed group. The reliable, daemon-agnostic cancel is the tool's own
+ * stops). The Maven Run lane never hits this because it runs the app as a direct
+ * child in the killed group — but the Gradle Run lane does: Gradle executes the
+ * app inside the daemon, so stopApp() routes its Stop through here too. The
+ * reliable, daemon-agnostic cancel is the tool's own
  * `--stop`, which we've verified halts a *busy* daemon promptly. This trades the
  * warm JVM away on an explicit Stop (the next build starts cold), which is the
  * right call: Stop means stop, and the warm tier exists for back-to-back builds,
@@ -4558,6 +4560,7 @@ function stopApp(op) {
   else targets = ["build", "test", "package", "run", "debug"];
   let stopped = false;
   let warmBuildOp = null; // a build lane whose work is inside a daemon
+  let gradleAppOp = null; // a run/debug lane whose app JVM is owned by the Gradle daemon
   for (const o of targets) {
     if (o === "run" || o === "debug") {
       stopMetricsPolling();
@@ -4576,10 +4579,25 @@ function stopApp(op) {
       killChild(child);
       stopped = true;
       if (o !== "run" && o !== "debug" && lane.warm) warmBuildOp = o;
+      // Gradle runs the app (bootRun / quarkusDev / :module:run) inside its daemon,
+      // which forks the app JVM as a child of the daemon — not of the killed client
+      // — so killChild stops only the wrapper and leaves the app alive. Cancelling
+      // the daemon is the reliable Stop. (Maven's spring-boot:run / quarkus:dev fork
+      // the app inside the killed group, so they don't need this.)
+      if ((o === "run" || o === "debug") && buildTool === "gradle") gradleAppOp = o;
     }
   }
   // Build lanes are serialized, so at most one warm daemon build is ever live.
   if (warmBuildOp) stopBuildDaemon(warmBuildOp);
+  // An explicit Stop on a Gradle run/debug lane also cancels the daemon. We do this
+  // even when no client child is left to kill (op === "run"/"debug"): if the wrapper
+  // already exited on its own, the app is orphaned under the still-running daemon,
+  // and cancelling it is the only way to recover. Skip it when a build daemon stop
+  // already fired (same daemon) to avoid a redundant `--stop`.
+  if (!warmBuildOp && buildTool === "gradle" && (gradleAppOp || op === "run" || op === "debug")) {
+    stopBuildDaemon(gradleAppOp || (op === "debug" ? "debug" : "run"));
+    stopped = true;
+  }
   return stopped ? { ok: true, stopped: true } : { ok: true, stopped: false, note: "Nothing was running." };
 }
 
