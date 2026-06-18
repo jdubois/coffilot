@@ -332,6 +332,15 @@ const workspaceEl = document.getElementById("workspace");
 const asideToggle = document.getElementById("aside-toggle");
 const asideDrawer = window.matchMedia("(max-width: 819px)");
 
+// Persisted right-panel preference (settings.asideTab / settings.asideOpen),
+// restored from the server on the first env load. asideTabPref is the last-opened
+// tab; asideOpenPref is whether the docked (wide-canvas) panel is expanded. The
+// narrow-canvas overlay is transient and never updates asideOpenPref. Defaults
+// open on Settings so the panel is shown the first time the canvas is opened.
+let asideTabPref = "settings";
+let asideOpenPref = true;
+let asideStateApplied = false;
+
 function activeAsideTab() {
   const t = document.querySelector(".atab.active");
   return t ? t.dataset.atab : null;
@@ -361,35 +370,64 @@ function showAsideTab(name) {
   document.getElementById("atab-settings").classList.toggle("active", name === "settings");
   syncLoggersPolling();
 }
+// Capture the current panel state as the persisted preference and save it. The
+// open/closed half is only meaningful for the docked (wide) layout — the narrow
+// overlay collapses transiently — so only update asideOpenPref when wide.
+function rememberAsideState() {
+  asideTabPref = activeAsideTab() || "settings";
+  if (!asideDrawer.matches) asideOpenPref = workspaceEl.classList.contains("aside-open");
+  saveSettings();
+}
+// Restore the persisted panel preference once the settings land. Runs a single
+// time so later env refreshes don't clobber live interaction.
+function applyAsideState(s) {
+  if (asideStateApplied || !s) return;
+  asideStateApplied = true;
+  asideTabPref = ["metrics", "loggers", "settings"].includes(s.asideTab) ? s.asideTab : "settings";
+  asideOpenPref = s.asideOpen !== false;
+  showAsideTab(asideTabPref);
+  // The remembered open state applies to the docked layout only; on a narrow
+  // canvas the overlay stays collapsed until the user opens it.
+  if (!asideDrawer.matches) setAsideOpen(asideOpenPref);
+}
 // Tab click: when collapsed, open the panel to that pane; when already expanded,
 // switch panes, or collapse if you re-tap the pane that's already showing.
 function onAsideTabClick(name) {
   if (!workspaceEl.classList.contains("aside-open")) {
     showAsideTab(name);
     setAsideOpen(true);
+    rememberAsideState();
     return;
   }
   if (activeAsideTab() === name) {
     setAsideOpen(false);
+    rememberAsideState();
     return;
   }
   showAsideTab(name);
+  rememberAsideState();
 }
 document.querySelectorAll(".atab").forEach((t) => (t.onclick = () => onAsideTabClick(t.dataset.atab)));
-if (asideToggle) asideToggle.onclick = () => setAsideOpen(!workspaceEl.classList.contains("aside-open"));
+if (asideToggle)
+  asideToggle.onclick = () => {
+    setAsideOpen(!workspaceEl.classList.contains("aside-open"));
+    rememberAsideState();
+  };
 // Esc collapses the overlay drawer on a narrow canvas.
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && asideDrawer.matches && workspaceEl.classList.contains("aside-open")) {
     setAsideOpen(false);
   }
 });
-// Crossing the breakpoint resets to the natural default for that width: docked
-// and open when wide, collapsed to the rail when narrow.
-asideDrawer.addEventListener("change", () => setAsideOpen(!asideDrawer.matches));
+// Crossing the breakpoint resets to the natural default for that width: the
+// remembered docked preference when wide, collapsed to the overlay rail when
+// narrow. Neither transition is persisted (it's layout-driven, not a user choice).
+asideDrawer.addEventListener("change", () => setAsideOpen(asideDrawer.matches ? false : asideOpenPref));
 // Initial state: open on a wide canvas, collapsed on a narrow one. No loggers
 // sync here (it would touch state declared later in this module) — polling is
 // driven by tab activation and the Settings tab is the default, so loggers
-// polling stays off until that tab is opened.
+// polling stays off until that tab is opened. The persisted preference is
+// applied later by applyAsideState once the settings land.
 workspaceEl.classList.toggle("aside-open", !asideDrawer.matches);
 syncAsideMode();
 
@@ -1760,6 +1798,7 @@ function applySettingsState(s) {
     // JDK doesn't leave the control on a phantom value.
     jdkSelect.value = [...jdkSelect.options].some((o) => o.value === want) ? want : "";
   }
+  applyAsideState(s);
 }
 
 function applyEnv(env) {
@@ -2254,6 +2293,8 @@ function saveSettings() {
     autoProfileEvent: flameEvent ? flameEvent.value : "cpu",
     autoProfileDuration: flameDuration ? Number(flameDuration.value) : 30,
     jdkHome: jdkSelect ? jdkSelect.value : "",
+    asideTab: asideTabPref,
+    asideOpen: asideOpenPref,
   });
 }
 warmInput.addEventListener("change", saveSettings);
