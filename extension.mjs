@@ -739,6 +739,8 @@ function jdkSearchRoots() {
     { dir: path.join(homeDir, ".sdkman", "candidates", "java"), source: "sdkman", skip: ["current"] },
   ];
   if (isMac) {
+    // Homebrew kegs nest the JDK home under the keg's libexec bundle.
+    const brewSuffix = path.join("libexec", "openjdk.jdk", "Contents", "Home");
     roots.push(
       { dir: "/Library/Java/JavaVirtualMachines", suffix: path.join("Contents", "Home"), source: "system" },
       {
@@ -746,6 +748,12 @@ function jdkSearchRoots() {
         suffix: path.join("Contents", "Home"),
         source: "system",
       },
+      // Homebrew JDKs (openjdk, openjdk@17, openjdk@21, …): only registered under
+      // /Library if the user manually symlinks them, so scan the keg prefixes
+      // directly. `prefix` limits the scan to openjdk* kegs (Apple Silicon and
+      // Intel Homebrew prefixes).
+      { dir: "/opt/homebrew/opt", prefix: "openjdk", suffix: brewSuffix, source: "homebrew" },
+      { dir: "/usr/local/opt", prefix: "openjdk", suffix: brewSuffix, source: "homebrew" },
     );
   } else if (isWindows) {
     const pf = process.env.ProgramFiles || "C:\\Program Files";
@@ -764,20 +772,40 @@ function jdkSearchRoots() {
 
 // A short, human-friendly label for a discovered JDK. SDKMAN candidate folders
 // are already nicely named (e.g. "21.0.3-tem"), so use the folder name there;
-// otherwise show the version plus a hint from the path.
+// otherwise show the version plus a hint identifying the install, so two builds
+// of the same version (e.g. a Homebrew JDK and an IDE-managed one) don't render
+// identically.
 function jdkLabel(home, info, source) {
-  const base = path.basename(home);
-  if (source === "sdkman") return base;
+  if (source === "sdkman" || home.includes(`${path.sep}.sdkman${path.sep}`)) return path.basename(home);
   const v = info && info.version ? info.version : "?";
-  if (!base || base === "Home" || base === "current") return `Java ${v}`;
-  return `Java ${v} (${base})`;
+  const hint = jdkLabelHint(home, source);
+  return hint ? `Java ${v} (${hint})` : `Java ${v}`;
 }
 
-// Discover installed JDKs across SDKMAN + OS-standard locations + the inherited
-// JAVA_HOME. Deduped by resolved real path, sorted newest major first. Not cached
-// as a list (so a newly installed JDK appears on the next env refresh); the costly
-// `java -version` probe is memoized per binary in probeJavaVersion. Each entry:
-// { home, version, major, label, source }.
+// Where a JDK lives, used as a disambiguating label suffix. Homebrew kegs resolve
+// into .../Cellar/...; macOS bundles end in <Name>.jdk/Contents/Home, so use that
+// <Name> (dropping a trailing ".jdk"); otherwise the leaf directory. Returns ""
+// when nothing meaningful can be derived (label falls back to the version alone).
+function jdkLabelHint(home, source) {
+  if (
+    source === "homebrew" ||
+    home.includes(`${path.sep}Cellar${path.sep}`) ||
+    home.includes(`${path.sep}homebrew${path.sep}`)
+  ) {
+    return "Homebrew";
+  }
+  const parts = home.split(path.sep).filter(Boolean);
+  const ci = parts.lastIndexOf("Contents");
+  const name = ci > 0 ? parts[ci - 1] : parts[parts.length - 1];
+  if (!name || name === "Home" || name === "current") return "";
+  return name.replace(/\.jdk$/i, "");
+}
+
+// Discover installed JDKs across SDKMAN + OS-standard locations (incl. Homebrew
+// kegs on macOS) + the inherited JAVA_HOME. Deduped by resolved real path, sorted
+// newest major first. Not cached as a list (so a newly installed JDK appears on
+// the next env refresh); the costly `java -version` probe is memoized per binary
+// in probeJavaVersion. Each entry: { home, version, major, label, source }.
 function discoverJdks() {
   const found = new Map(); // realpath -> entry
   const add = (home, source) => {
@@ -804,6 +832,7 @@ function discoverJdks() {
   for (const root of jdkSearchRoots()) {
     for (const name of safeReaddir(root.dir)) {
       if (root.skip && root.skip.includes(name)) continue;
+      if (root.prefix && !name.startsWith(root.prefix)) continue;
       const child = path.join(root.dir, name);
       add(root.suffix ? path.join(child, root.suffix) : child, root.source);
     }
