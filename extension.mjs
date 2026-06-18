@@ -223,11 +223,35 @@ async function refineWorkspaceFromSession() {
 }
 
 // Silence the JDK native-access warnings (JEP 472) that Jansi (Maven's native
-// console) and FFM-using app dependencies emit at startup. The flag exists
-// since JDK 16, so it's safe for the Java 17+ toolchain and apps this canvas
-// runs. Applied to the build-tool JVM (via MAVEN_OPTS/GRADLE_OPTS) and, for
-// Maven, the launched app JVM.
+// console) and FFM-using app dependencies emit at startup. Applied to the
+// build-tool JVM (via MAVEN_OPTS/GRADLE_OPTS) and, for Maven, the launched app
+// JVM. NOTE: `--enable-native-access` was only introduced in JDK 16 — older
+// launchers reject it as an "Unrecognized option" and the JVM never starts. The
+// JVM these args run on is whichever JDK is active (the one the user picked in
+// the JDK selector, injected via JAVA_HOME), which may be older than the Coffilot
+// checkout's own runtime, so the flag must be gated on that JDK's version (see
+// nativeAccessArgs) or selecting e.g. JDK 11 for a legacy project breaks every
+// build and run.
 const NATIVE_ACCESS_FLAG = "--enable-native-access=ALL-UNNAMED";
+
+// The first JDK major that understands `--enable-native-access`.
+const NATIVE_ACCESS_MIN_MAJOR = 16;
+
+// Whether a JDK of the given major version accepts `--enable-native-access`.
+// Pure + exported so the gating logic is unit-testable. A null/unknown major
+// returns false so the flag is omitted (a missing warning-suppression flag is
+// harmless; an unrecognized launcher option aborts the JVM).
+export function jdkSupportsNativeAccess(major) {
+  return Number.isFinite(major) && major >= NATIVE_ACCESS_MIN_MAJOR;
+}
+
+// The native-access flag as spawn args, gated on the active JDK: `[flag]` when it
+// supports the option, else `[]`. Used everywhere the flag reaches a JVM (the
+// build tool itself and the forked app JVM), so an older selected JDK is never
+// handed an option it can't parse.
+function nativeAccessArgs() {
+  return jdkSupportsNativeAccess(activeJdk().major) ? [NATIVE_ACCESS_FLAG] : [];
+}
 
 // Spring Boot DevTools, when on the classpath, runs the app inside a restart
 // classloader and auto-restarts the JVM whenever target/classes changes. Both
@@ -251,18 +275,23 @@ const JLINE_DUMB_FLAG = "-Dorg.jline.terminal.dumb=true";
 
 // Merge the native-access flag into the build tool's JVM options (MAVEN_OPTS for
 // Maven, GRADLE_OPTS for Gradle) so the build JVM doesn't print restricted-method
-// warnings, while preserving whatever the user already set. For Maven we also add
-// the JLine dumb-terminal flag to suppress its no-TTY warning. `extra` adds/overrides
-// environment variables for a specific spawn (e.g. SPRING_PROFILES_ACTIVE).
+// warnings, while preserving whatever the user already set. The flag is gated on
+// the active JDK (nativeAccessArgs) so an older selected JDK isn't handed an
+// option it can't parse. For Maven we also add the JLine dumb-terminal flag to
+// suppress its no-TTY warning (a -D property, harmless on every JDK). `extra`
+// adds/overrides environment variables for a specific spawn (e.g.
+// SPRING_PROFILES_ACTIVE).
 function toolEnv(extra) {
   const env = { ...process.env, ...(extra || {}) };
   withJdkEnv(env);
+  const na = nativeAccessArgs();
   if (buildTool === "gradle") {
-    const existing = process.env.GRADLE_OPTS ? process.env.GRADLE_OPTS.trim() + " " : "";
-    env.GRADLE_OPTS = existing + NATIVE_ACCESS_FLAG;
+    const existing = process.env.GRADLE_OPTS ? process.env.GRADLE_OPTS.trim() : "";
+    const opts = [existing, ...na].filter(Boolean).join(" ");
+    if (opts) env.GRADLE_OPTS = opts;
   } else {
-    const existing = process.env.MAVEN_OPTS ? process.env.MAVEN_OPTS.trim() + " " : "";
-    env.MAVEN_OPTS = existing + NATIVE_ACCESS_FLAG + " " + JLINE_DUMB_FLAG;
+    const existing = process.env.MAVEN_OPTS ? process.env.MAVEN_OPTS.trim() : "";
+    env.MAVEN_OPTS = [existing, ...na, JLINE_DUMB_FLAG].filter(Boolean).join(" ");
   }
   return env;
 }
@@ -1251,6 +1280,8 @@ const SETTINGS_KEYS = [
   "maskSecrets",
   "metricsPollMs",
   "jdkHome",
+  "asideTab",
+  "asideOpen",
 ];
 
 // Live-metrics polling cadence bounds (ms). Kept conservative so the UI stays
@@ -1302,6 +1333,12 @@ function defaultSettings() {
     // Selected JDK (absolute JAVA_HOME) for all build/test/package/run/debug
     // actions; null = inherit the system default (JAVA_HOME / PATH java).
     jdkHome: null,
+    // Right-panel (aside) preference, restored across reloads/sessions. asideTab
+    // is the last-opened tab; asideOpen is whether a panel is expanded beside the
+    // vertical bar. Defaults minimized (just the bar) the first time the canvas is
+    // opened, then remembers whatever the user last did.
+    asideTab: "settings",
+    asideOpen: false,
   };
 }
 
@@ -2365,6 +2402,9 @@ function applySettings(body) {
   if (body.metricsPollMs != null && Number.isFinite(Number(body.metricsPollMs))) {
     settings.metricsPollMs = clampMetricsPollMs(body.metricsPollMs);
   }
+  // Right-panel preference (which aside tab, and whether the panel is open).
+  if (["metrics", "loggers", "scans", "settings"].includes(body.asideTab)) settings.asideTab = body.asideTab;
+  if (typeof body.asideOpen === "boolean") settings.asideOpen = body.asideOpen;
   // JDK selection. Don't switch the JDK out from under a running/debugging app —
   // the change applies to the next launch, so the user must stop it first. A new
   // selection must point at a real JAVA_HOME (containing bin/java).
@@ -3900,15 +3940,16 @@ async function startApp({ module, profiles, mavenProfiles, mode, dbg = null } = 
     args.push("-Dmaven.test.skip=true", "spring-boot:run");
     if (profiles) args.push(`-Dspring-boot.run.profiles=${profiles}`);
     // Pass the native-access flag to the forked app JVM so its FFM-using
-    // dependencies don't print restricted-method warnings; in Debug mode the JDWP
-    // agent rides along on the same jvmArguments string. When the module carries
+    // dependencies don't print restricted-method warnings; it's gated on the
+    // active JDK (older JDKs reject the option). In Debug mode the JDWP agent
+    // rides along on the same jvmArguments string. When the module carries
     // DevTools we also disable its restart so it can't drop the debug session.
-    let jvmArgs = NATIVE_ACCESS_FLAG;
+    const jvmArgs = [...nativeAccessArgs()];
     if (dbg) {
-      jvmArgs += ` ${jdwpAgentArg(dbg)}`;
-      if (mod && mod.devtools) jvmArgs += ` ${DEVTOOLS_DISABLE_FLAG}`;
+      jvmArgs.push(jdwpAgentArg(dbg));
+      if (mod && mod.devtools) jvmArgs.push(DEVTOOLS_DISABLE_FLAG);
     }
-    args.push(`-Dspring-boot.run.jvmArguments=${jvmArgs}`);
+    if (jvmArgs.length) args.push(`-Dspring-boot.run.jvmArguments=${jvmArgs.join(" ")}`);
     // "Use a random HTTP port": run on a free port the console picks (via
     // server.port) so the app doesn't collide with whatever owns the default.
     if (settings.randomPort) {
@@ -4052,7 +4093,7 @@ async function runPureJava({ module, mavenProfiles, dbg = null }) {
   // 2. Prefer an executable jar (its manifest declares a Main-Class).
   const found = await findLaunchJar(module);
   if (found && found.mainClass) {
-    spawnTool(op, [...javaAgent, NATIVE_ACCESS_FLAG, "-jar", found.jar], "running", {
+    spawnTool(op, [...javaAgent, ...nativeAccessArgs(), "-jar", found.jar], "running", {
       bin: "java",
       label: "java",
       onLine: detectPort,
@@ -4066,7 +4107,7 @@ async function runPureJava({ module, mavenProfiles, dbg = null }) {
     const cp = await runtimeClasspath(module, mavenProfiles, op);
     if (cp) {
       pushConsole(`[coffilot] launching ${mainClass} with java -cp.`, "stdout", op);
-      spawnTool(op, [...javaAgent, NATIVE_ACCESS_FLAG, "-cp", cp, mainClass], "running", {
+      spawnTool(op, [...javaAgent, ...nativeAccessArgs(), "-cp", cp, mainClass], "running", {
         bin: "java",
         label: "java",
         onLine: detectPort,
@@ -4085,7 +4126,7 @@ async function runPureJava({ module, mavenProfiles, dbg = null }) {
       "stdout",
       op,
     );
-    spawnTool(op, [...javaAgent, NATIVE_ACCESS_FLAG, "-jar", found.jar], "running", {
+    spawnTool(op, [...javaAgent, ...nativeAccessArgs(), "-jar", found.jar], "running", {
       bin: "java",
       label: "java",
       onLine: detectPort,
@@ -4265,7 +4306,7 @@ function jdwpAgentArg(dbg) {
  * When `devtools` is set (a Spring module with DevTools on the classpath), it
  * also disables DevTools restart so it can't drop the debug session. */
 function gradleDebugInitScript(dbg, { devtools = false } = {}) {
-  const flags = [NATIVE_ACCESS_FLAG, jdwpAgentArg(dbg)];
+  const flags = [...nativeAccessArgs(), jdwpAgentArg(dbg)];
   if (devtools) flags.push(DEVTOOLS_DISABLE_FLAG);
   const body = [
     "gradle.allprojects {",
@@ -4481,8 +4522,10 @@ function killChild(child) {
  * in a SEPARATE process, not in the spawned client's process group. So killing
  * the client (killChild) stops the streaming wrapper but can leave the daemon
  * compiling/testing in the background (CPU stays high, the run never really
- * stops). The Run lane never hits this because it runs the app as a direct child
- * in the killed group. The reliable, daemon-agnostic cancel is the tool's own
+ * stops). The Maven Run lane never hits this because it runs the app as a direct
+ * child in the killed group — but the Gradle Run lane does: Gradle executes the
+ * app inside the daemon, so stopApp() routes its Stop through here too. The
+ * reliable, daemon-agnostic cancel is the tool's own
  * `--stop`, which we've verified halts a *busy* daemon promptly. This trades the
  * warm JVM away on an explicit Stop (the next build starts cold), which is the
  * right call: Stop means stop, and the warm tier exists for back-to-back builds,
@@ -4540,6 +4583,7 @@ function stopApp(op) {
   else targets = ["build", "test", "package", "run", "debug"];
   let stopped = false;
   let warmBuildOp = null; // a build lane whose work is inside a daemon
+  let gradleAppOp = null; // a run/debug lane whose app JVM is owned by the Gradle daemon
   for (const o of targets) {
     if (o === "run" || o === "debug") {
       stopMetricsPolling();
@@ -4558,10 +4602,25 @@ function stopApp(op) {
       killChild(child);
       stopped = true;
       if (o !== "run" && o !== "debug" && lane.warm) warmBuildOp = o;
+      // Gradle runs the app (bootRun / quarkusDev / :module:run) inside its daemon,
+      // which forks the app JVM as a child of the daemon — not of the killed client
+      // — so killChild stops only the wrapper and leaves the app alive. Cancelling
+      // the daemon is the reliable Stop. (Maven's spring-boot:run / quarkus:dev fork
+      // the app inside the killed group, so they don't need this.)
+      if ((o === "run" || o === "debug") && buildTool === "gradle") gradleAppOp = o;
     }
   }
   // Build lanes are serialized, so at most one warm daemon build is ever live.
   if (warmBuildOp) stopBuildDaemon(warmBuildOp);
+  // An explicit Stop on a Gradle run/debug lane also cancels the daemon. We do this
+  // even when no client child is left to kill (op === "run"/"debug"): if the wrapper
+  // already exited on its own, the app is orphaned under the still-running daemon,
+  // and cancelling it is the only way to recover. Skip it when a build daemon stop
+  // already fired (same daemon) to avoid a redundant `--stop`.
+  if (!warmBuildOp && buildTool === "gradle" && (gradleAppOp || op === "run" || op === "debug")) {
+    stopBuildDaemon(gradleAppOp || (op === "debug" ? "debug" : "run"));
+    stopped = true;
+  }
   return stopped ? { ok: true, stopped: true } : { ok: true, stopped: false, note: "Nothing was running." };
 }
 
@@ -6368,21 +6427,11 @@ async function appPost(base, pathname, body) {
   return res;
 }
 
-// Scan tools (…_scan) advertised by the MCP status endpoint, which lists them even
-// while the server is disabled. Derived from a GET so no CSRF dance is needed.
-function scansFromTools(tools) {
-  return (Array.isArray(tools) ? tools : [])
-    .filter((t) => t && t.action && /_scan$/.test(t.name))
-    .map((t) => ({ name: t.name, description: t.description || "" }));
-}
-
 async function mcpStatus() {
   const base = appBase();
   if (!base) return { available: false };
   const raw = await fetchJson(base, "/bootui/api/mcp-server");
-  const status = normalizeMcp(raw) || { available: false };
-  if (status.available) status.scans = scansFromTools(status.tools);
-  return status;
+  return normalizeMcp(raw) || { available: false };
 }
 
 async function mcpToggle(enabled) {
@@ -6397,55 +6446,91 @@ async function mcpToggle(enabled) {
   }
 }
 
-let mcpRpcId = 0;
-async function mcpRpc(method, params) {
+// ---------------------------------------------------------------------------
+// BootUI advisor scans — driven straight from BootUI's REST API
+// ---------------------------------------------------------------------------
+// Each advisor exposes `POST /bootui/api/{id}/scan` returning a findings report —
+// the very controller the in-app MCP `_scan` tools delegate to. We call those REST
+// endpoints directly rather than round-tripping through the embedded MCP server, so
+// there's no JSON-RPC envelope to build/unwrap and no "enable the server first" step:
+// a scan is available whenever its backing advisor is present in the running app.
+// The legacy `_scan` tool names are kept as aliases so the agent action and the
+// "Fix with Copilot" prompt builder keep working unchanged.
+const ADVISOR_SCANS = [
+  {
+    id: "architecture",
+    tool: "architecture_scan",
+    label: "Architecture",
+    description: "Layering & dependency findings.",
+  },
+  { id: "spring", tool: "spring_scan", label: "Spring", description: "Spring configuration & bean findings." },
+  {
+    id: "hibernate",
+    tool: "hibernate_scan",
+    label: "Hibernate",
+    description: "JPA/Hibernate mapping & query findings.",
+  },
+  { id: "memory", tool: "memory_scan", label: "Memory", description: "Memory findings (triggers a class histogram)." },
+  { id: "security", tool: "security_scan", label: "Security", description: "Application security findings." },
+  { id: "pentesting", tool: "pentest_scan", label: "Pentesting", description: "Probing-based security findings." },
+  { id: "rest-api", tool: "rest_api_scan", label: "REST API", description: "REST controller/design findings." },
+  { id: "graalvm", tool: "graalvm_scan", label: "GraalVM", description: "GraalVM native-image readiness findings." },
+  { id: "crac", tool: "crac_scan", label: "CRaC", description: "CRaC checkpoint/restore readiness findings." },
+];
+
+/** Resolve a requested scan key (panel id or legacy `_scan` tool name) to its descriptor. */
+function resolveScan(key) {
+  if (!key) return null;
+  return ADVISOR_SCANS.find((s) => s.id === key || s.tool === key) || null;
+}
+
+// The scan POST that backs each advisor. GraalVM mirrors the MCP tool by skipping
+// the longer dependency scan (`includeDependencies=false`).
+function scanPath(scan) {
+  return scan.id === "graalvm" ? "/bootui/api/graalvm/scan?includeDependencies=false" : `/bootui/api/${scan.id}/scan`;
+}
+
+/**
+ * List the advisor scans the running app actually exposes. Reads `/bootui/api/panels`
+ * (BootUI's canonical capability source) and keeps our advisor scans whose panel is
+ * present, available and not read-only. Returns [] when the app is down or isn't a
+ * BootUI app.
+ */
+async function scansAvailable() {
   const base = appBase();
-  if (!base) return { error: { message: "App is not running." } };
+  if (!base) return [];
+  const report = await fetchJson(base, "/bootui/api/panels");
+  const panels = report && Array.isArray(report.panels) ? report.panels : null;
+  if (!panels) return [];
+  const byId = new Map(panels.map((p) => [p.id, p]));
+  return ADVISOR_SCANS.filter((s) => {
+    const p = byId.get(s.id);
+    return p && p.available === true && p.enabled !== false && p.readOnly !== true;
+  }).map((s) => ({ id: s.id, tool: s.tool, label: s.label, description: s.description }));
+}
+
+/**
+ * Run a single advisor scan over REST and return its findings report. The scan POST
+ * is state-changing, so it goes through the CSRF-aware helper (seeding the XSRF-TOKEN
+ * from a prior GET) for apps that put Spring Security in front of `/bootui/**`.
+ */
+async function runScanRest(key) {
+  const scan = resolveScan(key);
+  if (!scan) return { ok: false, error: `Unknown scan: ${key ?? "(none)"}` };
+  const base = appBase();
+  if (!base) return { ok: false, tool: scan.tool, error: "App is not running." };
   try {
-    // The MCP JSON-RPC transport is CSRF-exempt, but appPost adds the header
-    // harmlessly if a token is already cached.
-    const res = await appPost(base, "/bootui/api/mcp", {
-      jsonrpc: "2.0",
-      id: ++mcpRpcId,
-      method,
-      params: params || {},
-    });
-    return await res.json();
-  } catch (e) {
-    return { error: { message: e.message } };
-  }
-}
-
-// Unwrap an MCP tools/call result: the payload is in result.content[].text, and
-// scan tools return a JSON string there. Parse it so the UI/agent get structured data.
-function unwrapMcpResult(result) {
-  if (!result) return result;
-  const parts = Array.isArray(result.content) ? result.content : null;
-  if (parts) {
-    const text = parts
-      .filter((p) => p && (p.type === "text" || typeof p.text === "string"))
-      .map((p) => p.text)
-      .join("\n")
-      .trim();
-    if (text) {
-      try {
-        return JSON.parse(text);
-      } catch {
-        return text;
-      }
+    const res = await appPostCsrf(base, "/bootui/api/overview", scanPath(scan), {});
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      const detail = body ? `: ${body.slice(0, 300)}` : "";
+      return { ok: false, tool: scan.tool, error: `Scan failed (HTTP ${res.status})${detail}` };
     }
+    const result = await res.json().catch(() => null);
+    return { ok: true, tool: scan.tool, id: scan.id, label: scan.label, result };
+  } catch (e) {
+    return { ok: false, tool: scan.tool, error: e.message };
   }
-  return result;
-}
-
-async function mcpScan(tool) {
-  if (!tool) return { ok: false, error: "No scan tool specified." };
-  const r = await mcpRpc("tools/call", { name: tool, arguments: {} });
-  if (r && r.error) return { ok: false, error: r.error.message || String(r.error) };
-  const isError = r && r.result && r.result.isError === true;
-  const data = unwrapMcpResult(r && r.result);
-  if (isError) return { ok: false, tool, error: typeof data === "string" ? data : JSON.stringify(data) };
-  return { ok: true, tool, result: data };
 }
 
 // ---------------------------------------------------------------------------
@@ -7130,9 +7215,13 @@ async function handleRequest(req, res) {
     sendJson(res, 200, await mcpToggle(body.enabled));
     return;
   }
-  if (req.method === "POST" && url.pathname === "/api/mcp/scan") {
+  if (req.method === "GET" && url.pathname === "/api/scans") {
+    sendJson(res, 200, { scans: await scansAvailable() });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/scan") {
     const body = await readBody(req);
-    sendJson(res, 200, await mcpScan(body.tool));
+    sendJson(res, 200, await runScanRest(body.tool ?? body.id));
     return;
   }
 
@@ -7614,13 +7703,13 @@ function makeCanvas() {
       {
         name: "run_scan",
         description:
-          "Run a BootUI MCP advisor scan against the running app (requires BootUI present and its MCP server enabled). Tool names end with _scan, e.g. architecture_scan, security_scan, spring_scan.",
+          "Run a BootUI advisor scan against the running app over its REST API (requires a running BootUI app; no MCP server needed). Accepts a panel id (e.g. architecture, security, spring, rest-api, pentesting) or the legacy tool name ending in _scan (e.g. architecture_scan).",
         inputSchema: {
           type: "object",
-          properties: { tool: { type: "string", description: "Scan tool name (…_scan)." } },
+          properties: { tool: { type: "string", description: "Scan id (e.g. architecture) or legacy name (…_scan)." } },
           required: ["tool"],
         },
-        handler: async (ctx) => mcpScan(ctx.input?.tool),
+        handler: async (ctx) => runScanRest(ctx.input?.tool),
       },
       {
         name: "set_log_level",

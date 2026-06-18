@@ -29,10 +29,11 @@ before changing visible behavior.
 - **Never `console.log` in `extension.mjs`.** `stdout` is the JSON-RPC channel and
   logging corrupts it. Use `session.log(msg, { level, ephemeral })`.
 - **Bind servers to `127.0.0.1` only.** The host only embeds loopback URLs.
-- The loopback control endpoints `/api/fix` and `/api/mcp/scan` **send prompts /
-  scans into the live conversation** — never `curl` them casually while testing.
-  Safe-to-inspect endpoints include `/api/state`, `/api/settings`, `/api/build`,
-  `/api/test`, `/api/package`, `/api/run`, `/api/stop`, and `/events`.
+- The loopback control endpoint `/api/fix` **sends a prompt into the live
+  conversation**, and `/api/scan` **runs a BootUI advisor scan on the running app** —
+  never `curl` them casually while testing. Safe-to-inspect endpoints include
+  `/api/state`, `/api/settings`, `/api/build`, `/api/test`, `/api/package`,
+  `/api/run`, `/api/stop`, `/api/scans`, and `/events`.
 - After editing `extension.mjs`, `public/index.html`, `public/styles.css`, or
   `public/app.js`, **reload extensions and re-open the canvas** (the iframe
   port/token rotate on reload).
@@ -56,10 +57,13 @@ are both first-class build tools, auto-detected per project.
   with `--enable-native-access=ALL-UNNAMED` via `MAVEN_OPTS` / `GRADLE_OPTS`), the run
   modes (`spring-boot:run`/`bootRun` for Spring Boot, `quarkus:dev`/`quarkusDev` for
   Quarkus, else the generic Java runner), the JUnit report parser (Maven Surefire /
-  Gradle `build/test-results`), the metrics/MCP proxy (tiered BootUI → Actuator →
-  Quarkus Micrometer/health → process), and the fix-prompt builder.
+  Gradle `build/test-results`), the metrics proxy (tiered BootUI → Actuator →
+  Quarkus Micrometer/health → process), the BootUI advisor-scan REST client
+  (`/bootui/api/panels` for discovery, `POST /bootui/api/{id}/scan` to run one), the
+  MCP-server toggle/register bridge, and the fix-prompt builder.
 - `public/index.html`: the iframe UI markup (Build/Test/Package/Run + Live JVM +
-  Settings tabs, live console, graphical test view, MCP panel). Styles live in
+  Loggers + BootUI + Settings tabs, live console, graphical test view, MCP-server
+  bridge). Styles live in
   `public/styles.css` (canvas theme tokens, e.g. `var(--background-color-default, …)`)
   and client logic in `public/app.js`; both are served unauthenticated since they
   hold no secrets, while `/api/*` and `/events` stay token-gated.
