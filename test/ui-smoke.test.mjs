@@ -210,17 +210,31 @@ test("renderDeps renders an outdated-library list", () => {
   assert.ok(html.includes("guava"), "expected the outdated dependency in the rendered list");
   assert.ok(html.includes("data-dep-fix"), "expected a Fix-with-Copilot button per dependency");
 
-  // Gradle: outdated scanning unsupported.
+  // Gradle: outdated scanning is now supported (same payload shape as Maven).
   assert.doesNotThrow(() =>
     win.renderDeps({
-      ran: false,
+      ran: true,
       buildTool: "gradle",
       available: true,
-      updatesSupported: false,
-      updates: [],
-      counts: { total: 0, direct: 0, transitive: 0 },
+      updatesSupported: true,
+      updates: [
+        {
+          group: "com.google.guava",
+          artifact: "guava",
+          current: "19.0",
+          latest: "33.6.0-jre",
+          scope: "runtime",
+          direct: true,
+          via: null,
+          prerelease: false,
+          jump: "major",
+        },
+      ],
+      counts: { total: 1, direct: 1, transitive: 0 },
     }),
   );
+  html = win.document.getElementById("deps-result").innerHTML;
+  assert.ok(html.includes("guava"), "expected the Gradle outdated dependency in the rendered list");
 });
 
 test("renderTests renders a graphical report with a failure", () => {

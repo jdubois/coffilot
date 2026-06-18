@@ -31,6 +31,8 @@ const {
   parseDependencyTree,
   parseDependencyUpdates,
   mergeDependencyUpdates,
+  parseGradleDependencyTree,
+  parseGradleDependencyUpdates,
   classifyVersionJump,
   isPrerelease,
 } = await import("../extension.mjs");
@@ -684,4 +686,122 @@ test("isPrerelease detects alpha/beta/rc/milestone/snapshot qualifiers", () => {
   assert.equal(isPrerelease("5.2.0-SNAPSHOT"), true);
   assert.equal(isPrerelease("33.6.0-jre"), false);
   assert.equal(isPrerelease("3.20.0"), false);
+});
+
+// Real `gradle dependencies --configuration runtimeClasspath` output (5-char
+// indent per level, with a repeated-subtree (*) marker).
+const GRADLE_TREE = [
+  "",
+  "------------------------------------------------------------",
+  "Root project 'gradledep'",
+  "------------------------------------------------------------",
+  "",
+  "runtimeClasspath - Runtime classpath of source set 'main'.",
+  "+--- com.google.guava:guava:19.0",
+  "+--- org.apache.commons:commons-lang3:3.4",
+  "+--- org.slf4j:slf4j-api:1.7.20",
+  "+--- com.fasterxml.jackson.core:jackson-databind:2.9.0",
+  "|    +--- com.fasterxml.jackson.core:jackson-annotations:2.9.0",
+  "|    \\--- com.fasterxml.jackson.core:jackson-core:2.9.0",
+  "\\--- org.springframework:spring-web:5.2.0.RELEASE",
+  "     +--- org.springframework:spring-beans:5.2.0.RELEASE",
+  "     |    \\--- org.springframework:spring-core:5.2.0.RELEASE",
+  "     |         \\--- org.springframework:spring-jcl:5.2.0.RELEASE",
+  "     \\--- org.springframework:spring-core:5.2.0.RELEASE (*)",
+  "",
+  "(*) - Indicates repeated occurrences of a transitive dependency subtree.",
+].join("\n");
+
+test("parseGradleDependencyTree classifies direct vs transitive by indent depth", () => {
+  const nodes = parseGradleDependencyTree(GRADLE_TREE);
+  const byKey = Object.fromEntries(nodes.map((n) => [n.key, n]));
+  assert.equal(byKey["com.google.guava:guava"].direct, true);
+  assert.equal(byKey["com.google.guava:guava"].version, "19.0");
+  assert.equal(byKey["com.google.guava:guava"].scope, "runtime");
+  // jackson-core is a transitive dep pulled in by jackson-databind.
+  assert.equal(byKey["com.fasterxml.jackson.core:jackson-core"].direct, false);
+  assert.equal(byKey["com.fasterxml.jackson.core:jackson-core"].via, "com.fasterxml.jackson.core:jackson-databind");
+  // spring-jcl is several levels deep but its `via` is still the direct ancestor.
+  assert.equal(byKey["org.springframework:spring-jcl"].direct, false);
+  assert.equal(byKey["org.springframework:spring-jcl"].via, "org.springframework:spring-web");
+});
+
+test("parseGradleDependencyTree keeps the shallowest occurrence and ignores (*)", () => {
+  const nodes = parseGradleDependencyTree(GRADLE_TREE);
+  const core = nodes.filter((n) => n.key === "org.springframework:spring-core");
+  // The (*) repeat at depth 1 wins over the depth-2 first occurrence, but it is
+  // still transitive, and deduped to a single node.
+  assert.equal(core.length, 1);
+  assert.equal(core[0].direct, false);
+});
+
+test("parseGradleDependencyTree resolves version coercion (a -> b)", () => {
+  const nodes = parseGradleDependencyTree(
+    [
+      "runtimeClasspath - Runtime classpath.",
+      "+--- org.slf4j:slf4j-api:1.7.20 -> 2.0.13",
+      "\\--- com.example:lib -> 3.1.0",
+    ].join("\n"),
+  );
+  const byKey = Object.fromEntries(nodes.map((n) => [n.key, n]));
+  assert.equal(byKey["org.slf4j:slf4j-api"].version, "2.0.13");
+  // A constraint-only line (no requested version) still resolves via the arrow.
+  assert.equal(byKey["com.example:lib"].version, "3.1.0");
+});
+
+test("parseGradleDependencyUpdates reads the ben-manes JSON outdated list", () => {
+  const json = JSON.stringify({
+    outdated: {
+      dependencies: [
+        { group: "com.google.guava", name: "guava", version: "19.0", available: { release: "33.6.0-jre" } },
+        {
+          group: "org.slf4j",
+          name: "slf4j-api",
+          version: "1.7.20",
+          available: { release: "2.1.0-alpha1", milestone: null },
+        },
+        {
+          group: "no.latest",
+          name: "lib",
+          version: "1.0",
+          available: { release: null, milestone: null, integration: null },
+        },
+      ],
+    },
+  });
+  const map = parseGradleDependencyUpdates(json);
+  assert.equal(map.get("com.google.guava:guava").latest, "33.6.0-jre");
+  assert.equal(map.get("org.slf4j:slf4j-api").latest, "2.1.0-alpha1");
+  // A dependency with no available version is dropped.
+  assert.equal(map.has("no.latest:lib"), false);
+});
+
+test("parseGradleDependencyUpdates returns an empty map on malformed JSON", () => {
+  assert.equal(parseGradleDependencyUpdates("not json").size, 0);
+  assert.equal(parseGradleDependencyUpdates("{}").size, 0);
+});
+
+test("mergeDependencyUpdates joins a Gradle tree + ben-manes report", () => {
+  const nodes = parseGradleDependencyTree(GRADLE_TREE);
+  const updMap = parseGradleDependencyUpdates(
+    JSON.stringify({
+      outdated: {
+        dependencies: [
+          { group: "com.google.guava", name: "guava", version: "19.0", available: { release: "33.6.0-jre" } },
+          {
+            group: "org.springframework",
+            name: "spring-core",
+            version: "5.2.0.RELEASE",
+            available: { release: "6.1.0" },
+          },
+        ],
+      },
+    }),
+  );
+  const merged = mergeDependencyUpdates(nodes, updMap);
+  const byKey = Object.fromEntries(merged.map((m) => [`${m.group}:${m.artifact}`, m]));
+  assert.equal(byKey["com.google.guava:guava"].direct, true);
+  assert.equal(byKey["com.google.guava:guava"].jump, "major");
+  assert.equal(byKey["org.springframework:spring-core"].direct, false);
+  assert.equal(byKey["org.springframework:spring-core"].via, "org.springframework:spring-web");
 });

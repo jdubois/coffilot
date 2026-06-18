@@ -35,6 +35,7 @@ import {
   mkdirSync,
   writeFileSync,
   unlinkSync,
+  rmSync,
   watch as fsWatch,
 } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
@@ -6825,13 +6826,17 @@ async function runScanRest(key) {
 // out to the build tool (the same loopback-only "shell out and parse" model the
 // rest of Coffilot uses) and lets the build tool's own plugins resolve the latest
 // available versions, so we never add a direct HTTP client to a package registry.
-// Maven is wired here; Gradle outdated-scanning is not yet implemented.
+// Both Maven and Gradle are wired here: Maven uses the dependency + versions
+// plugins; Gradle uses its built-in `dependencies` report plus the ben-manes
+// gradle-versions-plugin, injected through a throwaway `--init-script` so the
+// target project's own build files are never touched.
 // ---------------------------------------------------------------------------
 
 // Pinned plugin coordinates so the scan is reproducible and doesn't silently
 // pick up a different plugin major on a fresh machine.
 const DEP_TREE_PLUGIN = "org.apache.maven.plugins:maven-dependency-plugin:3.7.1";
 const VERSIONS_PLUGIN = "org.codehaus.mojo:versions-maven-plugin:2.18.0";
+const GRADLE_VERSIONS_PLUGIN = "com.github.ben-manes:gradle-versions-plugin:0.51.0";
 
 let lastDependencyReport = null;
 
@@ -6890,6 +6895,102 @@ export function parseDependencyUpdates(out) {
     const m = line.match(/^\s*([\w.\-]+:[\w.\-]+)\s+\.{2,}\s+(\S+)\s+->\s+(\S+)\s*$/);
     if (!m) continue;
     map.set(m[1], { current: m[2], latest: m[3] });
+  }
+  return map;
+}
+
+/** Normalise a Gradle configuration name to a Maven-like scope word for display. */
+function gradleScopeLabel(config) {
+  const c = String(config || "");
+  if (/test/i.test(c)) return "test";
+  if (/annotationProcessor/i.test(c)) return "annotationProcessor";
+  if (/compileOnly|compileClasspath/i.test(c)) return "compile";
+  if (/runtime/i.test(c)) return "runtime";
+  return c;
+}
+
+/**
+ * Parse `gradle dependencies` report output into a deduplicated list of nodes with
+ * the same shape as parseDependencyTree. Gradle indents 5 characters per level
+ * (`|    ` or five spaces), so depth 0 is a direct dependency and anything deeper
+ * is transitive; `via` records the direct dependency that pulls a transitive one
+ * in. Version coercion (`a:b:1 -> 2`) resolves to the right-hand side, and the
+ * `(*)`/`(c)`/`(n)`/`FAILED` annotations are stripped. Pure (exported for tests).
+ */
+export function parseGradleDependencyTree(out) {
+  const byKey = new Map();
+  const stack = []; // stack[depth] = "group:artifact"
+  let scope = "";
+  for (const rawLine of String(out || "").split(/\r?\n/)) {
+    const m = rawLine.match(/^([\s|]*)[+\\]--- (.+)$/);
+    if (!m) {
+      // Any non-connector line ends the current subtree: reset the ancestor stack
+      // so the next configuration/project is depth-counted independently. A
+      // configuration header ("runtimeClasspath - Runtime classpath …") also
+      // records the scope applied to its rows.
+      stack.length = 0;
+      const header = rawLine.match(/^([A-Za-z][A-Za-z0-9]*)\s+-\s+/);
+      if (header) scope = gradleScopeLabel(header[1]);
+      continue;
+    }
+    const depth = Math.floor(m[1].length / 5);
+    let coord = m[2].trim();
+    coord = coord
+      .replace(/\s+\((?:\*|c|n)\)\s*$/, "")
+      .replace(/\s+FAILED\s*$/, "")
+      .trim();
+    let resolved = null;
+    const arrow = coord.indexOf(" -> ");
+    if (arrow !== -1) {
+      resolved = coord.slice(arrow + 4).trim();
+      coord = coord.slice(0, arrow).trim();
+    }
+    const parts = coord.split(":");
+    let group, artifact, version;
+    if (parts.length >= 3) {
+      [group, artifact] = parts;
+      version = resolved || parts[2];
+    } else if (parts.length === 2) {
+      [group, artifact] = parts;
+      version = resolved; // constraint/platform line with no requested version
+    } else {
+      continue;
+    }
+    if (!group || !artifact || !version) continue;
+    const key = `${group}:${artifact}`;
+    stack[depth] = key;
+    stack.length = depth + 1;
+    const via = depth > 0 ? stack[0] || null : null;
+    const node = { key, group, artifact, version, scope, depth, direct: depth === 0, via };
+    const prev = byKey.get(key);
+    // Keep the shallowest occurrence so a dependency that is both direct and
+    // transitive is classified as direct.
+    if (!prev || node.depth < prev.depth) byKey.set(key, node);
+  }
+  return [...byKey.values()];
+}
+
+/**
+ * Parse a ben-manes gradle-versions-plugin JSON report into a map of
+ * "group:name" -> { current, latest }. The plugin lists only outdated
+ * dependencies under `outdated.dependencies`, each exposing the newest available
+ * release/milestone/integration version. Pure (exported for tests).
+ */
+export function parseGradleDependencyUpdates(jsonText) {
+  const map = new Map();
+  let data;
+  try {
+    data = JSON.parse(jsonText);
+  } catch {
+    return map;
+  }
+  const deps = data && data.outdated && Array.isArray(data.outdated.dependencies) ? data.outdated.dependencies : [];
+  for (const d of deps) {
+    if (!d || !d.group || !d.name) continue;
+    const avail = d.available || {};
+    const latest = avail.release || avail.milestone || avail.integration;
+    if (!latest) continue;
+    map.set(`${d.group}:${d.name}`, { current: d.version, latest });
   }
   return map;
 }
@@ -6998,10 +7099,99 @@ function captureBuildTool(args, timeoutMs = 180000) {
 
 const emptyDepCounts = () => ({ total: 0, direct: 0, transitive: 0 });
 
+/** Whether the active build tool can run an outdated-libraries scan. */
+function updatesSupportedFor(tool) {
+  return tool === "maven" || tool === "gradle";
+}
+
+/** Maven outdated-libraries scan: dependency:tree + display-dependency-updates. */
+async function runMavenDependencyScan() {
+  const treeRes = await captureBuildTool(["-ntp", "-B", `${DEP_TREE_PLUGIN}:tree`, "-DoutputType=text"]);
+  const updRes = await captureBuildTool(["-ntp", "-B", `${VERSIONS_PLUGIN}:display-dependency-updates`]);
+  const nodes = parseDependencyTree(treeRes.out || "");
+  const updMap = parseDependencyUpdates(updRes.out || "");
+  const updates = mergeDependencyUpdates(nodes, updMap);
+  // Distinguish "everything is up to date" from a command that actually failed
+  // (offline, missing plugin, broken pom): only the latter sets an error.
+  let error = null;
+  if (!nodes.length && treeRes.ok === false) error = treeRes.error || "dependency:tree failed.";
+  else if (!updMap.size && updRes.ok === false) error = updRes.error || "Could not resolve dependency updates.";
+  return { updates, error };
+}
+
+/** Body of the throwaway Gradle init script that injects the ben-manes
+ * gradle-versions-plugin and points its JSON report at our temp dir, one file per
+ * project so subprojects don't overwrite each other. */
+function gradleDependencyUpdatesInitBody(outDir) {
+  const dir = outDir.replace(/\\/g, "/"); // forward slashes are safe in a Groovy string on every OS
+  return [
+    "// Coffilot: inject the ben-manes versions plugin to list outdated libraries (read-only).",
+    "initscript {",
+    "  repositories { gradlePluginPortal() }",
+    `  dependencies { classpath '${GRADLE_VERSIONS_PLUGIN}' }`,
+    "}",
+    "allprojects {",
+    "  apply plugin: com.github.benmanes.gradle.versions.VersionsPlugin",
+    "  tasks.named('dependencyUpdates') {",
+    "    outputFormatter = 'json'",
+    `    outputDir = '${dir}'`,
+    "    reportfileName = 'coffilot-deps-' + project.path.replaceAll(':', '_')",
+    "    checkForGradleUpdate = false",
+    "    revision = 'release'",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+}
+
+/** Gradle outdated-libraries scan: the built-in `dependencies` report (for the
+ * direct/transitive tree) plus the ben-manes plugin's JSON report (for the latest
+ * available versions), injected through a throwaway init script. */
+async function runGradleDependencyScan() {
+  const stamp = `${process.pid}-${Date.now()}`;
+  const outDir = path.join(os.tmpdir(), `coffilot-deps-${stamp}`);
+  const initScript = path.join(os.tmpdir(), `coffilot-deps-${stamp}.gradle`);
+  try {
+    mkdirSync(outDir, { recursive: true });
+    writeFileSync(initScript, gradleDependencyUpdatesInitBody(outDir));
+    const treeRes = await captureBuildTool(["dependencies", "--configuration", "runtimeClasspath", "-q"]);
+    const updRes = await captureBuildTool(["--init-script", initScript, "dependencyUpdates", "-q"]);
+    const nodes = parseGradleDependencyTree(treeRes.out || "");
+    const updMap = new Map();
+    try {
+      for (const f of readdirSync(outDir)) {
+        if (!f.endsWith(".json")) continue;
+        const part = parseGradleDependencyUpdates(readFileSync(path.join(outDir, f), "utf8"));
+        for (const [k, v] of part) if (!updMap.has(k)) updMap.set(k, v);
+      }
+    } catch {
+      /* no report file written */
+    }
+    // The runtimeClasspath tree omits test/compileOnly deps; surface any outdated
+    // dependency missing from the tree as a direct one so nothing is dropped.
+    const known = new Set(nodes.map((n) => n.key));
+    for (const [key, upd] of updMap) {
+      if (known.has(key)) continue;
+      const [group, artifact] = key.split(":");
+      nodes.push({ key, group, artifact, version: upd.current, scope: "", depth: 0, direct: true, via: null });
+    }
+    const updates = mergeDependencyUpdates(nodes, updMap);
+    const error = !updMap.size && updRes.ok === false ? updRes.error || "Could not resolve dependency updates." : null;
+    return { updates, error };
+  } finally {
+    try {
+      if (existsSync(initScript)) unlinkSync(initScript);
+      rmSync(outDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+}
+
 /**
- * On-demand scan: for Maven, the list of outdated libraries (direct + transitive).
- * Caches the result so the panel can re-render it after a tab switch or reload
- * without re-running the build tool.
+ * On-demand scan: the list of outdated libraries (direct + transitive) for Maven
+ * or Gradle. Caches the result so the panel can re-render it after a tab switch or
+ * reload without re-running the build tool.
  */
 async function runDependencyScan() {
   const startedAt = Date.now();
@@ -7021,17 +7211,11 @@ async function runDependencyScan() {
   }
   let updates = [];
   let error = null;
-  const updatesSupported = buildTool === "maven";
+  const updatesSupported = updatesSupportedFor(buildTool);
   if (updatesSupported) {
-    const treeRes = await captureBuildTool(["-ntp", "-B", `${DEP_TREE_PLUGIN}:tree`, "-DoutputType=text"]);
-    const updRes = await captureBuildTool(["-ntp", "-B", `${VERSIONS_PLUGIN}:display-dependency-updates`]);
-    const nodes = parseDependencyTree(treeRes.out || "");
-    const updMap = parseDependencyUpdates(updRes.out || "");
-    updates = mergeDependencyUpdates(nodes, updMap);
-    // Distinguish "everything is up to date" from a command that actually failed
-    // (offline, missing plugin, broken pom): only the latter sets an error.
-    if (!nodes.length && treeRes.ok === false) error = treeRes.error || "dependency:tree failed.";
-    else if (!updMap.size && updRes.ok === false) error = updRes.error || "Could not resolve dependency updates.";
+    const res = buildTool === "gradle" ? await runGradleDependencyScan() : await runMavenDependencyScan();
+    updates = res.updates;
+    error = res.error;
   }
   lastDependencyReport = {
     ran: true,
@@ -7058,7 +7242,7 @@ function dependencySnapshot() {
     ran: false,
     buildTool,
     available: toolAvailable(),
-    updatesSupported: buildTool === "maven",
+    updatesSupported: updatesSupportedFor(buildTool),
     updates: [],
     counts: emptyDepCounts(),
     ranAt: null,
@@ -8364,7 +8548,7 @@ function makeCanvas() {
       {
         name: "check_dependencies",
         description:
-          "Scan the project for outdated libraries. Shells out to the build tool to resolve the latest available versions and returns the findings (current → latest, direct vs transitive, version-jump size). Maven only for now. Findings can be handed to fix_issue with kind 'fix-dependency'.",
+          "Scan the project for outdated libraries (Maven or Gradle). Shells out to the build tool to resolve the latest available versions and returns the findings (current → latest, direct vs transitive, version-jump size). Findings can be handed to fix_issue with kind 'fix-dependency'.",
         inputSchema: { type: "object", properties: {} },
         handler: async () => runDependencyScan(),
       },

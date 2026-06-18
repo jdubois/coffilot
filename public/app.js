@@ -1715,7 +1715,7 @@ function updatesSectionHtml(report) {
   if (!report.updatesSupported) {
     return (
       `<div class="deps-section">${head()}` +
-      `<p class="hint">Outdated-library scanning currently supports Maven projects${report.buildTool ? ` (this is a ${esc(report.buildTool)} project)` : ""}.</p></div>`
+      `<p class="hint">Outdated-library scanning needs a Maven or Gradle project${report.buildTool ? ` (this is a ${esc(report.buildTool)} project)` : ""}.</p></div>`
     );
   }
   if (!report.ran) {
