@@ -163,6 +163,10 @@ const mcpState = document.getElementById("mcp-state");
 const mcpScansEl = document.getElementById("mcp-scans");
 const mcpResultEl = document.getElementById("mcp-result");
 const mcpRegisterBtn = document.getElementById("mcp-register");
+const quarkusMcpPanel = document.getElementById("quarkus-mcp");
+const quarkusMcpState = document.getElementById("quarkus-mcp-state");
+const quarkusMcpScansEl = document.getElementById("quarkus-mcp-scans");
+const quarkusMcpRegisterBtn = document.getElementById("quarkus-mcp-register");
 let caps = {};
 // Whether a Maven/Gradle build tool is present. When false the canvas runs
 // in degraded mode: Build/Test/Package/Run stay disabled.
@@ -1099,6 +1103,71 @@ async function runScan(tool) {
 }
 let lastScan = null;
 
+// ---- Quarkus Agent MCP panel ------------------------------------------
+// Unlike the BootUI panel (which mirrors an MCP server living inside the running
+// app), the Quarkus Agent MCP server is an external process the Copilot CLI
+// launches. So this panel is driven purely by static capability — it shows for
+// Quarkus projects and offers to register the server + one-click capability
+// prompts, regardless of whether the app is currently running.
+const QUARKUS_MCP_CAPS = [
+  {
+    kind: "quarkus-skills",
+    label: "Extension skills",
+    title:
+      "Ask Copilot to load this project's Quarkus extension skills (patterns, testing, pitfalls) via quarkus_skills.",
+  },
+  {
+    kind: "quarkus-docs",
+    label: "Search docs",
+    title: "Ask Copilot to search the Quarkus documentation via quarkus_searchDocs (needs Docker/Podman).",
+  },
+  {
+    kind: "quarkus-exception",
+    label: "Last exception",
+    title:
+      "Ask Copilot to fetch the running dev-mode app's last exception via devui-exceptions_getLastException and fix it.",
+  },
+];
+
+function renderQuarkusMcp() {
+  const q = caps.quarkusAgentMcp || {};
+  if (!caps.quarkus) {
+    quarkusMcpPanel.hidden = true;
+    return;
+  }
+  quarkusMcpPanel.hidden = false;
+  if (q.available) {
+    if (quarkusMcpRegisterBtn.hidden) {
+      quarkusMcpRegisterBtn.disabled = false;
+      quarkusMcpRegisterBtn.textContent = "Register with Copilot";
+    }
+    quarkusMcpRegisterBtn.hidden = false;
+    quarkusMcpRegisterBtn.dataset.runner = q.runner || "jbang";
+    quarkusMcpState.textContent = q.runner === "java" ? "via java" : "via JBang";
+    quarkusMcpState.title =
+      q.runner === "java"
+        ? "JBang wasn't detected; the java -jar launcher will be used."
+        : "JBang is available to launch the Quarkus Agent MCP server.";
+  } else {
+    quarkusMcpRegisterBtn.hidden = true;
+    quarkusMcpState.textContent = "JBang/Java not found";
+    quarkusMcpState.title =
+      "Install JBang (jbang.dev) or Java 21+ so the Quarkus Agent MCP server can be launched, then re-open this canvas.";
+  }
+  quarkusMcpScansEl.innerHTML = QUARKUS_MCP_CAPS.map(
+    (c) => `<button class="tiny" data-qmcp="${esc(c.kind)}" title="${esc(c.title)}">${esc(c.label)}</button>`,
+  ).join("");
+  quarkusMcpScansEl
+    .querySelectorAll("button[data-qmcp]")
+    .forEach((b) => (b.onclick = () => post("/api/fix", { kind: b.dataset.qmcp })));
+}
+
+quarkusMcpRegisterBtn.onclick = async () => {
+  quarkusMcpRegisterBtn.disabled = true;
+  quarkusMcpRegisterBtn.textContent = "Asked Copilot \u2713";
+  await post("/api/fix", { kind: "register-quarkus-mcp", runner: quarkusMcpRegisterBtn.dataset.runner || "jbang" });
+};
+
 // ---- Runtime log levels (Loggers aside tab) ----------------------------
 // Lists the running app's loggers from Spring Boot Actuator /loggers and lets
 // you change a level live (no restart). Self-describes by capability: degrades to
@@ -1725,6 +1794,16 @@ function applyCaps(c) {
   );
   html += pill("Actuator", !!caps.actuator, "Spring Boot Actuator metrics (static hint; confirmed at runtime).");
   html += pill("BootUI", !!caps.bootui, "BootUI rich metrics + MCP advisor scans.");
+  if (caps.quarkus) {
+    const q = caps.quarkusAgentMcp || {};
+    html += pill(
+      "Quarkus MCP",
+      !!q.available,
+      q.available
+        ? `Quarkus Agent MCP can be launched (${q.runner === "java" ? "java" : "JBang"}) — register it from Settings.`
+        : "Quarkus Agent MCP needs JBang or Java 21+ to launch; not detected.",
+    );
+  }
   html += pill(
     "JDTLS",
     !!jdtlsState.available,
@@ -1733,6 +1812,7 @@ function applyCaps(c) {
       : "JDTLS (Java code intelligence) isn't available; set it up from Settings.",
   );
   capsEl.innerHTML = html;
+  renderQuarkusMcp();
 }
 
 // Render the JDTLS availability indicator + setup affordance in Settings.

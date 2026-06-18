@@ -99,21 +99,32 @@ wins; when neither is found the console says so and stays disabled until one is 
   sent to the agent with one click. A **Register with Copilot** button can also wire
   the running MCP server into the Copilot CLI config so the agent can call the scans
   directly as native MCP tools.
+- **Quarkus Agent MCP (for Quarkus projects)** &mdash; a **Register with Copilot**
+  button wires the standalone
+  [Quarkus Agent MCP](https://github.com/quarkusio/quarkus-agent-mcp) server into the
+  Copilot CLI config (via JBang, or `java -jar` as a fallback), giving the agent
+  Quarkus-native tooling: extension skills, documentation search, the Dev UI MCP
+  proxy and structured exceptions. One-click buttons also nudge the agent to use
+  those capabilities (extension skills, docs search, last exception). Coffilot only
+  detects and registers it &mdash; the server runs as a separate process. Shown when a
+  Quarkus module is detected and JBang or Java 21+ is available (docs search also
+  needs Docker/Podman).
 
 ## Graceful degradation by capability
 
 The console adapts to whatever the project provides, detected from the build files
 (static) and confirmed against the running app (runtime):
 
-| Tier                          | Detected from                                     | What the console offers                                                                                                                                                                                                                 |
-| ----------------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **(none)**                    | no Maven or Gradle markers                        | A "needs Maven or Gradle" notice; the Build / Test / Package / Run actions stay disabled                                                                                                                                                |
-| **Java** (base)               | `pom.xml` / `mvnw` or `build.gradle` / `gradlew`  | Build, Test (graphical JUnit report), Package                                                                                                                                                                                           |
-| **Spring Boot**               | Spring Boot Maven plugin / Gradle plugin          | Run via `spring-boot:run` (Maven) or `bootRun` (Gradle) + editable Spring profiles. (No Spring Boot ⇒ the generic runner uses the Gradle `application` plugin, an executable `java -jar`, or the configured main class via `java -cp`.) |
-| **Quarkus**                   | Quarkus Maven plugin / `io.quarkus` Gradle plugin | Run via `quarkus:dev` (Maven) or `quarkusDev` (Gradle) — dev mode with built-in live reload — + editable Quarkus profile                                                                                                                |
-| **Actuator** (runtime)        | `/actuator/*` or `/management/*` answers          | Live metrics normalized from Actuator — JSON `/metrics` endpoint or the Prometheus scrape (heap, threads, health, uptime) — plus runtime log-level control when `/loggers` is exposed                                                   |
-| **Quarkus metrics** (runtime) | `/q/metrics` / `/q/health` answer                 | Live metrics normalized from Quarkus Micrometer (Prometheus) + SmallRye Health                                                                                                                                                          |
-| **BootUI** (runtime)          | `/bootui/api/*` answers                           | Rich BootUI metrics **and** the MCP advisor-scan panel                                                                                                                                                                                  |
+| Tier                          | Detected from                                     | What the console offers                                                                                                                                                                                                                  |
+| ----------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **(none)**                    | no Maven or Gradle markers                        | A "needs Maven or Gradle" notice; the Build / Test / Package / Run actions stay disabled                                                                                                                                                 |
+| **Java** (base)               | `pom.xml` / `mvnw` or `build.gradle` / `gradlew`  | Build, Test (graphical JUnit report), Package                                                                                                                                                                                            |
+| **Spring Boot**               | Spring Boot Maven plugin / Gradle plugin          | Run via `spring-boot:run` (Maven) or `bootRun` (Gradle) + editable Spring profiles. (No Spring Boot ⇒ the generic runner uses the Gradle `application` plugin, an executable `java -jar`, or the configured main class via `java -cp`.)  |
+| **Quarkus**                   | Quarkus Maven plugin / `io.quarkus` Gradle plugin | Run via `quarkus:dev` (Maven) or `quarkusDev` (Gradle) — dev mode with built-in live reload — + editable Quarkus profile                                                                                                                 |
+| **Actuator** (runtime)        | `/actuator/*` or `/management/*` answers          | Live metrics normalized from Actuator — JSON `/metrics` endpoint or the Prometheus scrape (heap, threads, health, uptime) — plus runtime log-level control when `/loggers` is exposed                                                    |
+| **Quarkus metrics** (runtime) | `/q/metrics` / `/q/health` answer                 | Live metrics normalized from Quarkus Micrometer (Prometheus) + SmallRye Health                                                                                                                                                           |
+| **BootUI** (runtime)          | `/bootui/api/*` answers                           | Rich BootUI metrics **and** the MCP advisor-scan panel                                                                                                                                                                                   |
+| **Quarkus Agent MCP**         | Quarkus module + JBang or Java 21+ on `PATH`      | A **Register with Copilot** button + one-click capability prompts wiring the external [Quarkus Agent MCP](https://github.com/quarkusio/quarkus-agent-mcp) server (skills, docs search, Dev UI proxy, structured exceptions) into the CLI |
 
 A capability summary is shown in the status bar (including the active build tool), and
 the metrics panel carries a small badge (`BootUI` / `Actuator` / `Quarkus` / `process`)

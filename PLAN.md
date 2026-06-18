@@ -62,6 +62,13 @@ Shipped in the extension today:
 - "Fix with Copilot" for compile, package, test, plain-Java, Spring Boot and Quarkus
   startup failures, for flame-graph hotspots, and for BootUI advisor-scan findings.
 - BootUI MCP server toggle + advisor scans when the running app exposes BootUI.
+- Quarkus Agent MCP: a "Register with Copilot" button (JBang, or `java -jar`
+  fallback) wires the external [quarkus-agent-mcp](https://github.com/quarkusio/quarkus-agent-mcp)
+  server into the Copilot CLI config, plus one-click capability prompts (extension
+  skills, docs search, last exception). Coffilot detects and registers it but does
+  not host or proxy it; shown for Quarkus projects when JBang/Java is available. The
+  Quarkus startup "Fix with Copilot" prompt also prefers `devui-exceptions_getLastException`
+  for structured failure data when the server is registered.
 - Per-project persisted settings (warm JVM, Spring profiles, devtools, random port,
   auto-open browser, auto-record flame graph at startup) and an always-visible
   Settings panel.

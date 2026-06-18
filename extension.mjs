@@ -1259,6 +1259,28 @@ function detectJavaVersion() {
   return javaVersion;
 }
 
+// ---------------------------------------------------------------------------
+// Quarkus Agent MCP (https://github.com/quarkusio/quarkus-agent-mcp)
+// ---------------------------------------------------------------------------
+//
+// A standalone, external MCP server that gives the Copilot agent Quarkus-native
+// tooling (extension skills, documentation search, the Dev UI MCP proxy, and
+// structured exceptions) for the project the user opened. Coffilot does NOT host
+// or proxy it; it only detects whether it can be launched and offers to register
+// it with the Copilot CLI. The server is started via JBang (preferred — it
+// resolves the uber-jar from Maven Central) or a plain `java -jar`, so "is it
+// available?" reduces to whether one of those launchers resolves on the PATH.
+function detectQuarkusAgentMcp() {
+  const jbang = resolveExecutable("jbang");
+  // `java` is the fallback runner (Java 21+ + a downloaded runner jar). We only
+  // need to know one of the two launchers resolves; we don't gate on the Java
+  // version here because JBang pins its own JDK and the java path is documented
+  // as a manual fallback the agent wires up.
+  const java = jbang ? null : resolveExecutable("java");
+  const runner = jbang ? "jbang" : java ? "java" : null;
+  return { available: !!runner, runner, jbang: !!jbang };
+}
+
 // Static capability tiers, derived from the build files. The runtime metrics tier
 // (refreshMetrics) is authoritative once the app is up; these are the hints the
 // UI uses before/while running to decide what controls to show.
@@ -1277,6 +1299,7 @@ function capabilitiesSnapshot() {
     actuator: mods.some((m) => m.actuator),
     devtools: mods.some((m) => m.devtools),
     bootui: mods.some((m) => m.bootui),
+    quarkusAgentMcp: mods.some((m) => m.quarkus) ? detectQuarkusAgentMcp() : { available: false, runner: null },
   };
 }
 
@@ -4740,6 +4763,7 @@ function buildFixPrompt(kind, extra = {}) {
       return [
         "The Quarkus application failed to start in dev mode (quarkus:dev / quarkusDev). Diagnose the startup failure (CDI bean wiring, missing/invalid configuration in application.properties, failed extension/build-step initialization, port already in use, datasource, etc.) and fix it.",
         where,
+        `If the \`quarkus-agent\` MCP server is registered in this chat, call its \`devui-exceptions_getLastException\` tool (projectDir = \`${workspacePath}\`) first to get the structured exception (class, message, stack trace, and the offending user-code location) instead of relying only on the scraped console output below; you can also use \`quarkus_logs\` for broader context.`,
         "Recent output:",
         codeBlock(tail("run", 90)),
       ]
@@ -4915,8 +4939,65 @@ function buildFixPrompt(kind, extra = {}) {
         .filter(Boolean)
         .join("\n\n");
     }
-    default:
-      return null;
+    case "register-quarkus-mcp": {
+      // The Copilot CLI launches the standalone Quarkus Agent MCP server itself
+      // (stdio); JBang is preferred (it resolves the uber-jar from Maven Central),
+      // with a plain `java -jar` fallback for environments without JBang.
+      const runner = extra.runner === "java" ? "java" : "jbang";
+      const jbangCfg = JSON.stringify(
+        { mcpServers: { "quarkus-agent": { type: "stdio", command: "jbang", args: ["quarkus-agent-mcp@quarkusio"] } } },
+        null,
+        2,
+      );
+      const javaCfg = JSON.stringify(
+        {
+          mcpServers: {
+            "quarkus-agent": {
+              type: "stdio",
+              command: "java",
+              args: ["-jar", "/path/to/quarkus-agent-mcp-runner.jar"],
+            },
+          },
+        },
+        null,
+        2,
+      );
+      const primaryLabel =
+        runner === "java"
+          ? "`java -jar` (a JBang launcher wasn't detected on the PATH):"
+          : "JBang (it resolves the uber-jar from Maven Central — no build step):";
+      return [
+        "Register the standalone Quarkus Agent MCP server (https://github.com/quarkusio/quarkus-agent-mcp) with the GitHub Copilot CLI so its Quarkus-native tools — extension skills, documentation search, the Dev UI MCP proxy, and structured exceptions — become callable in this chat for this project.",
+        `Add a \`quarkus-agent\` entry to the Copilot CLI MCP config (\`~/.copilot/mcp-config.json\`; create the file if it doesn't exist) under the \`mcpServers\` map. Preferred form, using ${primaryLabel}`,
+        codeBlock(runner === "java" ? javaCfg : jbangCfg, "json"),
+        runner === "java"
+          ? `Download the runner jar from the latest GitHub release (https://github.com/quarkusio/quarkus-agent-mcp/releases/latest) and replace \`/path/to/quarkus-agent-mcp-runner.jar\` with its absolute path. This requires Java 21+.`
+          : `If JBang isn't installed, install it from https://www.jbang.dev/download/, or instead use the \`java -jar\` form with an absolute path to the runner jar from the latest release (requires Java 21+):\n${codeBlock(javaCfg, "json")}`,
+        [
+          "- Merge into any existing `mcpServers` block rather than overwriting it; if a `quarkus-agent` entry already exists, update it instead of duplicating it.",
+          "- Documentation search additionally needs Docker or Podman (the server starts a pre-indexed docs container on first use); skills, lifecycle and the Dev UI proxy work without it.",
+          "- After saving, reload the Copilot CLI MCP config (e.g. the `/mcp` command) or restart the CLI, then confirm the `quarkus-agent` tools are listed.",
+          "- The Dev UI proxy and `devui-exceptions_getLastException` only return data while the app is running in dev mode; Coffilot keeps it running from the Run tab.",
+        ].join("\n"),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
+    case "quarkus-skills":
+      return [
+        `Use the \`quarkus-agent\` MCP server's \`quarkus_skills\` tool (projectDir = \`${workspacePath}\`) to load the coding patterns, testing guidelines, and common pitfalls for this project's Quarkus extensions.`,
+        "Summarize the key conventions I should follow (Panache transactions, REST, CDI injection, testing, etc.) before writing or changing code, and apply them to any code you write next. If the `quarkus-agent` MCP server isn't registered yet, tell me and offer to set it up first.",
+      ].join("\n\n");
+    case "quarkus-docs":
+      return [
+        `Use the \`quarkus-agent\` MCP server's \`quarkus_searchDocs\` tool (projectDir = \`${workspacePath}\`) to search the Quarkus documentation (semantic search over the full docs).`,
+        "Ask me what I want to look up if it isn't clear from the conversation, then return the most relevant guidance with citations to the docs. If the `quarkus-agent` MCP server isn't registered yet, tell me and offer to set it up first.",
+      ].join("\n\n");
+    case "quarkus-exception":
+      return [
+        `Use the \`quarkus-agent\` MCP server's \`devui-exceptions_getLastException\` tool (projectDir = \`${workspacePath}\`) to fetch the last compilation, deployment, or runtime exception from the running Quarkus dev-mode app — the structured class, message, stack trace, and offending user-code location.`,
+        "Then diagnose the root cause and fix it in the codebase. Use `quarkus_logs` for broader context if needed. If the `quarkus-agent` MCP server isn't registered, or the app isn't running in dev mode, tell me what's missing.",
+      ].join("\n\n");
   }
 }
 
@@ -5891,17 +5972,35 @@ function makeCanvas() {
       {
         name: "fix_issue",
         description:
-          "Send a context-rich request into this chat asking to fix the current problem. Kind: compile (build failed), package (package failed), test (failing tests), run-java/run-spring/run-quarkus (startup failure), profile (optimize the flame-graph hotspots), or mcp (advisor scan findings).",
+          "Send a context-rich request into this chat asking to fix the current problem. Kind: compile (build failed), package (package failed), test (failing tests), run-java/run-spring/run-quarkus (startup failure), profile (optimize the flame-graph hotspots), mcp (advisor scan findings), register-quarkus-mcp (register the Quarkus Agent MCP server with the Copilot CLI), or quarkus-skills/quarkus-docs/quarkus-exception (use a Quarkus Agent MCP capability).",
         inputSchema: {
           type: "object",
           properties: {
             kind: {
               type: "string",
-              enum: ["compile", "package", "test", "run-java", "run-spring", "run-quarkus", "profile", "mcp"],
+              enum: [
+                "compile",
+                "package",
+                "test",
+                "run-java",
+                "run-spring",
+                "run-quarkus",
+                "profile",
+                "mcp",
+                "register-quarkus-mcp",
+                "quarkus-skills",
+                "quarkus-docs",
+                "quarkus-exception",
+              ],
               description: "Which failure to fix.",
             },
             tool: { type: "string", description: "For kind=mcp: the scan tool name." },
             result: { description: "For kind=mcp: the scan result payload to include." },
+            runner: {
+              type: "string",
+              enum: ["jbang", "java"],
+              description: "For kind=register-quarkus-mcp: the launcher to emit (jbang preferred, java fallback).",
+            },
           },
           required: ["kind"],
         },

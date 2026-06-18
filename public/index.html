@@ -565,6 +565,27 @@
               </div>
               <div id="mcp-result"></div>
             </div>
+
+            <!-- Quarkus Agent MCP: register the standalone quarkus-agent MCP
+               server with the Copilot CLI and trigger its capabilities. Shown
+               only for Quarkus projects; the server is external (JBang / java),
+               so this panel doesn't depend on the app running. -->
+            <div id="quarkus-mcp" class="mcp-settings" hidden>
+              <div class="switch-row">
+                <span class="switch-label">Quarkus Agent MCP</span>
+                <span id="quarkus-mcp-state" class="mcp-state"></span>
+                <span
+                  class="info"
+                  tabindex="0"
+                  data-tip="Register the standalone Quarkus Agent MCP server (quarkus-agent-mcp) with the Copilot CLI so the agent gets Quarkus extension skills, documentation search, the Dev UI proxy and structured exceptions. Needs JBang or Java 21+; docs search also needs Docker/Podman."
+                  >&#9432;</span
+                >
+                <button id="quarkus-mcp-register" class="fix tiny" style="margin-left: auto" hidden>
+                  Register with Copilot
+                </button>
+              </div>
+              <div id="quarkus-mcp-scans" class="scans"></div>
+            </div>
           </div>
         </div>
       </aside>
