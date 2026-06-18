@@ -158,14 +158,14 @@ button.is-restarting:hover {
   cursor: progress;
 }
 button.fix {
-  border-color: var(--true-color-orange, #bc4c00);
-  color: var(--color-white, #fff);
-  background: var(--true-color-orange, #bc4c00);
+  border-color: var(--border-color-default, #d0d7de);
+  color: var(--text-color-default, #1f2328);
+  background: var(--background-color-muted, #f6f8fa);
   font-weight: 600;
 }
 button.fix:hover {
-  background: color-mix(in srgb, #000 14%, var(--true-color-orange, #bc4c00));
-  border-color: color-mix(in srgb, #000 14%, var(--true-color-orange, #bc4c00));
+  background: color-mix(in srgb, var(--text-color-default, #1f2328) 6%, var(--background-color-muted, #f6f8fa));
+  border-color: var(--text-color-muted, #8c959f);
 }
 button.tiny {
   padding: 0.15rem 0.5rem;

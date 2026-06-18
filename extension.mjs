@@ -30,6 +30,7 @@ import {
   existsSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   statSync,
   mkdirSync,
   writeFileSync,
@@ -181,6 +182,10 @@ function applyWorkspace(primary) {
 // recover without a reload. Returns the new env snapshot.
 async function recheckBuildTool() {
   applyWorkspace(await getSessionPrimaryDir());
+  // Drop the memoized `java -version` probes so the re-scan picks up freshly
+  // installed (or in-place upgraded) JDKs — the header refresh / "Check again"
+  // controls re-discover the JDK list, not just the build tool.
+  javaVersionCache.clear();
   session.log(`[coffilot] re-checked build tool: ${TOOL_LABEL || "none"} at ${workspacePath}`, { level: "info" });
   return envSnapshot();
 }
@@ -241,6 +246,7 @@ const JLINE_DUMB_FLAG = "-Dorg.jline.terminal.dumb=true";
 // environment variables for a specific spawn (e.g. SPRING_PROFILES_ACTIVE).
 function toolEnv(extra) {
   const env = { ...process.env, ...(extra || {}) };
+  withJdkEnv(env);
   if (buildTool === "gradle") {
     const existing = process.env.GRADLE_OPTS ? process.env.GRADLE_OPTS.trim() + " " : "";
     env.GRADLE_OPTS = existing + NATIVE_ACCESS_FLAG;
@@ -755,6 +761,246 @@ function detectRuntimeJdk() {
   return info;
 }
 
+// ---------------------------------------------------------------------------
+// JDK selection: discover the installed JDKs and let the user pick one for all
+// build/test/package/run/debug actions. SDKMAN is the primary source (clean,
+// versioned JAVA_HOME paths under ~/.sdkman/candidates/java/*); OS-standard
+// locations and the inherited JAVA_HOME/PATH java are the graceful fallback. We
+// never shell out to `sdk use`/`sdk env` — we resolve a JAVA_HOME and inject it
+// into the spawn env (toolEnv), which is reliable for the processes we spawn and
+// works identically on machines without SDKMAN.
+// ---------------------------------------------------------------------------
+
+const homeDir = process.env.HOME || process.env.USERPROFILE || os.homedir();
+
+/** Absolute path to the `java` launcher inside a JAVA_HOME. */
+function javaBinFor(home) {
+  return path.join(home, "bin", isWindows ? "java.exe" : "java");
+}
+
+// Probe a `java` launcher for its version, cached per binary path so repeated
+// env snapshots don't re-spawn `java -version`. Returns { version, major } or null.
+const javaVersionCache = new Map();
+function probeJavaVersion(bin) {
+  if (javaVersionCache.has(bin)) return javaVersionCache.get(bin);
+  let result = null;
+  try {
+    const res = spawnSync(bin, ["-version"], { encoding: "utf8", timeout: 5000 });
+    const out = `${res.stderr || ""}${res.stdout || ""}`;
+    const m = out.match(/version "([^"]+)"/); // e.g. "21.0.2" or legacy "1.8.0_392"
+    if (m) {
+      const parts = m[1].split(".");
+      // Pre-Java-9 versions are "1.MAJOR.x" (e.g. "1.8" == Java 8), so the real
+      // major is the second component there; Java 9+ uses "MAJOR.x.y" directly.
+      const major = parts[0] === "1" ? parseInt(parts[1], 10) : parseInt(parts[0], 10);
+      result = { version: m[1], major: Number.isNaN(major) ? null : major };
+    }
+  } catch {
+    /* no resolvable java at this path */
+  }
+  javaVersionCache.set(bin, result);
+  return result;
+}
+
+function safeReaddir(dir) {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+// Parent directories to scan for JDKs. Each child directory is a candidate
+// JAVA_HOME (with `suffix` appended when the layout nests it, e.g. macOS bundles).
+function jdkSearchRoots() {
+  const roots = [
+    // SDKMAN, on every platform where it's installed (incl. WSL / Git Bash). The
+    // `current` entry is a symlink to one of the siblings, so it's skipped to
+    // avoid a duplicate with a misleading label.
+    { dir: path.join(homeDir, ".sdkman", "candidates", "java"), source: "sdkman", skip: ["current"] },
+  ];
+  if (isMac) {
+    // Homebrew kegs nest the JDK home under the keg's libexec bundle.
+    const brewSuffix = path.join("libexec", "openjdk.jdk", "Contents", "Home");
+    roots.push(
+      { dir: "/Library/Java/JavaVirtualMachines", suffix: path.join("Contents", "Home"), source: "system" },
+      {
+        dir: path.join(homeDir, "Library", "Java", "JavaVirtualMachines"),
+        suffix: path.join("Contents", "Home"),
+        source: "system",
+      },
+      // Homebrew JDKs (openjdk, openjdk@17, openjdk@21, …): only registered under
+      // /Library if the user manually symlinks them, so scan the keg prefixes
+      // directly. `prefix` limits the scan to openjdk* kegs (Apple Silicon and
+      // Intel Homebrew prefixes).
+      { dir: "/opt/homebrew/opt", prefix: "openjdk", suffix: brewSuffix, source: "homebrew" },
+      { dir: "/usr/local/opt", prefix: "openjdk", suffix: brewSuffix, source: "homebrew" },
+    );
+  } else if (isWindows) {
+    const pf = process.env.ProgramFiles || "C:\\Program Files";
+    for (const vendor of ["Java", "Eclipse Adoptium", "Microsoft", "Zulu", "Amazon Corretto", "BellSoft"]) {
+      roots.push({ dir: path.join(pf, vendor), source: "system" });
+    }
+  } else {
+    roots.push(
+      { dir: "/usr/lib/jvm", source: "system" },
+      { dir: "/usr/java", source: "system" },
+      { dir: "/opt/java", source: "system" },
+    );
+  }
+  return roots;
+}
+
+// A short, human-friendly label for a discovered JDK. SDKMAN candidate folders
+// are already nicely named (e.g. "21.0.3-tem"), so use the folder name there;
+// otherwise show the version plus a hint identifying the install, so two builds
+// of the same version (e.g. a Homebrew JDK and an IDE-managed one) don't render
+// identically.
+function jdkLabel(home, info, source) {
+  if (source === "sdkman" || home.includes(`${path.sep}.sdkman${path.sep}`)) return path.basename(home);
+  const v = info && info.version ? info.version : "?";
+  const hint = jdkLabelHint(home, source);
+  return hint ? `Java ${v} (${hint})` : `Java ${v}`;
+}
+
+// Where a JDK lives, used as a disambiguating label suffix. Homebrew kegs resolve
+// into .../Cellar/...; macOS bundles end in <Name>.jdk/Contents/Home, so use that
+// <Name> (dropping a trailing ".jdk"); otherwise the leaf directory. Returns ""
+// when nothing meaningful can be derived (label falls back to the version alone).
+function jdkLabelHint(home, source) {
+  if (
+    source === "homebrew" ||
+    home.includes(`${path.sep}Cellar${path.sep}`) ||
+    home.includes(`${path.sep}homebrew${path.sep}`)
+  ) {
+    return "Homebrew";
+  }
+  const parts = home.split(path.sep).filter(Boolean);
+  const ci = parts.lastIndexOf("Contents");
+  const name = ci > 0 ? parts[ci - 1] : parts[parts.length - 1];
+  if (!name || name === "Home" || name === "current") return "";
+  return name.replace(/\.jdk$/i, "");
+}
+
+// Discover installed JDKs across SDKMAN + OS-standard locations (incl. Homebrew
+// kegs on macOS) + the inherited JAVA_HOME. Deduped by resolved real path, sorted
+// newest major first. Not cached as a list (so a newly installed JDK appears on
+// the next env refresh); the costly `java -version` probe is memoized per binary
+// in probeJavaVersion. Each entry: { home, version, major, label, source }.
+function discoverJdks() {
+  const found = new Map(); // realpath -> entry
+  const add = (home, source) => {
+    if (!home) return;
+    let real;
+    try {
+      real = realpathSync(home);
+    } catch {
+      real = home;
+    }
+    if (found.has(real)) return;
+    const bin = javaBinFor(real);
+    if (!existsSync(bin)) return;
+    const info = probeJavaVersion(bin);
+    if (!info) return;
+    found.set(real, {
+      home: real,
+      version: info.version,
+      major: info.major,
+      label: jdkLabel(real, info, source),
+      source,
+    });
+  };
+  for (const root of jdkSearchRoots()) {
+    for (const name of safeReaddir(root.dir)) {
+      if (root.skip && root.skip.includes(name)) continue;
+      if (root.prefix && !name.startsWith(root.prefix)) continue;
+      const child = path.join(root.dir, name);
+      add(root.suffix ? path.join(child, root.suffix) : child, root.source);
+    }
+  }
+  // The inherited JAVA_HOME, so a manually configured JDK is always selectable.
+  if (process.env.JAVA_HOME) add(process.env.JAVA_HOME, "JAVA_HOME");
+  return [...found.values()].sort((a, b) => {
+    const am = a.major || 0;
+    const bm = b.major || 0;
+    if (am !== bm) return bm - am;
+    return String(b.version).localeCompare(String(a.version), undefined, { numeric: true });
+  });
+}
+
+// Whether a JAVA_HOME is one Coffilot actually discovered. Used as an allowlist so
+// only a known, on-disk JDK can ever be selected — a selection arriving over the
+// loopback settings endpoint is never spawned or trusted unless it is in this set.
+function isKnownJdkHome(home) {
+  return !!home && discoverJdks().some((j) => j.home === home);
+}
+
+// The JDK Coffilot will actually use for spawned actions: the explicit selection
+// when it is a known/on-disk JDK, otherwise the inherited JAVA_HOME / PATH `java`
+// (the default, so existing users are unaffected). `auto` marks the inherited
+// default. The selected entry is taken from the discovered list (never re-probed
+// from the raw setting) so no user-supplied path reaches a child process here.
+function activeJdk() {
+  if (settings.jdkHome) {
+    const known = discoverJdks().find((j) => j.home === settings.jdkHome);
+    if (known) {
+      return { home: known.home, version: known.version, major: known.major, source: "selected", auto: false };
+    }
+  }
+  const home = process.env.JAVA_HOME || null;
+  const bin = home ? javaBinFor(home) : "java";
+  const info = probeJavaVersion(bin) || {};
+  return {
+    home,
+    version: info.version || null,
+    major: info.major || null,
+    source: home ? "JAVA_HOME" : "PATH",
+    auto: true,
+  };
+}
+
+// Platform-appropriate guidance for installing more JDKs, surfaced when SDKMAN is
+// present (suggest another `sdk install java`) or absent (suggest installing
+// SDKMAN). Mirrors mvndInstallHint's shape.
+function jdkInstallHint() {
+  const sdkmanPresent = existsSync(path.join(homeDir, ".sdkman"));
+  if (sdkmanPresent) {
+    return { sdkman: true, cmd: "sdk install java", url: "https://sdkman.io/jdks" };
+  }
+  if (isWindows) {
+    // SDKMAN needs a POSIX shell on Windows (WSL / Git Bash); point at the docs.
+    return { sdkman: false, cmd: null, url: "https://sdkman.io/install" };
+  }
+  return { sdkman: false, cmd: 'curl -s "https://get.sdkman.io" | bash', url: "https://sdkman.io/install" };
+}
+
+// Inject the selected JDK into a spawn environment: set JAVA_HOME and prepend its
+// bin to PATH so the build wrappers, mvnd, the Gradle daemon, and plain-`java`
+// launches all resolve the chosen JDK. Reuses the existing PATH key casing (the
+// child uses "Path" on Windows). No-op when no JDK is selected (the default).
+function withJdkEnv(env) {
+  const home = settings.jdkHome;
+  // Only inject a JDK that Coffilot actually discovered (an allowlist), so the
+  // JAVA_HOME / PATH handed to spawned build tools can't be an arbitrary path.
+  if (!home || !isKnownJdkHome(home)) return env;
+  env.JAVA_HOME = home;
+  const binDir = path.join(home, "bin");
+  const pathKey = Object.keys(env).find((k) => k.toLowerCase() === "path") || "PATH";
+  env[pathKey] = binDir + path.delimiter + (env[pathKey] || "");
+  return env;
+}
+
+// Drop a persisted JDK selection that no longer resolves, falling back to the
+// system default so a removed/renamed JDK can't wedge every action.
+function validateJdkSetting() {
+  if (settings.jdkHome && !existsSync(javaBinFor(settings.jdkHome))) {
+    session.log(`[coffilot] previously selected JDK ${settings.jdkHome} no longer exists; using the system default.`, {
+      level: "warn",
+    });
+    settings.jdkHome = null;
+  }
+}
+
 // The JDTLS `-data` workspace dir from the config args. A relative path is
 // created by the CLI relative to its working dir, which is normally the Maven
 // project root but can differ from the extension's own cwd, so callers resolve
@@ -973,11 +1219,15 @@ const SETTINGS_KEYS = [
   "randomPort",
   "openBrowser",
   "fullBuild",
+  "buildClean",
+  "packageClean",
+  "packageInstall",
   "autoProfile",
   "autoProfileEvent",
   "autoProfileDuration",
   "maskSecrets",
   "metricsPollMs",
+  "jdkHome",
 ];
 
 // Live-metrics polling cadence bounds (ms). Kept conservative so the UI stays
@@ -1011,6 +1261,13 @@ function defaultSettings() {
     // On by default: the Test button runs the whole suite. Off runs only the
     // tests affected by the current uncommitted changes.
     fullBuild: true,
+    // Build/Package "Clean" toggles (off by default): prepend a clean goal so a
+    // build runs `clean install` instead of `install` (Gradle `clean build`).
+    buildClean: false,
+    packageClean: false,
+    // Package "Install" toggle (off by default): install the artifact to the
+    // local repository (`mvn install`; Gradle `publishToMavenLocal`).
+    packageInstall: false,
     autoProfile: false,
     autoProfileEvent: "cpu",
     autoProfileDuration: 30,
@@ -1019,6 +1276,9 @@ function defaultSettings() {
     maskSecrets: true,
     // Live-metrics polling cadence in milliseconds (clamped on use).
     metricsPollMs: METRICS_POLL_DEFAULT,
+    // Selected JDK (absolute JAVA_HOME) for all build/test/package/run/debug
+    // actions; null = inherit the system default (JAVA_HOME / PATH java).
+    jdkHome: null,
   };
 }
 
@@ -1151,6 +1411,7 @@ function recordLaneHistory(op) {
 }
 
 const settings = loadSettings();
+validateJdkSetting();
 
 // Reload persisted settings into the existing object after a background root
 // refinement (refineWorkspaceFromSession) lands a different project root. The
@@ -1161,6 +1422,7 @@ function reloadSettingsInPlace() {
   const fresh = loadSettings();
   for (const k of Object.keys(settings)) delete settings[k];
   Object.assign(settings, fresh);
+  validateJdkSetting();
 }
 
 // Estimate for the progress bar: persisted full-reactor total from the last
@@ -2034,6 +2296,9 @@ function applySettings(body) {
   if (typeof body.openBrowser === "boolean") settings.openBrowser = body.openBrowser;
   if (typeof body.maskSecrets === "boolean") settings.maskSecrets = body.maskSecrets;
   if (typeof body.fullBuild === "boolean") settings.fullBuild = body.fullBuild;
+  if (typeof body.buildClean === "boolean") settings.buildClean = body.buildClean;
+  if (typeof body.packageClean === "boolean") settings.packageClean = body.packageClean;
+  if (typeof body.packageInstall === "boolean") settings.packageInstall = body.packageInstall;
   if (typeof body.autoProfile === "boolean") settings.autoProfile = body.autoProfile;
   if (["cpu", "alloc", "wall", "lock"].includes(body.autoProfileEvent)) {
     settings.autoProfileEvent = body.autoProfileEvent;
@@ -2043,6 +2308,25 @@ function applySettings(body) {
   }
   if (body.metricsPollMs != null && Number.isFinite(Number(body.metricsPollMs))) {
     settings.metricsPollMs = clampMetricsPollMs(body.metricsPollMs);
+  }
+  // JDK selection. Don't switch the JDK out from under a running/debugging app —
+  // the change applies to the next launch, so the user must stop it first. A new
+  // selection must point at a real JAVA_HOME (containing bin/java).
+  if ("jdkHome" in body) {
+    const want = body.jdkHome ? String(body.jdkHome) : null;
+    if (want !== settings.jdkHome) {
+      if (appBusy()) {
+        session.log("[coffilot] JDK change ignored while the app is running — stop it first.", { level: "warn" });
+      } else if (want === null) {
+        settings.jdkHome = null;
+      } else if (isKnownJdkHome(want)) {
+        settings.jdkHome = want;
+      } else {
+        session.log(`[coffilot] ignoring unrecognized JDK selection ${want} (not a discovered JDK).`, {
+          level: "warn",
+        });
+      }
+    }
   }
   persistSettings();
 
@@ -2055,6 +2339,9 @@ function applySettings(body) {
   if (settings.metricsPollMs !== prev.metricsPollMs && metricsTimer) {
     startMetricsPolling();
   }
+  // A JDK change affects which runtime the next action uses; refresh the env so
+  // the canvas updates the active-JDK display and dropdown selection.
+  if (settings.jdkHome !== prev.jdkHome) broadcast("env", envSnapshot());
 
   broadcast("status", statusSnapshot());
   return settingsSnapshot();
@@ -2255,6 +2542,11 @@ function envSnapshot() {
     warmTip: warm.tip,
     install: warm.install,
     jdtls: detectJdtls(),
+    // Installed JDKs (SDKMAN + OS locations + JAVA_HOME) and the one in effect,
+    // for the Settings JDK selector.
+    jdks: discoverJdks(),
+    activeJdk: activeJdk(),
+    jdkInstall: jdkInstallHint(),
     // Back-compat fields retained for any external consumers.
     mvndAvailable: m.available,
     mvndPath: m.path,
@@ -2959,10 +3251,16 @@ function affectedTestArgs(tests, warm) {
 }
 
 // Default argument vectors per lane, per tool. `warm` only affects Gradle (daemon
-// vs --no-daemon); Maven's warm tier swaps the binary (mvnd) instead.
-function defaultBuildArgs(warm) {
-  if (buildTool === "gradle") return ["build", "-x", "test", "--console=plain", ...gradleWarmFlags(warm)];
-  return ["-ntp", "-DskipTests", "install"];
+// vs --no-daemon); Maven's warm tier swaps the binary (mvnd) instead. `clean`
+// prepends a clean goal (Build/Package "Clean" toggle); `install` (Package only)
+// installs the artifact to the local repository instead of just packaging it.
+function defaultBuildArgs(warm, clean) {
+  if (buildTool === "gradle") {
+    const goals = clean ? ["clean", "build"] : ["build"];
+    return [...goals, "-x", "test", "--console=plain", ...gradleWarmFlags(warm)];
+  }
+  const goals = clean ? ["clean", "install"] : ["install"];
+  return ["-ntp", "-DskipTests", ...goals];
 }
 function defaultTestArgs(warm) {
   // cleanTest forces Gradle to re-run tests even when nothing changed, so the
@@ -2970,12 +3268,20 @@ function defaultTestArgs(warm) {
   if (buildTool === "gradle") return ["cleanTest", "test", "--console=plain", ...gradleWarmFlags(warm)];
   return ["-ntp", "test"];
 }
-function defaultPackageArgs(warm) {
-  if (buildTool === "gradle") return ["assemble", "--console=plain", ...gradleWarmFlags(warm)];
-  return ["-ntp", "package"];
+function defaultPackageArgs(warm, clean, install) {
+  if (buildTool === "gradle") {
+    // `publishToMavenLocal` is the Gradle equivalent of `mvn install` (requires
+    // the maven-publish plugin with a configured publication).
+    const goal = install ? "publishToMavenLocal" : "assemble";
+    const goals = clean ? ["clean", goal] : [goal];
+    return [...goals, "--console=plain", ...gradleWarmFlags(warm)];
+  }
+  const goal = install ? "install" : "package";
+  const goals = clean ? ["clean", goal] : [goal];
+  return ["-ntp", ...goals];
 }
 
-async function build(extraArgs, warm, mavenProfiles) {
+async function build(extraArgs, warm, mavenProfiles, clean) {
   if (!buildTool) {
     pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "build");
     return noToolResult();
@@ -2984,7 +3290,7 @@ async function build(extraArgs, warm, mavenProfiles) {
   try {
     if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
     const r = resolveRunner(warm);
-    const base = extraArgs && extraArgs.length ? extraArgs : defaultBuildArgs(r.warm);
+    const base = extraArgs && extraArgs.length ? extraArgs : defaultBuildArgs(r.warm, clean === true);
     const args = withMavenProfiles(base, mavenProfiles);
     lanes.build.warm = r.warm;
     const code = await spawnTool("build", args, "building", { bin: r.bin, label: r.label });
@@ -3001,7 +3307,7 @@ async function build(extraArgs, warm, mavenProfiles) {
   }
 }
 
-async function packageApp(extraArgs, warm, mavenProfiles) {
+async function packageApp(extraArgs, warm, mavenProfiles, clean, install) {
   if (!buildTool) {
     pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "package");
     return noToolResult();
@@ -3010,7 +3316,8 @@ async function packageApp(extraArgs, warm, mavenProfiles) {
   try {
     if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
     const r = resolveRunner(warm);
-    const base = extraArgs && extraArgs.length ? extraArgs : defaultPackageArgs(r.warm);
+    const base =
+      extraArgs && extraArgs.length ? extraArgs : defaultPackageArgs(r.warm, clean === true, install === true);
     const args = withMavenProfiles(base, mavenProfiles);
     lanes.package.warm = r.warm;
     const code = await spawnTool("package", args, "packaging", { bin: r.bin, label: r.label });
@@ -4069,9 +4376,12 @@ async function restart(op, params = {}) {
   // over SSE, so the relaunch must not block the HTTP response until it finishes.
   if (op === "test" && params.affected === true) {
     runAffectedTests(params.warm === true, params.mavenProfiles);
+  } else if (op === "build") {
+    build(null, params.warm === true, params.mavenProfiles, params.clean === true);
+  } else if (op === "package") {
+    packageApp(null, params.warm === true, params.mavenProfiles, params.clean === true, params.install === true);
   } else {
-    const startFn = op === "build" ? build : op === "test" ? test : packageApp;
-    startFn(null, params.warm === true, params.mavenProfiles);
+    test(null, params.warm === true, params.mavenProfiles);
   }
   return { ok: true, restarted: true, op };
 }
@@ -5912,7 +6222,7 @@ async function handleRequest(req, res) {
 
   if (req.method === "POST" && url.pathname === "/api/build") {
     const body = await readBody(req);
-    build(null, body.warm === true, body.mavenProfiles); // fire-and-forget; progress streams over SSE
+    build(null, body.warm === true, body.mavenProfiles, body.clean === true); // fire-and-forget; progress streams over SSE
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -5937,7 +6247,7 @@ async function handleRequest(req, res) {
   }
   if (req.method === "POST" && url.pathname === "/api/package") {
     const body = await readBody(req);
-    packageApp(null, body.warm === true, body.mavenProfiles); // fire-and-forget; streams over SSE
+    packageApp(null, body.warm === true, body.mavenProfiles, body.clean === true, body.install === true); // fire-and-forget; streams over SSE
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -6208,9 +6518,20 @@ function makeCanvas() {
               description:
                 "Keep the JVM warm between runs (Maven Daemon mvnd when available, or the Gradle daemon) for faster startup.",
             },
+            clean: {
+              type: "boolean",
+              description:
+                "Run a clean before building, so the build runs `clean install` instead of `install` (Gradle `clean build`). Ignored when `args` is given.",
+            },
           },
         },
-        handler: async (ctx) => build(splitArgs(ctx.input?.args), ctx.input?.warm === true, ctx.input?.mavenProfiles),
+        handler: async (ctx) =>
+          build(
+            splitArgs(ctx.input?.args),
+            ctx.input?.warm === true,
+            ctx.input?.mavenProfiles,
+            ctx.input?.clean === true,
+          ),
       },
       {
         name: "run_tests",
@@ -6276,10 +6597,26 @@ function makeCanvas() {
               description:
                 "Keep the JVM warm between runs (Maven Daemon mvnd when available, or the Gradle daemon) for faster startup.",
             },
+            clean: {
+              type: "boolean",
+              description:
+                "Run a clean before packaging (`mvn clean package`; Gradle `clean assemble`). Ignored when `args` is given.",
+            },
+            install: {
+              type: "boolean",
+              description:
+                "Install the artifact to the local repository (`mvn install`; Gradle `publishToMavenLocal`) instead of just packaging. Ignored when `args` is given.",
+            },
           },
         },
         handler: async (ctx) =>
-          packageApp(splitArgs(ctx.input?.args), ctx.input?.warm === true, ctx.input?.mavenProfiles),
+          packageApp(
+            splitArgs(ctx.input?.args),
+            ctx.input?.warm === true,
+            ctx.input?.mavenProfiles,
+            ctx.input?.clean === true,
+            ctx.input?.install === true,
+          ),
       },
       {
         name: "start_app",
