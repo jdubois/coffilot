@@ -123,6 +123,16 @@ let TOOL_LABEL = buildTool === "gradle" ? "Gradle" : buildTool === "maven" ? "Ma
 let wrapperName = wrapperFileNameFor(buildTool);
 let wrapperPath = path.join(workspacePath, wrapperName);
 
+// Resolves once the initial background project-root refinement has finished (see
+// refineWorkspaceFromSession, kicked off after the server starts listening). The
+// /api/state and /api/env handlers await it so the first snapshot the iframe
+// renders already reflects the authoritative build tool. Otherwise, for a
+// user/global install the canvas opens with buildTool still null — the
+// Build/Test/Package/Run buttons render disabled — and an eager first click is
+// dropped, only taking effect on the second click once the env event lands.
+// Starts resolved so awaiting it is a no-op until the real run is assigned.
+let workspaceReady = Promise.resolve();
+
 /** The wrapper file name for a build tool, accounting for the platform. */
 function wrapperFileNameFor(tool) {
   return tool === "gradle" ? (isWindows ? "gradlew.bat" : "gradlew") : isWindows ? "mvnw.cmd" : "mvnw";
@@ -1084,6 +1094,14 @@ function freePort() {
   });
 }
 
+// Cap how long the project-root probe (the permission-paths RPC) may block the
+// first /api/state and /api/env responses, which await the initial detection so
+// the iframe never renders the build buttons disabled before the tool is known.
+// The RPC normally answers in a few milliseconds; this guard keeps a
+// non-responsive host from holding the loading overlay up (the client also has
+// its own 4s overlay backstop).
+const PRIMARY_DIR_TIMEOUT_MS = 2500;
+
 // Read the session's primary working directory (the project the user opened) via
 // the permission-paths API. This is the only reliable signal for a user/global
 // install, where the host runs the extension with cwd=<COPILOT_HOME> and __dirname
@@ -1091,7 +1109,12 @@ function freePort() {
 // are tolerated and we fall back to path heuristics.
 async function getSessionPrimaryDir() {
   try {
-    const res = await session.rpc?.permissions?.paths?.list?.();
+    const call = session.rpc?.permissions?.paths?.list?.();
+    if (!call) return null;
+    const res = await Promise.race([
+      call,
+      new Promise((resolve) => setTimeout(() => resolve(null), PRIMARY_DIR_TIMEOUT_MS)),
+    ]);
     if (res && typeof res.primary === "string" && res.primary) return res.primary;
   } catch (e) {
     session.log(`[coffilot] could not read session working directory: ${e.message}`, { level: "warn" });
@@ -6010,6 +6033,10 @@ async function handleRequest(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/state") {
+    // Wait for the initial project-root detection so the first snapshot the iframe
+    // renders already has the right build tool — otherwise the lane buttons would
+    // briefly render disabled and an eager first click would be lost.
+    await workspaceReady;
     sendJson(res, 200, {
       status: statusSnapshot(),
       metrics: lastMetrics,
@@ -6032,6 +6059,7 @@ async function handleRequest(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/env") {
+    await workspaceReady;
     sendJson(res, 200, envSnapshot());
     return;
   }
@@ -6304,9 +6332,11 @@ await serverReady;
 // Now that the canvas is registered and its loopback server is listening, refine
 // the project root from the session's primary working directory in the
 // background. Kept off the synchronous startup path on purpose so opening a
-// session surfaces the canvas immediately; the UI self-heals via the broadcast
-// env (and its focus refresh / "Check again").
-void refineWorkspaceFromSession();
+// session surfaces the canvas immediately; the loading overlay stays up until
+// the first /api/state lands, which awaits workspaceReady so the build tool is
+// known before the buttons render. The UI also self-heals via the broadcast env
+// (and its focus refresh / "Check again").
+workspaceReady = refineWorkspaceFromSession().catch(() => {});
 
 // One minute after launch, check whether this Coffilot checkout is behind its
 // remote and, if so, light up the header's "Update to latest version" button.
