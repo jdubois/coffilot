@@ -24,6 +24,7 @@ const {
   parseJfrStacks,
   pickAppPidFromJvmList,
   quarkusDevConsoleFailed,
+  jdkSupportsNativeAccess,
 } = await import("../extension.mjs");
 
 // ---------------------------------------------------------------------------
@@ -447,4 +448,27 @@ test("quarkusDevConsoleFailed re-flags a failed live reload after a good start",
     "Failed to start quarkus",
   ];
   assert.equal(quarkusDevConsoleFailed(lines), true);
+});
+
+// ---------------------------------------------------------------------------
+// --enable-native-access JDK gating (jdkSupportsNativeAccess)
+// ---------------------------------------------------------------------------
+
+test("jdkSupportsNativeAccess: JDK 16+ accepts --enable-native-access", () => {
+  assert.equal(jdkSupportsNativeAccess(16), true);
+  assert.equal(jdkSupportsNativeAccess(17), true);
+  assert.equal(jdkSupportsNativeAccess(21), true);
+  assert.equal(jdkSupportsNativeAccess(26), true);
+});
+
+test("jdkSupportsNativeAccess: older JDKs that reject the flag are excluded", () => {
+  assert.equal(jdkSupportsNativeAccess(8), false);
+  assert.equal(jdkSupportsNativeAccess(11), false);
+  assert.equal(jdkSupportsNativeAccess(15), false);
+});
+
+test("jdkSupportsNativeAccess: unknown/invalid majors omit the flag", () => {
+  assert.equal(jdkSupportsNativeAccess(null), false);
+  assert.equal(jdkSupportsNativeAccess(undefined), false);
+  assert.equal(jdkSupportsNativeAccess(NaN), false);
 });
