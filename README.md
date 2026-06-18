@@ -102,8 +102,8 @@ wins; when neither is found the console says so and stays disabled until one is 
   up waiting for a fix), or a running app that exposes no runtime-logger endpoint,
   a button pushes a context-rich request back into the chat so the agent can
   diagnose and fix it.
-- **Responsive layout** &mdash; on a wide canvas the **Live JVM / Loggers / Settings**
-  panel is docked on the right; as the canvas narrows it collapses to an icon rail on
+- **Responsive layout** &mdash; on a wide canvas the **Live JVM / Loggers / Upgrades /
+  Settings** panel is docked on the right; as the canvas narrows it collapses to an icon rail on
   the right edge, and tapping an icon slides that pane out as an overlay over the main
   console. A toggle button (the chevron in the panel's tab bar / rail) hides or shows
   the panel on demand in any layout &mdash; even when docked &mdash; so you can give the
@@ -144,6 +144,12 @@ wins; when neither is found the console says so and stays disabled until one is 
   detects and registers it &mdash; the server runs as a separate process. Shown when a
   Quarkus module is detected and JBang or Java 21+ is available (docs search also
   needs Docker/Podman).
+- **Upgrades** &mdash; an **Upgrades** side tab that doesn't need the app running. For
+  Maven projects it lists **outdated libraries** &mdash; each shown with its current →
+  latest version, an upgrade-size badge (major / minor / patch), pre-release warnings,
+  and a direct/transitive marker (with a **Direct only** toggle to hide transitive ones).
+  Each finding expands for detail and carries a **Fix with Copilot** button. (Outdated-library
+  scanning is Maven-only for now.)
 
 ## Graceful degradation by capability
 
@@ -240,11 +246,10 @@ In a Copilot app session on a Maven or Gradle project, open the **Coffilot** can
 6. **Stop** when done.
 
 The agent can drive the same flow with the `build_app`, `run_tests`,
-The agent can drive the same flow with the `build_app`, `run_tests`,
 `run_affected_tests`, `package_app`, `start_app`, `stop_app`, `get_status`,
-`get_metrics`, `profile_app`, `fix_issue`, `run_scan` and `set_log_level` actions,
-plus the debug actions `start_debug`, `stop_debug`, `set_breakpoint`,
-`remove_breakpoint`, `debug_continue`, `debug_step`, `debug_stack`,
+`get_metrics`, `profile_app`, `fix_issue`, `run_scan`, `check_dependencies` and
+`set_log_level` actions, plus the debug actions `start_debug`, `stop_debug`,
+`set_breakpoint`, `remove_breakpoint`, `debug_continue`, `debug_step`, `debug_stack`,
 `get_variables`, `debug_evaluate` and `debug_status`.
 
 ## How it works
@@ -272,6 +277,10 @@ Coffilot is a Node process (the extension) that:
 - runs BootUI's advisor scans straight from its REST API (`/bootui/api/panels` to
   discover them, `POST /bootui/api/{id}/scan` to run one), surfaced in the **BootUI**
   tab — no in-app MCP server required;
+- checks for outdated libraries without the app running: a Maven `dependency:tree` +
+  `versions:display-dependency-updates` run whose output it parses into the outdated-library
+  list (the build tool's own plugins resolve the latest versions — Coffilot never talks to a
+  package registry directly), surfaced in the **Upgrades** tab;
 - pushes contextual "fix this" turns back into the chat through the Copilot SDK.
 
 The loopback HTTP server that backs the iframe binds to `127.0.0.1` only. See

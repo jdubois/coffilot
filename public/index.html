@@ -484,6 +484,17 @@
             </svg>
             <span class="atab-label">Settings</span>
           </button>
+          <button class="atab" data-atab="deps" title="Check for outdated libraries and upgrade them with Copilot">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M8 1a2.5 2.5 0 0 1 2.5 2.5V4h-5V3.5A2.5 2.5 0 0 1 8 1m3.5 3v-.5a3.5 3.5 0 1 0-7 0V4H1.5a.5.5 0 0 0-.5.5v8A2.5 2.5 0 0 0 3.5 15h9a2.5 2.5 0 0 0 2.5-2.5v-8a.5.5 0 0 0-.5-.5zm-1 1H14v7.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5V5h2v.5a.5.5 0 0 0 1 0V5h6v.5a.5.5 0 0 0 1 0z"
+              />
+              <path
+                d="M7.5 8.5a.5.5 0 0 1 1 0v1.793l1.146-1.147a.5.5 0 0 1 .708.708l-2 2a.5.5 0 0 1-.708 0l-2-2a.5.5 0 1 1 .708-.708L7.5 10.293z"
+              />
+            </svg>
+            <span class="atab-label">Upgrades</span>
+          </button>
           <div class="atab-sep" role="separator" aria-hidden="true" hidden></div>
           <button id="aside-toggle" class="aside-toggle" type="button" aria-label="Hide panel" title="Hide panel">
             <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
@@ -799,6 +810,26 @@
                 title="How often the Live JVM panel refreshes metrics from the running app (500–30000 ms)."
               />
             </div>
+          </div>
+
+          <div id="atab-deps" class="apane">
+            <h2>Dependencies &amp; upgrades<span id="deps-src" class="src" hidden></span></h2>
+            <p class="hint" id="deps-hint">
+              Scan for <strong>outdated libraries</strong> and upgrade them with Copilot.
+            </p>
+            <div class="deps-controls">
+              <button class="tiny" id="deps-scan">Check dependencies</button>
+              <label
+                class="switch small disabled"
+                id="deps-direct-toggle"
+                title="Hide transitive dependencies and show only the ones you declare."
+              >
+                <input type="checkbox" id="deps-direct" disabled />
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-label">Direct only</span>
+              </label>
+            </div>
+            <div id="deps-result"></div>
           </div>
         </div>
       </aside>

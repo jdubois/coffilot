@@ -151,6 +151,78 @@ test("the Settings tab is pinned to the top of the aside bar", () => {
   assert.ok(order("scans") > 100, "an unavailable panel sinks below the separator");
 });
 
+test("renderDeps renders an outdated-library list", () => {
+  assert.equal(typeof win.renderDeps, "function", "renderDeps should be a global");
+  // A bad payload shows an error, not a throw.
+  assert.doesNotThrow(() => win.renderDeps(null));
+  assert.doesNotThrow(() => win.renderDeps({ error: "boom" }));
+
+  // Idle snapshot: scan not yet run.
+  assert.doesNotThrow(() =>
+    win.renderDeps({
+      ran: false,
+      buildTool: "maven",
+      available: true,
+      updatesSupported: true,
+      updates: [],
+      counts: { total: 0, direct: 0, transitive: 0 },
+    }),
+  );
+  let html = win.document.getElementById("deps-result").innerHTML;
+  assert.ok(html.includes("Outdated libraries"), "expected the outdated-libraries section");
+  assert.ok(html.includes("Check dependencies"), "expected the prompt to run a scan");
+
+  // A completed scan with a direct + a transitive outdated dependency.
+  assert.doesNotThrow(() =>
+    win.renderDeps({
+      ran: true,
+      buildTool: "maven",
+      available: true,
+      updatesSupported: true,
+      updates: [
+        {
+          group: "com.google.guava",
+          artifact: "guava",
+          current: "19.0",
+          latest: "33.6.0-jre",
+          scope: "compile",
+          direct: true,
+          via: null,
+          prerelease: false,
+          jump: "major",
+        },
+        {
+          group: "org.slf4j",
+          artifact: "slf4j-api",
+          current: "1.7.20",
+          latest: "2.1.0-alpha1",
+          scope: "compile",
+          direct: false,
+          via: "org.example:lib",
+          prerelease: true,
+          jump: "major",
+        },
+      ],
+      counts: { total: 2, direct: 1, transitive: 1 },
+    }),
+  );
+  html = win.document.getElementById("deps-result").innerHTML;
+  assert.ok(html.includes("guava"), "expected the outdated dependency in the rendered list");
+  assert.ok(html.includes("data-dep-fix"), "expected a Fix-with-Copilot button per dependency");
+
+  // Gradle: outdated scanning unsupported.
+  assert.doesNotThrow(() =>
+    win.renderDeps({
+      ran: false,
+      buildTool: "gradle",
+      available: true,
+      updatesSupported: false,
+      updates: [],
+      counts: { total: 0, direct: 0, transitive: 0 },
+    }),
+  );
+});
+
 test("renderTests renders a graphical report with a failure", () => {
   const report = {
     summary: { tests: 2, passed: 1, failures: 1, errors: 0, skipped: 0, timeSec: 0.2, files: 1 },

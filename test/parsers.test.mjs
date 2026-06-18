@@ -28,6 +28,11 @@ const {
   jdkSupportsNativeAccess,
   springBootVersionFromPom,
   springBootVersionFromGradle,
+  parseDependencyTree,
+  parseDependencyUpdates,
+  mergeDependencyUpdates,
+  classifyVersionJump,
+  isPrerelease,
 } = await import("../extension.mjs");
 
 // ---------------------------------------------------------------------------
@@ -581,4 +586,102 @@ test("springBootVersionFromGradle reads a buildscript classpath and skips variab
   assert.equal(springBootVersionFromGradle(classpath), "2.7.18");
   const variable = `plugins { id 'org.springframework.boot' version "$springBootVersion" }`;
   assert.equal(springBootVersionFromGradle(variable), null);
+});
+
+// ---------------------------------------------------------------------------
+// Dependencies — outdated-library parsers
+// ---------------------------------------------------------------------------
+
+test("parseDependencyTree classifies direct vs transitive by tree depth", () => {
+  const out = [
+    "[INFO] com.example:demo:jar:1.0.0",
+    "[INFO] +- org.springframework.boot:spring-boot-starter-webmvc:jar:4.0.0:compile",
+    "[INFO] |  +- org.springframework:spring-web:jar:7.0.0:compile",
+    "[INFO] |  \\- com.fasterxml.jackson.core:jackson-databind:jar:2.18.0:compile",
+    "[INFO] \\- com.google.guava:guava:jar:19.0:compile",
+  ].join("\n");
+  const nodes = parseDependencyTree(out);
+  const byKey = Object.fromEntries(nodes.map((n) => [n.key, n]));
+  assert.equal(byKey["org.springframework.boot:spring-boot-starter-webmvc"].direct, true);
+  assert.equal(byKey["com.google.guava:guava"].direct, true);
+  assert.equal(byKey["org.springframework:spring-web"].direct, false);
+  assert.equal(byKey["org.springframework:spring-web"].via, "org.springframework.boot:spring-boot-starter-webmvc");
+  assert.equal(byKey["com.fasterxml.jackson.core:jackson-databind"].version, "2.18.0");
+});
+
+test("parseDependencyTree handles a 6-part coordinate with a classifier", () => {
+  const out = "[INFO] +- org.example:native-lib:jar:linux-x86_64:1.2.3:runtime";
+  const nodes = parseDependencyTree(out);
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].version, "1.2.3");
+  assert.equal(nodes[0].scope, "runtime");
+  assert.equal(nodes[0].direct, true);
+});
+
+test("parseDependencyTree keeps the shallowest occurrence of a duplicate", () => {
+  const out = [
+    "[INFO] +- com.google.guava:guava:jar:19.0:compile",
+    "[INFO] \\- org.example:wrapper:jar:1.0:compile",
+    "[INFO]    \\- com.google.guava:guava:jar:19.0:compile",
+  ].join("\n");
+  const nodes = parseDependencyTree(out);
+  const guava = nodes.filter((n) => n.key === "com.google.guava:guava");
+  assert.equal(guava.length, 1);
+  assert.equal(guava[0].direct, true);
+});
+
+test("parseDependencyUpdates extracts current -> latest per coordinate", () => {
+  const out = [
+    "[INFO] The following dependencies in Dependencies have newer versions:",
+    "[INFO]   com.google.guava:guava ..................... 19.0 -> 33.6.0-jre",
+    "[INFO]   org.slf4j:slf4j-api ........................ 1.7.20 -> 2.1.0-alpha1",
+    "[INFO] ",
+  ].join("\n");
+  const map = parseDependencyUpdates(out);
+  assert.equal(map.get("com.google.guava:guava").latest, "33.6.0-jre");
+  assert.equal(map.get("org.slf4j:slf4j-api").current, "1.7.20");
+  assert.equal(map.size, 2);
+});
+
+test("mergeDependencyUpdates joins tree + updates, sorts direct-first by jump", () => {
+  const nodes = parseDependencyTree(
+    [
+      "[INFO] +- com.google.guava:guava:jar:19.0:compile",
+      "[INFO] \\- org.example:lib:jar:1.0.0:compile",
+      "[INFO]    \\- org.slf4j:slf4j-api:jar:1.7.20:compile",
+    ].join("\n"),
+  );
+  const updates = parseDependencyUpdates(
+    [
+      "[INFO]   com.google.guava:guava ... 19.0 -> 33.6.0-jre",
+      "[INFO]   org.slf4j:slf4j-api ...... 1.7.20 -> 2.1.0-alpha1",
+    ].join("\n"),
+  );
+  const merged = mergeDependencyUpdates(nodes, updates);
+  assert.equal(merged.length, 2);
+  // guava is direct so it sorts ahead of the transitive slf4j.
+  assert.equal(merged[0].artifact, "guava");
+  assert.equal(merged[0].direct, true);
+  assert.equal(merged[0].jump, "major");
+  assert.equal(merged[1].direct, false);
+  assert.equal(merged[1].via, "org.example:lib");
+  // slf4j's latest is a pre-release while the current isn't.
+  assert.equal(merged[1].prerelease, true);
+});
+
+test("classifyVersionJump distinguishes major / minor / patch", () => {
+  assert.equal(classifyVersionJump("1.0.0", "2.0.0"), "major");
+  assert.equal(classifyVersionJump("1.2.0", "1.5.0"), "minor");
+  assert.equal(classifyVersionJump("1.2.3", "1.2.9"), "patch");
+  assert.equal(classifyVersionJump("19.0", "33.6.0-jre"), "major");
+  assert.equal(classifyVersionJump("weird", "1.0"), "other");
+});
+
+test("isPrerelease detects alpha/beta/rc/milestone/snapshot qualifiers", () => {
+  assert.equal(isPrerelease("2.1.0-alpha1"), true);
+  assert.equal(isPrerelease("3.0.0-RC1"), true);
+  assert.equal(isPrerelease("1.0.0-M2"), true);
+  assert.equal(isPrerelease("5.2.0-SNAPSHOT"), true);
+  assert.equal(isPrerelease("33.6.0-jre"), false);
+  assert.equal(isPrerelease("3.20.0"), false);
 });

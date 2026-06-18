@@ -6617,6 +6617,20 @@ function buildFixPrompt(kind, extra = {}) {
         .filter(Boolean)
         .join("\n\n");
     }
+    case "fix-dependency": {
+      const coord = `${extra.group}:${extra.artifact}`;
+      const transitive = extra.direct === false || extra.scope === "transitive";
+      const scopeNote = transitive
+        ? `\`${coord}\` is a **transitive** dependency${extra.via ? ` pulled in by \`${extra.via}\`` : ""}, so you usually can't bump it directly: prefer upgrading the dependency that brings it in, or — if that isn't possible — pin the newer version explicitly (Maven: a \`<dependency>\` or a \`<dependencyManagement>\` entry; Gradle: a dependency constraint).`
+        : `\`${coord}\` is a **direct** dependency declared in the build.`;
+      return [
+        `Upgrade the ${TOOL_LABEL} dependency \`${coord}\` from \`${extra.current}\` to \`${extra.latest}\` in this project.`,
+        scopeNote,
+        `Find where it is declared or managed, update the version, then verify the build still compiles and the tests pass. If the upgrade introduces breaking API changes, fix the affected code. Check the release notes for \`${coord}\` ${extra.current} → ${extra.latest} for any required migration.`,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
     case "quarkus-skills":
       return [
         `Use the \`quarkus-agent\` MCP server's \`quarkus_skills\` tool (projectDir = \`${workspacePath}\`) to load the coding patterns, testing guidelines, and common pitfalls for this project's Quarkus extensions.`,
@@ -6632,9 +6646,10 @@ function buildFixPrompt(kind, extra = {}) {
         `Use the \`quarkus-agent\` MCP server's \`devui-exceptions_getLastException\` tool (projectDir = \`${workspacePath}\`) to fetch the last compilation, deployment, or runtime exception from the running Quarkus dev-mode app — the structured class, message, stack trace, and offending user-code location.`,
         "Then diagnose the root cause and fix it in the codebase. Use `quarkus_logs` for broader context if needed. If the `quarkus-agent` MCP server isn't registered, or the app isn't running in dev mode, tell me what's missing.",
       ].join("\n\n");
+    default:
+      return null;
   }
 }
-
 async function sendFix(kind, extra) {
   const raw = buildFixPrompt(kind, extra);
   if (!raw) return { ok: false, error: `Unknown fix kind: ${kind}` };
@@ -6803,6 +6818,252 @@ async function runScanRest(key) {
   } catch (e) {
     return { ok: false, tool: scan.tool, error: e.message };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Dependencies — an on-demand "outdated libraries" scan. Read-only: it shells
+// out to the build tool (the same loopback-only "shell out and parse" model the
+// rest of Coffilot uses) and lets the build tool's own plugins resolve the latest
+// available versions, so we never add a direct HTTP client to a package registry.
+// Maven is wired here; Gradle outdated-scanning is not yet implemented.
+// ---------------------------------------------------------------------------
+
+// Pinned plugin coordinates so the scan is reproducible and doesn't silently
+// pick up a different plugin major on a fresh machine.
+const DEP_TREE_PLUGIN = "org.apache.maven.plugins:maven-dependency-plugin:3.7.1";
+const VERSIONS_PLUGIN = "org.codehaus.mojo:versions-maven-plugin:2.18.0";
+
+let lastDependencyReport = null;
+
+/**
+ * Parse `mvn dependency:tree -DoutputType=text` output into a deduplicated list
+ * of dependency nodes. The leading tree art encodes depth (3 chars per level), so
+ * depth 1 is a direct dependency and anything deeper is transitive; `via` records
+ * the direct dependency that pulls a transitive one in. Pure (exported for tests).
+ */
+export function parseDependencyTree(out) {
+  const byKey = new Map();
+  const stack = []; // stack[depth] = "group:artifact"
+  for (const rawLine of String(out || "").split(/\r?\n/)) {
+    // Strip the Maven log prefix ("[INFO] ", "[WARNING] ", …).
+    const line = rawLine.replace(/^\[[A-Z]+\]\s?/, "");
+    const m = line.match(/^([| ]*)([+\\]-) (.+)$/);
+    if (!m) {
+      // A bare coordinate with no tree connector is a reactor root; reset the
+      // ancestor stack so the next module's tree is depth-counted independently.
+      if (/^[\w.\-]+:[\w.\-]+:[\w.\-]+:/.test(line.trim())) stack.length = 0;
+      continue;
+    }
+    const depth = m[1].length / 3 + 1;
+    // The coordinate is the first whitespace-delimited token (drop trailing
+    // annotations like "(optional)").
+    const coord = m[3].trim().split(/\s+/)[0];
+    const parts = coord.split(":");
+    if (parts.length < 4) continue;
+    // group:artifact:type:version:scope  OR  group:artifact:type:classifier:version:scope
+    const group = parts[0];
+    const artifact = parts[1];
+    const version = parts.length >= 6 ? parts[4] : parts[3];
+    const scope = parts.length >= 6 ? parts[5] : parts[4] || "compile";
+    const key = `${group}:${artifact}`;
+    stack[depth] = key;
+    stack.length = depth + 1;
+    const via = depth > 1 ? stack[1] || null : null;
+    const node = { key, group, artifact, version, scope, depth, direct: depth === 1, via };
+    const prev = byKey.get(key);
+    // Keep the shallowest occurrence so a dependency that is both direct and
+    // transitive is classified as direct.
+    if (!prev || node.depth < prev.depth) byKey.set(key, node);
+  }
+  return [...byKey.values()];
+}
+
+/**
+ * Parse `versions:display-dependency-updates` output into a map of
+ * "group:artifact" -> { current, latest }. Pure (exported for tests).
+ */
+export function parseDependencyUpdates(out) {
+  const map = new Map();
+  for (const rawLine of String(out || "").split(/\r?\n/)) {
+    const line = rawLine.replace(/^\[[A-Z]+\]\s?/, "");
+    // e.g. "  com.google.guava:guava ........... 19.0 -> 33.6.0-jre"
+    const m = line.match(/^\s*([\w.\-]+:[\w.\-]+)\s+\.{2,}\s+(\S+)\s+->\s+(\S+)\s*$/);
+    if (!m) continue;
+    map.set(m[1], { current: m[2], latest: m[3] });
+  }
+  return map;
+}
+
+/** Whether a version string looks like a pre-release (alpha/beta/rc/milestone/…). */
+export function isPrerelease(v) {
+  return /[-._](alpha|beta|rc|m\d+|cr\d+|snapshot|milestone|preview|ea|dev|pre)\d*/i.test(String(v || ""));
+}
+
+/** Numeric [major, minor, patch] prefix of a version, ignoring any qualifier. */
+function versionParts(v) {
+  const m = String(v || "").match(/^\d+(?:\.\d+){0,3}/);
+  return m ? m[0].split(".").map(Number) : null;
+}
+
+/** Classify the size of an upgrade as major / minor / patch (else "other"). */
+export function classifyVersionJump(current, latest) {
+  const a = versionParts(current);
+  const b = versionParts(latest);
+  if (!a || !b) return "other";
+  if ((a[0] || 0) !== (b[0] || 0)) return "major";
+  if ((a[1] || 0) !== (b[1] || 0)) return "minor";
+  if ((a[2] || 0) !== (b[2] || 0)) return "patch";
+  return "other";
+}
+
+const JUMP_RANK = { major: 0, minor: 1, patch: 2, other: 3 };
+
+/**
+ * Merge a parsed dependency tree with the available-updates map into a sorted
+ * list of outdated libraries. The tree is authoritative for the resolved (current)
+ * version and for direct/transitive classification; the updates map supplies the
+ * latest available version. Pure (exported for tests).
+ */
+export function mergeDependencyUpdates(treeNodes, updatesMap) {
+  const out = [];
+  for (const node of treeNodes) {
+    const upd = updatesMap.get(node.key);
+    if (!upd) continue;
+    const current = node.version || upd.current;
+    const latest = upd.latest;
+    if (!latest || current === latest) continue;
+    out.push({
+      group: node.group,
+      artifact: node.artifact,
+      current,
+      latest,
+      scope: node.scope,
+      direct: node.direct,
+      via: node.via,
+      prerelease: isPrerelease(latest) && !isPrerelease(current),
+      jump: classifyVersionJump(current, latest),
+    });
+  }
+  out.sort(
+    (a, b) =>
+      Number(b.direct) - Number(a.direct) ||
+      JUMP_RANK[a.jump] - JUMP_RANK[b.jump] ||
+      `${a.group}:${a.artifact}`.localeCompare(`${b.group}:${b.artifact}`),
+  );
+  return out;
+}
+
+/**
+ * Run a build-tool command and capture its combined output without blocking the
+ * event loop. Mirrors spawnTool's spawn config (cwd / env / Windows shell) but is
+ * a one-shot capture rather than a streamed lane.
+ */
+function captureBuildTool(args, timeoutMs = 180000) {
+  const base = baseRunner();
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(base.bin, quoteWinShellArgs(withJLineDumbFlag(args, base.bin)), {
+        cwd: workspacePath,
+        env: toolEnv(),
+        shell: isWindows,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e) {
+      resolve({ ok: false, error: e.message, out: "" });
+      return;
+    }
+    let out = "";
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(val);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+      finish({ ok: false, error: "Timed out", out });
+    }, timeoutMs);
+    child.stdout.on("data", (c) => (out += c.toString()));
+    child.stderr.on("data", (c) => (out += c.toString()));
+    child.on("error", (e) => finish({ ok: false, error: e.message, out }));
+    child.on("close", (code) => finish({ ok: code === 0, code, out }));
+  });
+}
+
+const emptyDepCounts = () => ({ total: 0, direct: 0, transitive: 0 });
+
+/**
+ * On-demand scan: for Maven, the list of outdated libraries (direct + transitive).
+ * Caches the result so the panel can re-render it after a tab switch or reload
+ * without re-running the build tool.
+ */
+async function runDependencyScan() {
+  const startedAt = Date.now();
+  if (!toolAvailable()) {
+    lastDependencyReport = {
+      ran: true,
+      buildTool,
+      available: false,
+      updatesSupported: false,
+      updates: [],
+      counts: emptyDepCounts(),
+      ranAt: startedAt,
+      durationMs: 0,
+      error: `No ${TOOL_LABEL || "build"} tool is available.`,
+    };
+    return lastDependencyReport;
+  }
+  let updates = [];
+  let error = null;
+  const updatesSupported = buildTool === "maven";
+  if (updatesSupported) {
+    const treeRes = await captureBuildTool(["-ntp", "-B", `${DEP_TREE_PLUGIN}:tree`, "-DoutputType=text"]);
+    const updRes = await captureBuildTool(["-ntp", "-B", `${VERSIONS_PLUGIN}:display-dependency-updates`]);
+    const nodes = parseDependencyTree(treeRes.out || "");
+    const updMap = parseDependencyUpdates(updRes.out || "");
+    updates = mergeDependencyUpdates(nodes, updMap);
+    // Distinguish "everything is up to date" from a command that actually failed
+    // (offline, missing plugin, broken pom): only the latter sets an error.
+    if (!nodes.length && treeRes.ok === false) error = treeRes.error || "dependency:tree failed.";
+    else if (!updMap.size && updRes.ok === false) error = updRes.error || "Could not resolve dependency updates.";
+  }
+  lastDependencyReport = {
+    ran: true,
+    buildTool,
+    available: true,
+    updatesSupported,
+    updates,
+    counts: {
+      total: updates.length,
+      direct: updates.filter((u) => u.direct).length,
+      transitive: updates.filter((u) => !u.direct).length,
+    },
+    ranAt: startedAt,
+    durationMs: Date.now() - startedAt,
+    error,
+  };
+  return lastDependencyReport;
+}
+
+/** GET /api/deps payload: the cached scan if any, else an idle snapshot. */
+function dependencySnapshot() {
+  if (lastDependencyReport) return lastDependencyReport;
+  return {
+    ran: false,
+    buildTool,
+    available: toolAvailable(),
+    updatesSupported: buildTool === "maven",
+    updates: [],
+    counts: emptyDepCounts(),
+    ranAt: null,
+    error: null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -7600,6 +7861,17 @@ async function handleRequest(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/deps") {
+    await workspaceReady;
+    sendJson(res, 200, dependencySnapshot());
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/deps/scan") {
+    await workspaceReady;
+    sendJson(res, 200, await runDependencyScan());
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/loggers") {
     const status = await loggersStatus();
     // runMode lets the UI tailor the "no logger endpoint" hint (and its fix button)
@@ -8088,6 +8360,13 @@ function makeCanvas() {
           required: ["tool"],
         },
         handler: async (ctx) => runScanRest(ctx.input?.tool),
+      },
+      {
+        name: "check_dependencies",
+        description:
+          "Scan the project for outdated libraries. Shells out to the build tool to resolve the latest available versions and returns the findings (current → latest, direct vs transitive, version-jump size). Maven only for now. Findings can be handed to fix_issue with kind 'fix-dependency'.",
+        inputSchema: { type: "object", properties: {} },
+        handler: async () => runDependencyScan(),
       },
       {
         name: "set_log_level",

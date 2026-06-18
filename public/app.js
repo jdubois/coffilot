@@ -194,6 +194,11 @@ const scansSrc = document.getElementById("scans-src");
 const scansHint = document.getElementById("scans-hint");
 const scansListEl = document.getElementById("scans-list");
 const scansResultEl = document.getElementById("scans-result");
+const depsScanBtn = document.getElementById("deps-scan");
+const depsDirectToggle = document.getElementById("deps-direct-toggle");
+const depsDirectInput = document.getElementById("deps-direct");
+const depsResultEl = document.getElementById("deps-result");
+const depsSrc = document.getElementById("deps-src");
 let caps = {};
 // Whether a Maven/Gradle build tool is present. When false the canvas runs
 // in degraded mode: Build/Test/Package/Run stay disabled.
@@ -387,18 +392,26 @@ function showAsideTab(name) {
   document.getElementById("atab-scans").classList.toggle("active", name === "scans");
   document.getElementById("atab-quarkus").classList.toggle("active", name === "quarkus");
   document.getElementById("atab-settings").classList.toggle("active", name === "settings");
+  document.getElementById("atab-deps").classList.toggle("active", name === "deps");
+  if (name === "deps") initDeps();
   syncLoggersPolling();
   syncAsideWide();
 }
-// BootUI scan reports can be wide (severity badges + expandable findings), so the
-// aside grows to a roomier width while scan results are on screen and snaps back
-// to its slim default on any other tab. The default stays the minimal width.
+// BootUI scan reports and the dependency/upgrade list can be wide (severity badges
+// + expandable findings), so the aside grows to a roomier width while either is on
+// screen and snaps back to its slim default on any other tab.
 let hasScanResults = false;
+let hasDepsResults = false;
 function syncAsideWide() {
-  workspaceEl.classList.toggle("aside-wide", activeAsideTab() === "scans" && hasScanResults);
+  const tab = activeAsideTab();
+  workspaceEl.classList.toggle("aside-wide", (tab === "scans" && hasScanResults) || (tab === "deps" && hasDepsResults));
 }
 function markScanResults(on) {
   hasScanResults = on;
+  syncAsideWide();
+}
+function markDepsResults(on) {
+  hasDepsResults = on;
   syncAsideWide();
 }
 // Capture the current panel state as the persisted preference and save it. The
@@ -414,7 +427,7 @@ function rememberAsideState() {
 function applyAsideState(s) {
   if (asideStateApplied || !s) return;
   asideStateApplied = true;
-  asideTabPref = ["metrics", "loggers", "spring", "scans", "quarkus", "settings"].includes(s.asideTab)
+  asideTabPref = ["metrics", "loggers", "spring", "scans", "quarkus", "settings", "deps"].includes(s.asideTab)
     ? s.asideTab
     : "settings";
   asideOpenPref = s.asideOpen === true;
@@ -472,11 +485,12 @@ syncAsideMode();
 // each group the tabs keep a fixed canonical order (ASIDE_ORDER) so they never
 // shuffle relative to one another. Clicking a greyed tab still opens it so its
 // in-panel text explains what's missing.
-const ASIDE_ALWAYS = new Set(["settings"]);
+const ASIDE_ALWAYS = new Set(["settings", "deps"]);
 // Canonical left-to-right order, applied within both the available and the
 // unavailable group. Settings always leads the available group (it's never
-// unavailable); "quarkus" takes the trailing slot for the Quarkus Agent MCP tab.
-const ASIDE_ORDER = ["settings", "metrics", "loggers", "spring", "scans", "quarkus"];
+// unavailable); Upgrades (deps) is always available and trails the runtime tabs;
+// "quarkus" takes the trailing slot for the Quarkus Agent MCP tab.
+const ASIDE_ORDER = ["settings", "metrics", "loggers", "spring", "scans", "deps", "quarkus"];
 const ASIDE_REASON = {
   metrics:
     "Live JVM metrics need a running app that exposes metrics — Spring Boot Actuator/BootUI or Quarkus Micrometer. Click to learn more.",
@@ -1638,6 +1652,139 @@ quarkusMcpRegisterBtn.onclick = async () => {
   quarkusMcpRegisterBtn.textContent = "Asked Copilot \u2713";
   await post("/api/fix", { kind: "register-quarkus-mcp", runner: quarkusMcpRegisterBtn.dataset.runner || "jbang" });
 };
+
+// ---- Dependencies & upgrades (Upgrades aside tab) ----------------------
+// The outdated-libraries scan shells out to the build tool on demand. We fetch
+// the cached snapshot when the tab is first opened, and only run the slow version
+// scan when the user clicks "Check dependencies".
+let depsState = null;
+let depsLoaded = false;
+
+async function initDeps() {
+  if (depsLoaded) return;
+  depsLoaded = true;
+  renderDeps(await getJson("/api/deps"));
+}
+
+async function runDepsScan() {
+  if (!depsScanBtn) return;
+  depsScanBtn.disabled = true;
+  const orig = depsScanBtn.textContent;
+  depsScanBtn.textContent = "Checking\u2026";
+  depsResultEl.innerHTML = `<div class="deps-section"><h3>Outdated libraries</h3><p class="muted">Scanning\u2026 resolving the latest available versions (this can take a while).</p></div>`;
+  markDepsResults(false);
+  const r = await postJson("/api/deps/scan", {});
+  depsScanBtn.disabled = false;
+  depsScanBtn.textContent = orig;
+  renderDeps(r);
+}
+
+function renderDeps(report) {
+  if (!report || !report.counts) {
+    // A genuine report always carries a counts block; a fetch failure returns { error }.
+    depsResultEl.innerHTML = `<p class="deps-error">Couldn't load the dependency report${report && report.error ? ": " + esc(report.error) : ""}.</p>`;
+    return;
+  }
+  depsState = report;
+  depsResultEl.innerHTML = updatesSectionHtml(report);
+
+  // The "Direct only" toggle is meaningful only once a scan found transitive
+  // updates to hide.
+  const hasTransitive = !!(report.ran && report.counts && report.counts.transitive > 0);
+  if (depsDirectInput) depsDirectInput.disabled = !hasTransitive;
+  if (depsDirectToggle) depsDirectToggle.classList.toggle("disabled", !hasTransitive);
+
+  const outdated = report.counts ? report.counts.total : 0;
+  if (depsSrc) {
+    if (report.ran && outdated > 0) {
+      depsSrc.textContent = `${outdated} outdated`;
+      depsSrc.hidden = false;
+    } else {
+      depsSrc.hidden = true;
+    }
+  }
+  markDepsResults(!!(report.ran && report.updates && report.updates.length));
+
+  depsResultEl
+    .querySelectorAll("button[data-dep-fix]")
+    .forEach((b) => (b.onclick = () => fixDep(Number(b.dataset.depFix), b)));
+}
+
+function updatesSectionHtml(report) {
+  const head = (extra = "") => `<div class="deps-section-head"><h3>Outdated libraries</h3>${extra}</div>`;
+  if (!report.updatesSupported) {
+    return (
+      `<div class="deps-section">${head()}` +
+      `<p class="hint">Outdated-library scanning currently supports Maven projects${report.buildTool ? ` (this is a ${esc(report.buildTool)} project)` : ""}.</p></div>`
+    );
+  }
+  if (!report.ran) {
+    return (
+      `<div class="deps-section">${head()}` +
+      `<p class="hint">Click <strong>Check dependencies</strong> to scan for newer library versions.</p></div>`
+    );
+  }
+  if (report.error && (!report.updates || !report.updates.length)) {
+    return `<div class="deps-section">${head()}<p class="deps-error">Scan failed: ${esc(report.error)}</p></div>`;
+  }
+  if (!report.updates.length) {
+    return `<div class="deps-section">${head()}<p class="deps-ok">\u2713 All libraries are up to date.</p></div>`;
+  }
+  const counts = `<span class="deps-counts">${report.counts.direct} direct \u00b7 ${report.counts.transitive} transitive</span>`;
+  const directOnly = !!(depsDirectInput && depsDirectInput.checked);
+  const rows = report.updates.map((u, i) => (directOnly && !u.direct ? "" : depRowHtml(u, i))).join("");
+  const body = rows
+    ? `<div class="dep-list">${rows}</div>`
+    : `<p class="hint">No direct dependencies are outdated. Untick \u201cDirect only\u201d to see transitive ones.</p>`;
+  return `<div class="deps-section">${head(counts)}${body}</div>`;
+}
+
+function depRowHtml(u, i) {
+  const scopeBadge = u.direct
+    ? `<span class="dep-scope direct">direct</span>`
+    : `<span class="dep-scope transitive">transitive</span>`;
+  const preBadge = u.prerelease
+    ? `<span class="dep-pre" title="The latest version is a pre-release">pre-release</span>`
+    : "";
+  const via =
+    !u.direct && u.via
+      ? `<div class="finding-kv"><span class="fk">Pulled in by</span><span class="fv"><code>${esc(u.via)}</code></span></div>`
+      : "";
+  return (
+    `<details class="dep-item" data-dep="${i}"><summary>` +
+    `<span class="jump-badge jump-${esc(u.jump)}" title="${esc(u.jump)} version change">${esc(u.jump)}</span>` +
+    `<span class="finding-title">${esc(u.artifact)}</span>` +
+    `<span class="dep-ver"><span class="ver-old">${esc(u.current)}</span><span class="ver-arrow">\u2192</span><span class="ver-new">${esc(u.latest)}</span></span>` +
+    scopeBadge +
+    `</summary><div class="finding-body">` +
+    `<div class="finding-kv"><span class="fk">Coordinates</span><span class="fv"><code>${esc(u.group)}:${esc(u.artifact)}</code></span></div>` +
+    `<div class="finding-kv"><span class="fk">Latest</span><span class="fv">${esc(u.latest)} ${preBadge}</span></div>` +
+    `<div class="finding-kv"><span class="fk">Scope</span><span class="fv">${esc(u.scope)}</span></div>` +
+    via +
+    `<button class="fix fix-copilot tiny" data-dep-fix="${i}">Fix with Copilot</button>` +
+    `</div></details>`
+  );
+}
+
+async function fixDep(i, btn) {
+  const u = depsState && depsState.updates && depsState.updates[i];
+  if (!u) return;
+  btn.disabled = true;
+  btn.textContent = "Sent to Copilot \u2713";
+  await post("/api/fix", {
+    kind: "fix-dependency",
+    group: u.group,
+    artifact: u.artifact,
+    current: u.current,
+    latest: u.latest,
+    direct: u.direct,
+    scope: u.direct ? "direct" : "transitive",
+    via: u.via,
+  });
+}
+
+if (depsScanBtn) depsScanBtn.onclick = runDepsScan;
+if (depsDirectInput) depsDirectInput.onchange = () => renderDeps(depsState);
 
 // ---- Runtime log levels (Loggers aside tab) ----------------------------
 // Lists the running app's loggers from Spring Boot Actuator /loggers or the Quarkus
