@@ -102,7 +102,10 @@ Run `npm run format` to apply formatting. The whole repo is Prettier-formatted
 ### Testing
 
 Tests live under `test/` and run on Node's built-in test runner (`node --test`,
-no extra framework) via `npm test`. CI runs the same command.
+no extra framework) via `npm test`. The `test` script lists the test files
+explicitly (rather than relying on directory discovery) so a local
+`integration-tests/**` build tree can never be mistaken for a test file — add new
+test files to that list. CI runs the same command.
 
 - **`test/parsers.test.mjs`** exercises the pure parsers / normalizers exported
   from `extension.mjs` — the JUnit/Surefire XML parser, the `.class`
@@ -120,9 +123,35 @@ no extra framework) via `npm test`. CI runs the same command.
   `renderTests`) on representative payloads to catch parse errors and obvious
   render regressions. Manual verification in a live canvas is still expected for
   UI changes.
+- **`test/integration-projects.test.mjs`** drives Coffilot's real
+  project-classification logic (build-tool detection, capability/tier
+  classification, run-mode inference, project-root resolution) against the actual
+  build files of every project under `integration-tests/`, asserting the tier each
+  scenario is meant to exercise. It also asserts Coffilot's lane command builders
+  (`buildArgsFor` / `testArgsFor` / `packageArgsFor` / `affectedTestArgsFor`) for
+  both Maven and Gradle, so the documented per-lane command vectors can't silently
+  drift. Deterministic — no JDK or network — so it runs as part of `npm test`.
+- **`test/e2e-projects.test.mjs`** is the realistic pass: it actually builds,
+  tests and packages each `integration-tests/` project with its own wrapper —
+  using Coffilot's own lane commands (`testArgsFor` / `buildArgsFor` /
+  `packageArgsFor`) rather than a hand-maintained copy — then feeds the JUnit
+  reports the build produced through Coffilot's own report discovery + parser
+  (`collectSurefireReport`) and asserts the parsed results. The `failing-tests`
+  project covers the failure path (build exits non-zero, report still parses with
+  the right pass/fail/error split), and two projects additionally assert the Build
+  and Package lanes each produce a jar. It needs a JDK 17 and network access, so it
+  is **skipped unless `COFFILOT_E2E=1`**:
 
-CI additionally builds and tests each project under `integration-tests/` (Maven
-and Gradle) so the tiers Coffilot drives stay green.
+  ```bash
+  COFFILOT_E2E=1 npm test                     # all projects
+  COFFILOT_E2E=1 node --test \
+    --test-name-pattern '^hello-world:' \
+    test/e2e-projects.test.mjs                # one project
+  ```
+
+CI runs the end-to-end tests per project in a dedicated `E2E (<project>)` matrix
+job (JDK 17 + `COFFILOT_E2E=1`), so the tiers Coffilot drives stay green against
+real Maven and Gradle builds.
 
 ## Safety notes when testing
 

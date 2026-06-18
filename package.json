@@ -25,7 +25,7 @@
   ],
   "scripts": {
     "check": "node --check extension.mjs",
-    "test": "node --test",
+    "test": "node --test test/parsers.test.mjs test/ui-smoke.test.mjs test/integration-projects.test.mjs test/e2e-projects.test.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

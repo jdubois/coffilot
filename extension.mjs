@@ -293,7 +293,7 @@ function quoteWinShellArgs(args) {
 }
 
 /** Decide the build tool for a project root: Maven preferred, else Gradle, else null. */
-function detectBuildTool(root) {
+export function detectBuildTool(root) {
   const has = (f) => existsSync(path.join(root, f));
   if (MAVEN_MARKERS.some(has)) return "maven";
   if (GRADLE_MARKERS.some(has)) return "gradle";
@@ -1203,7 +1203,7 @@ async function getSessionPrimaryDir() {
   return null;
 }
 
-function findProjectRoot(primary) {
+export function findProjectRoot(primary) {
   const markers = [...MAVEN_MARKERS, ...GRADLE_MARKERS];
   const owns = (dir) => markers.some((f) => existsSync(path.join(dir, f)));
   // Walk up from `start` (max 8 hops) to the first directory that owns a Maven or
@@ -1477,7 +1477,7 @@ function pomMainClass(xml) {
 }
 
 // Per-pom capability flags, derived purely from the pom text (cheap + offline).
-function pomCaps(xml, name) {
+export function pomCaps(xml, name) {
   const quarkus = /quarkus-maven-plugin|io\.quarkus/.test(xml);
   return {
     name,
@@ -1522,7 +1522,7 @@ function gradleHasApplicationPlugin(text) {
 // Per-build-file capability flags for Gradle, derived from the build script text
 // (Groovy or Kotlin DSL). Spring Boot and Quarkus are detected from their Gradle
 // plugin ids (org.springframework.boot / io.quarkus).
-function gradleCaps(text, name) {
+export function gradleCaps(text, name) {
   const quarkus = text.includes("io.quarkus");
   return {
     name,
@@ -1537,6 +1537,16 @@ function gradleCaps(text, name) {
   };
 }
 
+// The run strategy for a module, inferred from its capability flags: Quarkus
+// (quarkus:dev / quarkusDev) and Spring Boot (spring-boot:run / bootRun) are both
+// "runnable"; anything else is launched as plain Java. Pure so the Run lane and
+// the integration tests agree on how each framework maps to a run mode.
+export function inferRunMode(mod) {
+  if (mod && mod.quarkus) return "quarkus";
+  if (mod && mod.runnable) return "spring";
+  return "java";
+}
+
 // The project's own artifactId (skip the <parent> block so we don't read the
 // parent/BOM artifactId by mistake). Used as a display label for the root module.
 function artifactIdOf(xml) {
@@ -1546,7 +1556,7 @@ function artifactIdOf(xml) {
 }
 
 /** Read a module's Gradle build script (Groovy or Kotlin DSL), or null if absent. */
-function readGradleBuildFile(dir) {
+export function readGradleBuildFile(dir) {
   for (const f of ["build.gradle", "build.gradle.kts"]) {
     try {
       return readFileSync(path.join(dir, f), "utf8");
@@ -3433,7 +3443,60 @@ function computeAffectedTests() {
 
 // Build the runner args that execute only `tests` (array of { fqcn, module }).
 function affectedTestArgs(tests, warm) {
-  if (buildTool === "gradle") {
+  return affectedTestArgsFor(buildTool, tests, warm);
+}
+
+// Default argument vectors per lane, per tool. `warm` only affects Gradle (daemon
+// vs --no-daemon); Maven's warm tier swaps the binary (mvnd) instead. `clean`
+// prepends a clean goal (Build/Package "Clean" toggle); `install` (Package only)
+// installs the artifact to the local repository instead of just packaging it.
+//
+// The arg-building logic is split into pure `*For(tool, …)` helpers (exported so
+// tests — and the integration/E2E harness — drive the exact same command vectors
+// Coffilot runs) and thin module-level wrappers that bind the current buildTool.
+function defaultBuildArgs(warm, clean) {
+  return buildArgsFor(buildTool, warm, clean);
+}
+function defaultTestArgs(warm) {
+  return testArgsFor(buildTool, warm);
+}
+function defaultPackageArgs(warm, clean, install) {
+  return packageArgsFor(buildTool, warm, clean, install);
+}
+
+/** Build lane args for `tool` ("maven"|"gradle"). See defaultBuildArgs. */
+export function buildArgsFor(tool, warm = false, clean = false) {
+  if (tool === "gradle") {
+    const goals = clean ? ["clean", "build"] : ["build"];
+    return [...goals, "-x", "test", "--console=plain", ...gradleWarmFlags(warm)];
+  }
+  const goals = clean ? ["clean", "install"] : ["install"];
+  return ["-ntp", "-DskipTests", ...goals];
+}
+
+/** Test lane args for `tool`. cleanTest forces Gradle to always re-run (fresh report). */
+export function testArgsFor(tool, warm = false) {
+  if (tool === "gradle") return ["cleanTest", "test", "--console=plain", ...gradleWarmFlags(warm)];
+  return ["-ntp", "test"];
+}
+
+/** Package lane args for `tool`. `install` publishes to the local repository. */
+export function packageArgsFor(tool, warm = false, clean = false, install = false) {
+  if (tool === "gradle") {
+    // `publishToMavenLocal` is the Gradle equivalent of `mvn install` (requires
+    // the maven-publish plugin with a configured publication).
+    const goal = install ? "publishToMavenLocal" : "assemble";
+    const goals = clean ? ["clean", goal] : [goal];
+    return [...goals, "--console=plain", ...gradleWarmFlags(warm)];
+  }
+  const goal = install ? "install" : "package";
+  const goals = clean ? ["clean", goal] : [goal];
+  return ["-ntp", ...goals];
+}
+
+/** Affected-test args for `tool`: run only `tests` (array of { fqcn, module }). */
+export function affectedTestArgsFor(tool, tests, warm = false) {
+  if (tool === "gradle") {
     // List each owning module's `test` task so a global --tests filter never hits
     // a task with zero matches (which Gradle treats as an error). Every listed
     // module owns ≥1 of the patterns, so each task matches at least one test.
@@ -3448,37 +3511,6 @@ function affectedTestArgs(tests, warm) {
   // from failing the run.
   const simple = [...new Set(tests.map((t) => enclosingClass(t.fqcn).split(".").pop()))];
   return ["-ntp", `-Dtest=${simple.join(",")}`, "-Dsurefire.failIfNoSpecifiedTests=false", "test"];
-}
-
-// Default argument vectors per lane, per tool. `warm` only affects Gradle (daemon
-// vs --no-daemon); Maven's warm tier swaps the binary (mvnd) instead. `clean`
-// prepends a clean goal (Build/Package "Clean" toggle); `install` (Package only)
-// installs the artifact to the local repository instead of just packaging it.
-function defaultBuildArgs(warm, clean) {
-  if (buildTool === "gradle") {
-    const goals = clean ? ["clean", "build"] : ["build"];
-    return [...goals, "-x", "test", "--console=plain", ...gradleWarmFlags(warm)];
-  }
-  const goals = clean ? ["clean", "install"] : ["install"];
-  return ["-ntp", "-DskipTests", ...goals];
-}
-function defaultTestArgs(warm) {
-  // cleanTest forces Gradle to re-run tests even when nothing changed, so the
-  // canvas always produces a fresh report (mirroring Maven's always-run test).
-  if (buildTool === "gradle") return ["cleanTest", "test", "--console=plain", ...gradleWarmFlags(warm)];
-  return ["-ntp", "test"];
-}
-function defaultPackageArgs(warm, clean, install) {
-  if (buildTool === "gradle") {
-    // `publishToMavenLocal` is the Gradle equivalent of `mvn install` (requires
-    // the maven-publish plugin with a configured publication).
-    const goal = install ? "publishToMavenLocal" : "assemble";
-    const goals = clean ? ["clean", goal] : [goal];
-    return [...goals, "--console=plain", ...gradleWarmFlags(warm)];
-  }
-  const goal = install ? "install" : "package";
-  const goals = clean ? ["clean", goal] : [goal];
-  return ["-ntp", ...goals];
 }
 
 async function build(extraArgs, warm, mavenProfiles, clean) {
@@ -3811,10 +3843,9 @@ async function startApp({ module, profiles, mavenProfiles, mode, dbg = null } = 
   broadcastProfile();
 
   // Pick the run strategy: explicit mode wins, else infer from the chosen
-  // module's framework — Quarkus (quarkus:dev / quarkusDev) and Spring Boot
-  // (spring-boot:run / bootRun) are both "runnable"; anything else is plain Java.
+  // module's framework (see inferRunMode).
   const mod = listModules().find((m) => m.name === module);
-  const inferred = mod && mod.quarkus ? "quarkus" : mod && mod.runnable ? "spring" : "java";
+  const inferred = inferRunMode(mod);
   const resolved = mode === "java" || mode === "spring" || mode === "quarkus" ? mode : inferred;
   app.runMode = resolved;
   app.module = module || "";
@@ -4870,12 +4901,12 @@ function xmlAttr(tag, name) {
  * {@code sinceMs} filters out stale reports left by earlier builds of other
  * modules so only the freshly-run module's results are reported.
  */
-async function collectSurefireReport(sinceMs) {
+export async function collectSurefireReport(sinceMs, root = workspacePath) {
   const report = {
     summary: { tests: 0, passed: 0, failures: 0, errors: 0, skipped: 0, timeSec: 0, files: 0 },
     suites: [],
   };
-  const dirs = await findTestResultDirs(workspacePath, 0);
+  const dirs = await findTestResultDirs(root, 0);
   for (const dir of dirs) {
     let files;
     try {
@@ -4999,7 +5030,7 @@ const SKIP_DIRS = new Set(["node_modules", ".git", ".m2", ".gradle", "src", "fro
 // Collect every directory that may hold JUnit TEST-*.xml: Maven's
 // target/surefire-reports + failsafe-reports, and Gradle's
 // build/test-results/<task> subfolders.
-async function findTestResultDirs(root, depth, acc = []) {
+export async function findTestResultDirs(root, depth, acc = []) {
   if (depth > 4) return acc;
   let entries;
   try {
