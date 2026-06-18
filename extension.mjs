@@ -2144,6 +2144,7 @@ function applySettings(body) {
 }
 
 let metricsTimer = null;
+let portProbeTimer = null;
 let lastMetrics = { appUp: false };
 
 // ---------------------------------------------------------------------------
@@ -2412,6 +2413,11 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
       void attachDebugger(debug.jdwpPort).catch(() => {});
     }
 
+    // A long-lived app has just launched: alongside the log-regex scraping (onLine
+    // === detectPort) start the OS-level port probe so the HTTP port is still found
+    // when the framework prints no recognizable startup banner.
+    if (phase === "running") startPortProbe();
+
     const wire = (stream, name) => {
       let buf = "";
       stream.on("data", (chunk) => {
@@ -2449,6 +2455,7 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
       if (phase === "running") {
         app.appUp = false;
         stopMetricsPolling();
+        stopPortProbe();
         stopLiveReload();
         // The app is gone: reset the cached metrics so the panel (and the
         // Loggers tab, which keys off appUp) reflect "not running" instead of the
@@ -4180,6 +4187,22 @@ const PORT_PATTERNS = [
   /started on port[s]?(?:\(s\))?:?\s*(\d+)/i,
 ];
 
+// Spring DevTools' LiveReload server runs inside the app JVM and listens on a
+// fixed port (35729); it is not the application's HTTP port.
+const LIVE_RELOAD_PORT = 35729;
+
+// Latch the app's HTTP port once it is known — from either the log-regex scrape
+// (detectPort) or the OS-level probe (detectPortFromOs) — record it, tell the UI,
+// and start metrics polling. Idempotent: the first caller to find a port wins.
+function setAppPort(port) {
+  if (app.appPort || !port) return;
+  app.appPort = port;
+  const portOp = lanes.debug.child ? "debug" : "run";
+  pushConsole(`[coffilot] detected app port ${app.appPort}; polling for live metrics`, "stdout", portOp);
+  broadcast("status", statusSnapshot());
+  startMetricsPolling();
+}
+
 function detectPort(line) {
   if (app.appPort) return;
   // DevTools' LiveReload server logs its own port (35729); never treat that as
@@ -4188,14 +4211,40 @@ function detectPort(line) {
   for (const re of PORT_PATTERNS) {
     const m = line.match(re);
     if (m) {
-      app.appPort = Number(m[1]);
-      const portOp = lanes.debug.child ? "debug" : "run";
-      pushConsole(`[coffilot] detected app port ${app.appPort}; polling for live metrics`, "stdout", portOp);
-      broadcast("status", statusSnapshot());
-      startMetricsPolling();
+      setAppPort(Number(m[1]));
       return;
     }
   }
+}
+
+// OS-level port detection — the robust fallback for when no startup banner reveals
+// the HTTP port (a custom logging layout, a quiet embedded server, or a framework
+// Coffilot doesn't pattern-match). We inspect the listening TCP sockets owned by
+// the app's process tree and latch the application's port, excluding our own
+// loopback control server and known non-app listeners (the JDWP debugger and
+// DevTools' LiveReload). POSIX-only: it relies on `ps` + `lsof`, mirroring the
+// flame-graph PID resolution, so on Windows port detection stays log-regex based.
+async function detectPortFromOs() {
+  if (app.appPort || isWindows) return;
+  const root = (lanes.debug.child && lanes.debug.child.pid) || (lanes.run.child && lanes.run.child.pid);
+  if (!root) return;
+  const exclude = new Set([LIVE_RELOAD_PORT]);
+  const ownPort = server.address() && server.address().port;
+  if (ownPort) exclude.add(ownPort);
+  if (debug.jdwpPort) exclude.add(debug.jdwpPort);
+  const candidates = listeningPortsForPids(descendantPids(root)).filter((p) => !exclude.has(p));
+  if (!candidates.length) return;
+  // A single listener is unambiguous; latch it (metrics polling then verifies it
+  // actually answers HTTP, exactly as for a log-scraped port).
+  if (candidates.length === 1) {
+    if (!app.appPort) setAppPort(candidates[0]);
+    return;
+  }
+  // Several listeners (e.g. a separate management/metrics port): pick the one that
+  // actually answers HTTP so metrics polling targets the right socket.
+  const answers = await Promise.all(candidates.map((p) => appAnswersHttp(`http://127.0.0.1:${p}`)));
+  const idx = answers.findIndex(Boolean);
+  if (idx >= 0 && !app.appPort) setAppPort(candidates[idx]);
 }
 
 // ---------------------------------------------------------------------------
@@ -4390,6 +4439,29 @@ function stopMetricsPolling() {
   if (metricsTimer) {
     clearInterval(metricsTimer);
     metricsTimer = null;
+  }
+}
+
+// Poll the OS for the app's listening HTTP port until it is found (or the run
+// ends). This is the robust fallback to the log-regex scraping in detectPort:
+// once setAppPort latches a port — from either source — the probe stops itself.
+function startPortProbe() {
+  stopPortProbe();
+  const probe = () => {
+    if (app.appPort) {
+      stopPortProbe();
+      return;
+    }
+    Promise.resolve(detectPortFromOs()).catch(() => {});
+  };
+  portProbeTimer = setInterval(probe, 1500);
+  probe();
+}
+
+function stopPortProbe() {
+  if (portProbeTimer) {
+    clearInterval(portProbeTimer);
+    portProbeTimer = null;
   }
 }
 
@@ -4777,6 +4849,67 @@ function resolveAppPid() {
   if (fromPort) return fromPort;
   if (app.runMode === "java" && lanes.run.child && lanes.run.child.pid) return lanes.run.child.pid;
   return null;
+}
+
+// Collect a PID together with all of its descendants (POSIX). spring-boot:run /
+// bootRun / quarkus:dev / quarkusDev fork the real app JVM as a child of the
+// build-tool wrapper, so the listening HTTP socket belongs to a descendant rather
+// than the run lane's own child. Falls back to just the root PID if `ps` is
+// unavailable.
+function descendantPids(root) {
+  if (isWindows || !root) return root ? [root] : [];
+  try {
+    const res = spawnSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8", timeout: 4000 });
+    if (res.status !== 0 || !res.stdout) return [root];
+    const children = new Map();
+    for (const line of res.stdout.split("\n")) {
+      const m = line.trim().match(/^(\d+)\s+(\d+)$/);
+      if (!m) continue;
+      const pid = Number(m[1]);
+      const ppid = Number(m[2]);
+      let arr = children.get(ppid);
+      if (!arr) children.set(ppid, (arr = []));
+      arr.push(pid);
+    }
+    const out = [];
+    const seen = new Set();
+    const stack = [root];
+    while (stack.length) {
+      const pid = stack.pop();
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      out.push(pid);
+      for (const c of children.get(pid) || []) stack.push(c);
+    }
+    return out;
+  } catch {
+    return [root];
+  }
+}
+
+// List the distinct TCP ports a set of PIDs is LISTENing on (POSIX, via lsof's
+// machine-readable -F output).
+function listeningPortsForPids(pids) {
+  if (isWindows || !pids.length) return [];
+  try {
+    const res = spawnSync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p", pids.join(","), "-Fn"], {
+      encoding: "utf8",
+      timeout: 4000,
+    });
+    if (res.status !== 0 || !res.stdout) return [];
+    const ports = new Set();
+    for (const line of res.stdout.split("\n")) {
+      // -Fn emits each socket name on its own line as "n<addr>", e.g.
+      // "n127.0.0.1:8080", "n*:8080" or "n[::1]:8080" — take the trailing :port.
+      if (line[0] !== "n") continue;
+      const m = line.match(/:(\d+)$/);
+      if (m) ports.add(Number(m[1]));
+    }
+    return [...ports];
+  } catch {
+    /* lsof missing or failed */
+    return [];
+  }
 }
 
 // Parse async-profiler "collapsed" output (one `frame1;frame2;... count` line

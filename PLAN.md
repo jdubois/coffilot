@@ -82,9 +82,11 @@ Shipped in the extension today:
 - **Run output is raw build-tool / app stdout** — unlike BootUI's API it is not run
   through a secret masker, so build output could echo secrets. Hardening this means
   masking before streaming to the iframe and before sending "fix" context.
-- **Port detection is log-regex based** (Tomcat / Netty / Undertow, plus Quarkus'
-  "Listening on" banner). A custom startup banner can hide the port, in which case
-  metrics simply stay unavailable.
+- **Port detection is log-regex first, with an OS-level fallback** (Tomcat / Netty /
+  Undertow, plus Quarkus' "Listening on" banner; when no banner matches, the app's
+  process tree is probed for its listening TCP socket via `ps` + `lsof`). On Windows
+  (no `lsof`) it stays log-regex only, so a custom banner there can still hide the
+  port, in which case metrics simply stay unavailable.
 - **No live per-test progress for Gradle.** Maven's Surefire console output drives the
   class-by-class progress bar; Gradle's graphical test view fills in from the final
   JUnit XML report instead.
