@@ -4237,14 +4237,14 @@ async function detectPortFromOs() {
   // A single listener is unambiguous; latch it (metrics polling then verifies it
   // actually answers HTTP, exactly as for a log-scraped port).
   if (candidates.length === 1) {
-    if (!app.appPort) setAppPort(candidates[0]);
+    setAppPort(candidates[0]);
     return;
   }
   // Several listeners (e.g. a separate management/metrics port): pick the one that
   // actually answers HTTP so metrics polling targets the right socket.
   const answers = await Promise.all(candidates.map((p) => appAnswersHttp(`http://127.0.0.1:${p}`)));
   const idx = answers.findIndex(Boolean);
-  if (idx >= 0 && !app.appPort) setAppPort(candidates[idx]);
+  if (idx >= 0) setAppPort(candidates[idx]);
 }
 
 // ---------------------------------------------------------------------------
@@ -4454,6 +4454,8 @@ function startPortProbe() {
     }
     Promise.resolve(detectPortFromOs()).catch(() => {});
   };
+  // Probe roughly once a second-and-a-half: brisk enough that metrics appear soon
+  // after the app binds its port, but light on the `ps`/`lsof` spawns it costs.
   portProbeTimer = setInterval(probe, 1500);
   probe();
 }
