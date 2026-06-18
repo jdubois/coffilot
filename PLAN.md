@@ -82,9 +82,11 @@ Shipped in the extension today:
 - **Run output is raw build-tool / app stdout** — unlike BootUI's API it is not run
   through a secret masker, so build output could echo secrets. Hardening this means
   masking before streaming to the iframe and before sending "fix" context.
-- **Port detection is log-regex based** (Tomcat / Netty / Undertow, plus Quarkus'
-  "Listening on" banner). A custom startup banner can hide the port, in which case
-  metrics simply stay unavailable.
+- **Port detection is best-effort.** Coffilot first scrapes the startup banner
+  (Tomcat / Netty / Undertow, plus Quarkus' "Listening on" line) and, when no
+  recognised line appears, falls back to probing the running app's process tree
+  for a LISTENing HTTP port (`ps` + `lsof`, POSIX only). If neither finds a port —
+  e.g. a fully custom banner on Windows — metrics simply stay unavailable.
 - **No live per-test progress for Gradle.** Maven's Surefire console output drives the
   class-by-class progress bar; Gradle's graphical test view fills in from the final
   JUnit XML report instead.
