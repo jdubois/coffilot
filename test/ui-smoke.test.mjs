@@ -282,3 +282,67 @@ test("a failed build shows the Fix button and replays the repaint pop", () => {
   assert.equal(btnFix.dataset.kind, "compile");
   assert.ok(btnFix.classList.contains("cof-pop-in"), "pop class added to force a repaint");
 });
+
+test("the Spring Boot tab and its pane are present in the rail", () => {
+  assert.ok(win.document.querySelector('.atab[data-atab="spring"]'), "Spring Boot rail button exists");
+  assert.ok(win.document.getElementById("atab-spring"), "Spring Boot pane exists");
+  // It sits between Loggers and BootUI (scans).
+  const order = [...win.document.querySelectorAll(".atab[data-atab]")].map((b) => b.dataset.atab);
+  assert.ok(order.indexOf("spring") > order.indexOf("loggers"), "spring after loggers");
+  assert.ok(order.indexOf("spring") < order.indexOf("scans"), "spring before BootUI");
+});
+
+test("renderSpringAdvisor reflects version status and gates the upgrade button", () => {
+  const btn = win.document.getElementById("btn-upgrade-spring");
+  const box = win.document.getElementById("spring-version");
+
+  // No Spring Boot module: empty state, no upgrade.
+  assert.doesNotThrow(() => win.renderSpringAdvisor({ detected: false }));
+  assert.equal(btn.hidden, true, "upgrade hidden without a Spring module");
+
+  // EOL line: a "bad" chip and the upgrade button offered.
+  win.renderSpringAdvisor({
+    detected: true,
+    version: "3.1.5",
+    cycle: "3.1",
+    status: "eol",
+    ossEnd: "2024-06-30",
+    latestLine: "4.1",
+    latestVersion: "4.1.0",
+  });
+  assert.equal(btn.hidden, false, "upgrade shown for an EOL line");
+  assert.ok(box.querySelector(".spring-status.bad"), "EOL renders a 'bad' status chip");
+
+  // Latest line: no upgrade offered, an "ok" chip.
+  win.renderSpringAdvisor({
+    detected: true,
+    version: "4.1.0",
+    cycle: "4.1",
+    status: "current",
+    ossEnd: "2027-07-31",
+    latestLine: "4.1",
+    latestVersion: "4.1.0",
+  });
+  assert.equal(btn.hidden, true, "no upgrade when on the latest line");
+  assert.ok(box.querySelector(".spring-status.ok"), "current renders an 'ok' status chip");
+});
+
+test("renderStatus drives the DevTools live-reload / restart buttons", () => {
+  const reload = win.document.getElementById("btn-reload");
+  const restart = win.document.getElementById("btn-restart-app");
+  const idle = { build: {}, test: {}, package: {}, run: {}, debug: {} };
+
+  // App down, no reload watcher: both disabled.
+  win.renderStatus({ ...idle, reload: { active: false }, run: { busy: false } });
+  assert.equal(reload.disabled, true, "live reload disabled when watcher inactive");
+  assert.equal(restart.disabled, true, "restart disabled when app not running");
+
+  // App running with an active reload watcher: both enabled.
+  win.renderStatus({ ...idle, reload: { active: true, busy: false }, run: { busy: true } });
+  assert.equal(reload.disabled, false, "live reload enabled when watcher active");
+  assert.equal(restart.disabled, false, "restart enabled while the app runs");
+
+  // Mid-recompile: live reload is busy and disabled.
+  win.renderStatus({ ...idle, reload: { active: true, busy: true }, run: { busy: true } });
+  assert.equal(reload.disabled, true, "live reload disabled while recompiling");
+});

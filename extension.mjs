@@ -177,6 +177,7 @@ function applyWorkspace(primary) {
   baseRunnerInfo = null;
   projectModules = null;
   javaVersion = undefined;
+  springBootVersionCache = undefined;
   mavenProfiles = null;
   springProfiles = null;
   quarkusProfiles = null;
@@ -1764,6 +1765,140 @@ function detectJavaVersion() {
   return javaVersion;
 }
 
+// --- Spring Boot version + support (EOL) advisor ---------------------------
+// The Spring Boot tab surfaces the project's Spring Boot version and whether its
+// release line is still supported, offering an "Upgrade with Copilot" prompt when
+// it isn't the latest line. The version is read straight from the build files
+// (cheap + offline); the support timeline is embedded below.
+
+// Spring Boot release-line support timeline, embedded from endoflife.date
+// (https://endoflife.date/spring-boot, fetched 2026-06). `ossEnd` is the open-source
+// support end date for that line; `latest` is the newest patch published for it at
+// embed time — a hint for the upgrade prompt, which the agent verifies. The list is
+// ordered newest line first, so the head is the latest GA line.
+const SPRING_BOOT_SUPPORT = [
+  { cycle: "4.1", ossEnd: "2027-07-31", latest: "4.1.0" },
+  { cycle: "4.0", ossEnd: "2026-12-31", latest: "4.0.7" },
+  { cycle: "3.5", ossEnd: "2026-06-30", latest: "3.5.15" },
+  { cycle: "3.4", ossEnd: "2025-12-31", latest: "3.4.13" },
+  { cycle: "3.3", ossEnd: "2025-06-30", latest: "3.3.13" },
+  { cycle: "3.2", ossEnd: "2024-12-31", latest: "3.2.12" },
+  { cycle: "3.1", ossEnd: "2024-06-30", latest: "3.1.12" },
+  { cycle: "3.0", ossEnd: "2023-12-31", latest: "3.0.13" },
+  { cycle: "2.7", ossEnd: "2023-06-30", latest: "2.7.18" },
+  { cycle: "2.6", ossEnd: "2022-11-24", latest: "2.6.15" },
+  { cycle: "2.5", ossEnd: "2022-05-19", latest: "2.5.15" },
+  { cycle: "2.4", ossEnd: "2021-11-18", latest: "2.4.13" },
+  { cycle: "2.3", ossEnd: "2021-05-20", latest: "2.3.12" },
+  { cycle: "2.2", ossEnd: "2020-10-16", latest: "2.2.13" },
+  { cycle: "2.1", ossEnd: "2019-10-30", latest: "2.1.18" },
+  { cycle: "2.0", ossEnd: "2019-03-01", latest: "2.0.9" },
+  { cycle: "1.5", ossEnd: "2019-08-06", latest: "1.5.22" },
+];
+
+// Spring Boot version from a pom: the spring-boot-starter-parent version, the
+// spring-boot.version property, the spring-boot-dependencies BOM, or the plugin.
+// The [^<${}] class skips unresolved `${…}` placeholders so we only return a literal.
+export function springBootVersionFromPom(xml) {
+  const parent = (xml.match(/<parent>([\s\S]*?)<\/parent>/) || [, ""])[1];
+  if (/spring-boot-starter-parent/.test(parent)) {
+    const v = parent.match(/<version>\s*([^<${}\s][^<${}]*?)\s*<\/version>/);
+    if (v) return v[1];
+  }
+  const prop = xml.match(/<spring-boot\.version>\s*([^<${}\s][^<${}]*?)\s*<\/spring-boot\.version>/);
+  if (prop) return prop[1];
+  const bom = xml.match(/spring-boot-dependencies<\/artifactId>\s*<version>\s*([^<${}\s][^<${}]*?)\s*<\/version>/);
+  if (bom) return bom[1];
+  const plugin = xml.match(/spring-boot-maven-plugin<\/artifactId>\s*<version>\s*([^<${}\s][^<${}]*?)\s*<\/version>/);
+  if (plugin) return plugin[1];
+  return null;
+}
+
+// Spring Boot version from a Gradle build script: the org.springframework.boot
+// plugin version, or the gradle-plugin classpath in a buildscript block. The
+// leading-digit anchor keeps version variables (`$springBootVersion`, libs.*) out.
+export function springBootVersionFromGradle(text) {
+  let m = text.match(/org\.springframework\.boot['"]\s*\)?\s*version\s*\(?\s*['"](\d[^'"]*)['"]/);
+  if (m) return m[1];
+  m = text.match(/spring-boot-gradle-plugin:(\d[^'":\s]*)/);
+  if (m) return m[1];
+  return null;
+}
+
+let springBootVersionCache = undefined;
+function detectSpringBootVersion() {
+  if (springBootVersionCache !== undefined) return springBootVersionCache;
+  springBootVersionCache = null;
+  try {
+    const dirs = [workspacePath, ...listModules().map((m) => path.join(workspacePath, m.name))];
+    for (const dir of dirs) {
+      let v = null;
+      if (buildTool === "maven") {
+        let xml;
+        try {
+          xml = readFileSync(path.join(dir, "pom.xml"), "utf8");
+        } catch {
+          continue;
+        }
+        v = springBootVersionFromPom(xml);
+      } else if (buildTool === "gradle") {
+        const text = readGradleBuildFile(dir);
+        if (text) v = springBootVersionFromGradle(text);
+      }
+      if (v) {
+        springBootVersionCache = v;
+        break;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return springBootVersionCache;
+}
+
+// Compare two "major.minor" release lines numerically; returns >0 if a is newer.
+function compareCycles(a, b) {
+  const [am, an] = a.split(".").map(Number);
+  const [bm, bn] = b.split(".").map(Number);
+  return am !== bm ? am - bm : an - bn;
+}
+
+// Map the detected Spring Boot version to a support status. Pure data for the UI;
+// the date comparison uses the local "today" so it stays accurate as time passes.
+export function springBootAdvisor() {
+  const detected = listModules().some((m) => m.springBoot);
+  if (!detected) return { detected: false };
+  const version = detectSpringBootVersion();
+  const latest = SPRING_BOOT_SUPPORT[0];
+  const cycle = version ? (version.match(/^(\d+\.\d+)/) || [])[1] || null : null;
+  let status = version ? "unknown" : "unreadable";
+  let ossEnd = null;
+  if (cycle) {
+    const entry = SPRING_BOOT_SUPPORT.find((e) => e.cycle === cycle);
+    if (entry) {
+      ossEnd = entry.ossEnd;
+      const today = new Date().toISOString().slice(0, 10);
+      if (cycle === latest.cycle) status = "current";
+      else if (ossEnd >= today) status = "supported";
+      else status = "eol";
+    } else {
+      // Not in the embedded table: treat a line newer than we know as current,
+      // anything older as unknown (we can't assert its support window).
+      status = compareCycles(cycle, latest.cycle) > 0 ? "current" : "unknown";
+    }
+  }
+  return {
+    detected: true,
+    version,
+    cycle,
+    status,
+    ossEnd,
+    latestLine: latest.cycle,
+    latestVersion: latest.latest,
+    upToDate: status === "current",
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Quarkus Agent MCP (https://github.com/quarkusio/quarkus-agent-mcp)
 // ---------------------------------------------------------------------------
@@ -1787,6 +1922,7 @@ function detectQuarkusAgentMcp() {
 }
 
 // Static capability tiers, derived from the build files. The runtime metrics tier
+// (refreshMetrics) is authoritative once the app is up; these are the hints the
 // (refreshMetrics) is authoritative once the app is up; these are the hints the
 // UI uses before/while running to decide what controls to show.
 function capabilitiesSnapshot() {
@@ -2379,6 +2515,21 @@ function maybeStartLiveReload() {
   }
 }
 
+// Manually trigger a live reload: recompile the running module's sources so Spring
+// Boot DevTools restarts the app in place. Requires a Spring app up with the
+// DevTools watcher active (DevTools enabled + on the classpath). Mirrors what the
+// watcher does on file save, exposed as an explicit button in the Spring Boot tab.
+function requestReload() {
+  if (lanes.run.phase !== "running" || app.runMode !== "spring") {
+    return { ok: false, error: "Start the Spring Boot app first." };
+  }
+  if (!liveReload || !reloadCtx) {
+    return { ok: false, error: "Live reload isn't active — enable DevTools, then Run the app." };
+  }
+  triggerRecompile();
+  return { ok: true, busy: reloadBusy };
+}
+
 // Merge incoming settings, persist, and react to changes (live reload). Returns
 // the saved snapshot.
 function applySettings(body) {
@@ -2404,7 +2555,7 @@ function applySettings(body) {
     settings.metricsPollMs = clampMetricsPollMs(body.metricsPollMs);
   }
   // Right-panel preference (which aside tab, and whether the panel is open).
-  if (["metrics", "loggers", "scans", "settings"].includes(body.asideTab)) settings.asideTab = body.asideTab;
+  if (["metrics", "loggers", "spring", "scans", "settings"].includes(body.asideTab)) settings.asideTab = body.asideTab;
   if (typeof body.asideOpen === "boolean") settings.asideOpen = body.asideOpen;
   // JDK selection. Don't switch the JDK out from under a running/debugging app —
   // the change applies to the next launch, so the user must stop it first. A new
@@ -2669,6 +2820,8 @@ function envSnapshot() {
     springProfiles: listSpringProfiles(),
     quarkusProfiles: listQuarkusProfiles(),
     capabilities: capabilitiesSnapshot(),
+    // Spring Boot version + support (EOL) advisor for the Spring Boot tab.
+    spring: springBootAdvisor(),
     settings: settingsSnapshot(),
     // CPU/alloc/wall/lock flame graphs via async-profiler (Run tab).
     profiler: profilerSnapshot(),
@@ -6256,6 +6409,31 @@ function buildFixPrompt(kind, extra = {}) {
         .filter(Boolean)
         .join("\n\n");
     }
+    case "upgrade-spring-boot": {
+      const moduleName = extra.module || "";
+      const current = extra.version ? `Spring Boot ${extra.version}` : "an older Spring Boot release";
+      const floor = extra.target || null;
+      const crossMajor = extra.version && /^2\./.test(String(extra.version));
+      const where =
+        buildTool === "gradle"
+          ? `the \`org.springframework.boot\` plugin version in \`${gradleModuleBuildFile(moduleName).rel}\``
+          : "the `spring-boot-starter-parent` version (or the `spring-boot.version` property / `spring-boot-dependencies` BOM) in the project's `pom.xml`";
+      return [
+        `This project uses ${current}. Upgrade it to the latest stable Spring Boot GA release.`,
+        [
+          `1. Determine the latest stable Spring Boot GA version${floor ? ` (it is at least ${floor}; ` : " ("}verify the newest patch on https://start.spring.io or Maven Central — don't pin a milestone, RC or SNAPSHOT).`,
+          `2. Bump ${where} to that version.`,
+          "3. Read the Spring Boot release notes and the migration guide for every release line between the current and target versions, and apply the required changes (renamed/removed configuration properties, removed or relocated APIs, dependency-management changes)." +
+            (crossMajor
+              ? " This crosses Spring Boot 2.x → 3.x: migrate `javax.*` imports to `jakarta.*`, ensure Java 17+, and account for the Spring Security / Hibernate / Jakarta EE 9+ baseline."
+              : ""),
+          "4. Build the project and run the tests to confirm the upgrade is clean; fix anything the upgrade breaks before finishing.",
+        ].join("\n"),
+        "Summarize the version you upgraded to and any notable breaking changes you had to handle.",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
     case "install-jdtls": {
       const platformName = extra.os || (process.platform === "darwin" ? "macOS" : isWindows ? "Windows" : "Linux");
       const installCmd = extra.installCmd || "brew install jdtls";
@@ -7265,6 +7443,10 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && url.pathname === "/api/restart") {
     const body = await readBody(req);
     sendJson(res, 200, await restart(body.op, body)); // stop the lane, then relaunch it
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/reload") {
+    sendJson(res, 200, requestReload()); // recompile so DevTools restarts the app in place
     return;
   }
 

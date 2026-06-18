@@ -26,6 +26,8 @@ const {
   pickAppPidFromJvmList,
   quarkusDevConsoleFailed,
   jdkSupportsNativeAccess,
+  springBootVersionFromPom,
+  springBootVersionFromGradle,
 } = await import("../extension.mjs");
 
 // ---------------------------------------------------------------------------
@@ -531,4 +533,52 @@ test("jdkSupportsNativeAccess: unknown/invalid majors omit the flag", () => {
   assert.equal(jdkSupportsNativeAccess(null), false);
   assert.equal(jdkSupportsNativeAccess(undefined), false);
   assert.equal(jdkSupportsNativeAccess(NaN), false);
+});
+
+// ---------------------------------------------------------------------------
+// Spring Boot version detection (Spring Boot tab EOL/upgrade advisor)
+// ---------------------------------------------------------------------------
+
+test("springBootVersionFromPom reads the spring-boot-starter-parent version", () => {
+  const xml = `<project>
+    <parent>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-parent</artifactId>
+      <version>3.4.13</version>
+    </parent>
+  </project>`;
+  assert.equal(springBootVersionFromPom(xml), "3.4.13");
+});
+
+test("springBootVersionFromPom falls back to the spring-boot.version property and BOM", () => {
+  const prop = `<project><properties><spring-boot.version>3.2.0</spring-boot.version></properties></project>`;
+  assert.equal(springBootVersionFromPom(prop), "3.2.0");
+  const bom = `<dependencyManagement><dependencies><dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-dependencies</artifactId>
+    <version>3.5.1</version>
+  </dependency></dependencies></dependencyManagement>`;
+  assert.equal(springBootVersionFromPom(bom), "3.5.1");
+});
+
+test("springBootVersionFromPom ignores an unresolved ${...} placeholder version", () => {
+  const xml = `<project><parent>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>\${spring.boot.version}</version>
+  </parent></project>`;
+  assert.equal(springBootVersionFromPom(xml), null);
+});
+
+test("springBootVersionFromGradle reads the plugin version (Groovy + Kotlin DSL)", () => {
+  const groovy = `plugins { id 'org.springframework.boot' version '3.3.5' }`;
+  assert.equal(springBootVersionFromGradle(groovy), "3.3.5");
+  const kotlin = `plugins { id("org.springframework.boot") version "3.4.0" }`;
+  assert.equal(springBootVersionFromGradle(kotlin), "3.4.0");
+});
+
+test("springBootVersionFromGradle reads a buildscript classpath and skips variables", () => {
+  const classpath = `buildscript { dependencies { classpath "org.springframework.boot:spring-boot-gradle-plugin:2.7.18" } }`;
+  assert.equal(springBootVersionFromGradle(classpath), "2.7.18");
+  const variable = `plugins { id 'org.springframework.boot' version "$springBootVersion" }`;
+  assert.equal(springBootVersionFromGradle(variable), null);
 });

@@ -67,6 +67,11 @@ Shipped in the extension today:
   the process running), for a running app with no runtime-logger endpoint (offers to
   add Spring Boot Actuator or the Quarkus logging-manager extension), for flame-graph
   hotspots, and for BootUI advisor-scan findings.
+- For Spring Boot projects, a dedicated **Spring Boot** side tab (between Loggers and
+  BootUI) shows the detected Spring Boot version mapped to a support status (current /
+  supported / EOL) from an embedded endoflife.date table, with an "Upgrade with Copilot"
+  action when behind the latest GA, plus DevTools controls (Add DevTools, Enable live
+  reload, Live reload / Restart app).
 - BootUI advisor scans run over REST (BootUI tab), plus an optional MCP-server
   toggle/register bridge, when the running app exposes BootUI.
 - Quarkus Agent MCP: a dedicated **Quarkus** right-panel tab with a "Register with

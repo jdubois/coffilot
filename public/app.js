@@ -90,6 +90,11 @@ const setSpring = document.getElementById("set-spring");
 const setDevtools = document.getElementById("set-devtools");
 const devtoolsToggle = document.getElementById("devtools-toggle");
 const devtoolsInput = document.getElementById("in-devtools");
+const devtoolsActions = document.getElementById("devtools-actions");
+const springVersionEl = document.getElementById("spring-version");
+const btnUpgradeSpring = document.getElementById("btn-upgrade-spring");
+const btnReload = document.getElementById("btn-reload");
+const btnRestartApp = document.getElementById("btn-restart-app");
 const setRandomport = document.getElementById("set-randomport");
 const randomportInput = document.getElementById("in-randomport");
 const maskSecretsInput = document.getElementById("in-masksecrets");
@@ -378,6 +383,7 @@ function showAsideTab(name) {
   document.querySelectorAll(".atab").forEach((t) => t.classList.toggle("active", t.dataset.atab === name));
   document.getElementById("atab-metrics").classList.toggle("active", name === "metrics");
   document.getElementById("atab-loggers").classList.toggle("active", name === "loggers");
+  document.getElementById("atab-spring").classList.toggle("active", name === "spring");
   document.getElementById("atab-scans").classList.toggle("active", name === "scans");
   document.getElementById("atab-quarkus").classList.toggle("active", name === "quarkus");
   document.getElementById("atab-settings").classList.toggle("active", name === "settings");
@@ -408,7 +414,9 @@ function rememberAsideState() {
 function applyAsideState(s) {
   if (asideStateApplied || !s) return;
   asideStateApplied = true;
-  asideTabPref = ["metrics", "loggers", "scans", "quarkus", "settings"].includes(s.asideTab) ? s.asideTab : "settings";
+  asideTabPref = ["metrics", "loggers", "spring", "scans", "quarkus", "settings"].includes(s.asideTab)
+    ? s.asideTab
+    : "settings";
   asideOpenPref = s.asideOpen === true;
   showAsideTab(asideTabPref);
   // The remembered open state applies to the in-flow layout only; on a narrow
@@ -468,12 +476,14 @@ const ASIDE_ALWAYS = new Set(["settings"]);
 // Canonical left-to-right order, applied within both the available and the
 // unavailable group. Settings always leads the available group (it's never
 // unavailable); "quarkus" takes the trailing slot for the Quarkus Agent MCP tab.
-const ASIDE_ORDER = ["settings", "metrics", "loggers", "scans", "quarkus"];
+const ASIDE_ORDER = ["settings", "metrics", "loggers", "spring", "scans", "quarkus"];
 const ASIDE_REASON = {
   metrics:
     "Live JVM metrics need a running app that exposes metrics — Spring Boot Actuator/BootUI or Quarkus Micrometer. Click to learn more.",
   loggers:
     "Live log levels need a running Spring Boot app (Actuator /loggers) or a Quarkus app with the logging-manager extension. Click to learn more.",
+  spring:
+    "The Spring Boot tab needs a Spring Boot module — version advisor and DevTools live reload. Click to learn more.",
   scans: "The BootUI panel needs a running BootUI app — Run a module with the BootUI starter. Click to learn more.",
   quarkus:
     "The Quarkus panel needs a Quarkus module — open a Quarkus project to register its Agent MCP server with Copilot. Click to learn more.",
@@ -481,10 +491,11 @@ const ASIDE_REASON = {
 // metrics / loggers / scans are each gated on the running app exposing the right
 // capability (see updateAsideAvailability callers); the BootUI (scans) tab is
 // available only while a BootUI app is actually up, exactly like the other two.
-// quarkus is gated on the project (a Quarkus module), not the running app, so it
-// comes from applyCaps rather than the metrics snapshot. Each source updates only
-// its own keys, so availabilities are merged rather than replaced wholesale.
-const asideAvail = { metrics: false, loggers: false, scans: false, quarkus: false };
+// quarkus and spring are gated on the project (a Quarkus / Spring Boot module),
+// not the running app, so they come from caps rather than the metrics snapshot.
+// Each source updates only its own keys, so availabilities are merged rather than
+// replaced wholesale.
+const asideAvail = { metrics: false, loggers: false, scans: false, spring: false, quarkus: false };
 function updateAsideAvailability(avail) {
   if (avail) Object.assign(asideAvail, avail);
   let anyUnavailable = false;
@@ -741,6 +752,16 @@ function renderStatus(s) {
     reloadPill.className = "pill " + (reload.busy ? "running" : "idle");
   } else {
     reloadPill.hidden = true;
+  }
+  // Spring Boot tab dev-loop actions. "Live reload" needs the DevTools watcher
+  // active (and not already recompiling); "Restart app" needs the run lane up.
+  if (btnReload) {
+    const r = s.reload || {};
+    btnReload.disabled = !r.active || !!r.busy;
+    btnReload.textContent = r.busy ? "Reloading\u2026" : "Live reload";
+  }
+  if (btnRestartApp) {
+    btnRestartApp.disabled = !laneBusy("run") || !!restarting.run;
   }
   // Run-tab "Open in browser" button always tracks the run lane.
   const run = s.run || {};
@@ -2072,11 +2093,11 @@ let moduleList = [];
 // Per selected module (one reactor can mix capabilities), decide which
 // settings rows/proposals to surface:
 // - Spring Boot or Quarkus -> show the run-profile + random-port rows.
-// - Spring Boot -> also show DevTools (Quarkus dev mode has live reload built
-//   in, so no DevTools row) and the BootUI / DevTools "add" proposals.
+// - Spring Boot -> drive the Spring Boot tab's DevTools section (Quarkus dev mode
+//   has live reload built in, so no DevTools row) and the BootUI "add" proposal.
 // - Spring Boot but no BootUI starter -> offer to add BootUI.
-// - Spring Boot but no DevTools -> offer to add DevTools and disable the
-//   "Enable Spring Boot DevTools" toggle until the dependency is present.
+// - Spring Boot but no DevTools -> offer to add DevTools (the live-reload toggle +
+//   actions only appear once the dependency is present).
 function updateDevSetup() {
   const mod = moduleList.find((m) => m.name === moduleSelect.value);
   const spring = !!(mod && mod.springBoot);
@@ -2084,7 +2105,6 @@ function updateDevSetup() {
   const framework = spring || quarkus;
   // Profiles + random-port apply to both frameworks; DevTools is Spring-only.
   setSpring.hidden = !framework;
-  setDevtools.hidden = !spring;
   setRandomport.hidden = !framework;
   // The BootUI MCP server toggle stays visible in the BootUI panel; renderMcp /
   // setMcpUnavailable grey and disable it until a running BootUI app exposes the
@@ -2105,22 +2125,72 @@ function updateDevSetup() {
   btnAddBootui.title =
     "Add the BootUI starter to this module's dev profile to unlock its console, richer metrics and advisor scans.";
 
+  // DevTools section (Spring Boot tab): show the live-reload toggle + manual
+  // actions once DevTools is on the classpath, otherwise offer to add it.
   const hasDevtools = spring && !!mod.devtools;
-  const showDevtools = spring && !mod.devtools;
-  btnAddDevtools.hidden = !showDevtools;
-  if (showDevtools) {
+  const showAddDevtools = spring && !mod.devtools;
+  setDevtools.hidden = !hasDevtools;
+  devtoolsActions.hidden = !hasDevtools;
+  devtoolsInput.disabled = !hasDevtools;
+  devtoolsToggle.classList.toggle("disabled", !hasDevtools);
+  btnAddDevtools.hidden = !showAddDevtools;
+  if (showAddDevtools) {
     btnAddDevtools.disabled = false;
     btnAddDevtools.textContent = caps.gradle ? "Add DevTools (developmentOnly)" : "Add DevTools to dev profile";
   }
-  // The DevTools toggle only makes sense once the dependency is on the
-  // classpath; grey it out and explain via the info tooltip otherwise.
-  devtoolsToggle.classList.toggle("disabled", !hasDevtools);
-  devtoolsInput.disabled = !hasDevtools;
-  document.getElementById("devtools-info").dataset.tip = hasDevtools
-    ? "Watch the running module's sources and recompile on save so DevTools restarts the app in place."
-    : caps.gradle
-      ? "Add Spring Boot DevTools (button below) to enable live reload."
-      : "Add Spring Boot DevTools to the dev profile first (button below) to enable live reload.";
+
+  // Keep the Spring Boot tab's availability in step with the build files (it's
+  // gated on the project owning a Spring Boot module, not on the running app).
+  updateAsideAvailability({ spring: !!(caps && caps.springBoot) });
+}
+
+// --- Spring Boot version + EOL/upgrade advisor (Spring Boot tab) -------------
+// The backend (springBootAdvisor) reports the detected version, its release line
+// and a support status; we render it and gate the "Upgrade with Copilot" button.
+const SPRING_STATUS = {
+  current: { label: "Latest release line", cls: "ok" },
+  supported: { label: "Supported — a newer release line is available", cls: "warn" },
+  eol: { label: "End of life — upgrade recommended", cls: "bad" },
+  unknown: { label: "Support status unknown", cls: "warn" },
+  unreadable: { label: "Version not found in the build file", cls: "warn" },
+};
+let springAdvisor = null;
+
+function renderSpringAdvisor(adv) {
+  springAdvisor = adv || null;
+  if (!springVersionEl) return;
+  if (!adv || !adv.detected) {
+    springVersionEl.innerHTML = '<p class="muted">No Spring Boot module detected.</p>';
+    btnUpgradeSpring.hidden = true;
+    return;
+  }
+  let html = "";
+  if (adv.version) {
+    html += row("Version", esc(adv.version));
+    if (adv.cycle) html += row("Release line", esc(adv.cycle));
+  }
+  const info = SPRING_STATUS[adv.status] || SPRING_STATUS.unknown;
+  html += `<div class="spring-status ${info.cls}">${esc(info.label)}</div>`;
+  if (adv.status === "eol" && adv.ossEnd) {
+    html += `<p class="hint">Open-source support for ${esc(adv.cycle)}.x ended ${esc(adv.ossEnd)}.</p>`;
+  } else if (adv.status === "supported" && adv.ossEnd) {
+    html += `<p class="hint">Open-source support for ${esc(adv.cycle)}.x runs until ${esc(adv.ossEnd)}; the latest line is ${esc(adv.latestLine)}.x.</p>`;
+  } else if (adv.status === "current") {
+    html += `<p class="hint">You're on the latest Spring Boot release line.</p>`;
+  } else if (adv.status === "unreadable") {
+    html += `<p class="hint">Couldn't read a literal Spring Boot version (it may come from a property or BOM).</p>`;
+  }
+  springVersionEl.innerHTML = html;
+
+  // Offer the upgrade whenever the project isn't on the latest line and we have a
+  // version to upgrade from.
+  const showUpgrade = !!adv.version && adv.status !== "current";
+  btnUpgradeSpring.hidden = !showUpgrade;
+  if (showUpgrade) {
+    btnUpgradeSpring.disabled = false;
+    btnUpgradeSpring.textContent = "Upgrade with Copilot";
+    btnUpgradeSpring.title = `Ask Copilot to upgrade from Spring Boot ${adv.version} to the latest stable release.`;
+  }
 }
 
 // Suggestion lists backing the custom comboboxes (kept editable).
@@ -2254,6 +2324,7 @@ function applyEnv(env) {
   quarkusItems = quarkus.length ? quarkus : ["dev", "test", "prod"];
   mavenItems = (env && env.mavenProfiles) || [];
   updateDevSetup();
+  renderSpringAdvisor(env && env.spring);
 
   // Degraded mode: no Maven or Gradle project. Show the banner and disable
   // the build/test/package/run actions; nothing can be invoked without a tool.
@@ -2592,16 +2663,22 @@ function stopLane(which, op) {
   post("/api/stop", { op: "maven" });
 }
 
+// The inputs that launch / restart the app, shared by the Run lane button and the
+// Spring Boot tab's "Restart app" action.
+function runBody() {
+  return {
+    module: document.getElementById("in-module").value.trim(),
+    profiles: document.getElementById("in-profiles").value.trim(),
+    mavenProfiles: mvnProfiles(),
+  };
+}
+
 // One button per lane: it starts the lane when idle, or stops it while busy.
 function laneAction(op) {
   if (op === "run") {
     if (laneBusy("run")) return stopLane("run");
     showTab("run");
-    triggerLane("run", "/api/run", {
-      module: document.getElementById("in-module").value.trim(),
-      profiles: document.getElementById("in-profiles").value.trim(),
-      mavenProfiles: mvnProfiles(),
-    });
+    triggerLane("run", "/api/run", runBody());
     return;
   }
   if (op === "debug") {
@@ -2707,6 +2784,27 @@ btnAddDevtools.onclick = async () => {
   btnAddDevtools.disabled = true;
   btnAddDevtools.textContent = "Asked Copilot \u2713";
   await post("/api/fix", { kind: "install-devtools", module: moduleSelect.value });
+};
+btnUpgradeSpring.onclick = async () => {
+  btnUpgradeSpring.disabled = true;
+  btnUpgradeSpring.textContent = "Asked Copilot \u2713";
+  await post("/api/fix", {
+    kind: "upgrade-spring-boot",
+    module: moduleSelect.value,
+    version: springAdvisor ? springAdvisor.version : null,
+    target: springAdvisor ? springAdvisor.latestVersion : null,
+  });
+};
+// Manual dev-loop actions. "Live reload" recompiles so DevTools restarts the app
+// in place; "Restart app" stops and relaunches the run lane. The status SSE drives
+// their enabled state (renderStatus), so just fire and let it re-render.
+btnReload.onclick = () => {
+  btnReload.disabled = true;
+  post("/api/reload", {});
+};
+btnRestartApp.onclick = () => {
+  if (!laneBusy("run")) return;
+  triggerLane("run", "/api/run", runBody());
 };
 btnSetupJdtls.onclick = async () => {
   btnSetupJdtls.disabled = true;

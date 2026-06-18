@@ -1818,6 +1818,38 @@ button.is-restarting .btn-spin::before {
   align-items: flex-start;
   gap: 0.45rem;
 }
+/* Spring Boot tab: version/EOL advisor status chip + dev-loop action row */
+.spring-h2 {
+  margin-top: 1rem;
+}
+.spring-status {
+  display: inline-block;
+  margin: 0.4rem 0 0.2rem;
+  border-radius: 999px;
+  padding: 0.1rem 0.6rem;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border-color-default, #d0d7de);
+  color: var(--text-color-muted, #656d76);
+}
+.spring-status.ok {
+  color: var(--true-color-green, #1a7f37);
+  border-color: var(--true-color-green, #1a7f37);
+}
+.spring-status.warn {
+  color: var(--true-color-orange, #bc4c00);
+  border-color: var(--true-color-orange, #bc4c00);
+}
+.spring-status.bad {
+  color: var(--true-color-red, #cf222e);
+  border-color: var(--true-color-red, #cf222e);
+}
+.spring-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+}
 /* Java language server (JDTLS) status row */
 .jdtls-row {
   display: flex;
