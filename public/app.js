@@ -1184,7 +1184,7 @@ async function runScan(tool) {
   mcpResultEl.innerHTML =
     `<div style="display:flex;align-items:center;gap:0.5rem;justify-content:space-between">` +
     `<strong>${esc(tool)}</strong>` +
-    `<button class="fix tiny" id="mcp-send">Fix findings with Copilot</button></div>` +
+    `<button class="fix fix-copilot tiny" id="mcp-send">Fix findings with Copilot</button></div>` +
     `<pre>${esc(text)}</pre>`;
   const send = document.getElementById("mcp-send");
   if (send)
