@@ -5553,6 +5553,239 @@ async function setLoggerLevel(name, level) {
 }
 
 // ---------------------------------------------------------------------------
+// Self-update — keep a cloned (or forked-and-cloned) Coffilot checkout current
+// ---------------------------------------------------------------------------
+//
+// One minute after launch we check whether the extension's own git checkout is
+// behind its remote and, if so, surface an "Update to latest version" button in
+// the canvas header that runs `git pull`. This only applies when Coffilot was
+// obtained as its own clone — i.e. its files sit at the repository root. When it
+// was copied into another project (e.g. <project>/.github/extensions/coffilot,
+// where the repo root is the *project*, not Coffilot) or copied onto disk
+// without a `.git`, there's nothing safe to pull, so the feature stays dormant
+// and the button never appears.
+
+const EXTENSION_DIR = __dirname;
+
+let updateState = {
+  supported: false, // the extension is a Coffilot git checkout we can update
+  available: false, // a newer commit exists on the tracked remote (behind > 0)
+  checking: false, // a status check is in flight
+  updating: false, // a `git pull` is in flight
+  behind: 0,
+  ahead: 0,
+  branch: null,
+  remoteRef: null, // the remote-tracking ref we compare against, e.g. "origin/main"
+  currentSha: null,
+  remoteSha: null,
+  checkedAt: null, // epoch ms of the last successful check
+  error: null,
+};
+
+function updatePublic() {
+  return { ...updateState };
+}
+
+// Run a git subcommand against a checkout, capturing output. Non-interactive
+// (never block on credential prompts) and time-bounded so a hung network fetch
+// can't wedge the check. Resolves rather than rejects so callers stay simple.
+function runGit(args, { cwd = EXTENSION_DIR, timeout = 25000 } = {}) {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let child;
+    const env = {
+      ...process.env,
+      GIT_TERMINAL_PROMPT: "0", // fail instead of prompting for credentials
+      GIT_OPTIONAL_LOCKS: "0",
+      GCM_INTERACTIVE: "never",
+    };
+    try {
+      child = spawn("git", args, { cwd, env });
+    } catch (e) {
+      resolve({ ok: false, code: null, stdout: "", stderr: String(e?.message || e) });
+      return;
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }, timeout);
+    timer.unref?.();
+    child.stdout?.on("data", (c) => (stdout += c));
+    child.stderr?.on("data", (c) => (stderr += c));
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      resolve({ ok: false, code: null, stdout: stdout.trim(), stderr: (stderr || String(e?.message || e)).trim() });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ ok: code === 0, code, stdout: stdout.trim(), stderr: stderr.trim() });
+    });
+  });
+}
+
+// True when EXTENSION_DIR is the root of its own git checkout (a Coffilot clone),
+// rather than a folder nested inside some other repository. Both paths are
+// realpath-normalized so a symlinked install (clone elsewhere, symlinked into the
+// Copilot extensions dir) still matches.
+async function isCoffilotCheckout() {
+  const top = await runGit(["rev-parse", "--show-toplevel"], { timeout: 8000 });
+  if (!top.ok || !top.stdout) return false;
+  try {
+    return path.resolve(realpathSync(top.stdout)) === path.resolve(realpathSync(EXTENSION_DIR));
+  } catch {
+    return false;
+  }
+}
+
+// Resolve the remote-tracking ref to compare/pull against: the branch's
+// configured upstream (`@{u}`) when set, otherwise `origin/<branch>` when that
+// remote branch exists. Returns null on a detached HEAD or when no matching
+// remote branch is found (e.g. a local-only branch), which leaves the feature
+// dormant — matching what a bare `git pull` could do.
+async function resolveTrackingRef(branch) {
+  const up = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], { timeout: 8000 });
+  if (up.ok && up.stdout && up.stdout !== "@{u}") return up.stdout;
+  if (branch && branch !== "HEAD") {
+    const candidate = `origin/${branch}`;
+    const verify = await runGit(["rev-parse", "--verify", "--quiet", candidate], { timeout: 8000 });
+    if (verify.ok && verify.stdout) return candidate;
+  }
+  return null;
+}
+
+// Inspect the extension's checkout and refresh `updateState`. When `doFetch` is
+// true we first `git fetch` the remote so the comparison sees commits pushed
+// after the clone/last fetch. Broadcasts the new state so an open canvas updates
+// live. Safe to call repeatedly; concurrent calls are coalesced.
+async function checkForUpdate({ doFetch = true } = {}) {
+  if (updateState.checking) return updatePublic();
+  updateState.checking = true;
+  broadcast("update", updatePublic());
+  try {
+    if (!(await isCoffilotCheckout())) {
+      updateState = { ...updateState, supported: false, available: false, checking: false, error: null };
+      return updatePublic();
+    }
+
+    const branchRes = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], { timeout: 8000 });
+    const branch = branchRes.ok ? branchRes.stdout : null;
+
+    const remoteRef = await resolveTrackingRef(branch);
+    if (!remoteRef) {
+      updateState = {
+        ...updateState,
+        supported: true,
+        available: false,
+        behind: 0,
+        ahead: 0,
+        branch,
+        remoteRef: null,
+        checking: false,
+        checkedAt: Date.now(),
+        error: null,
+      };
+      return updatePublic();
+    }
+
+    const remote = remoteRef.includes("/") ? remoteRef.slice(0, remoteRef.indexOf("/")) : "origin";
+    let fetchError = null;
+    if (doFetch) {
+      const fetched = await runGit(["fetch", "--quiet", remote], { timeout: 25000 });
+      if (!fetched.ok) fetchError = fetched.stderr || "git fetch failed";
+    }
+
+    const counts = await runGit(["rev-list", "--left-right", "--count", `HEAD...${remoteRef}`], { timeout: 8000 });
+    let ahead = 0;
+    let behind = 0;
+    if (counts.ok && counts.stdout) {
+      const parts = counts.stdout.split(/\s+/);
+      ahead = parseInt(parts[0], 10) || 0;
+      behind = parseInt(parts[1], 10) || 0;
+    }
+    const cur = await runGit(["rev-parse", "--short", "HEAD"], { timeout: 8000 });
+    const rem = await runGit(["rev-parse", "--short", remoteRef], { timeout: 8000 });
+
+    updateState = {
+      ...updateState,
+      supported: true,
+      available: behind > 0,
+      behind,
+      ahead,
+      branch,
+      remoteRef,
+      currentSha: cur.ok ? cur.stdout : null,
+      remoteSha: rem.ok ? rem.stdout : null,
+      checking: false,
+      checkedAt: Date.now(),
+      error: fetchError,
+    };
+    session.log(
+      `[coffilot] update check: ${behind} commit(s) behind ${remoteRef}${fetchError ? ` (fetch: ${fetchError})` : ""}`,
+      { level: "info" },
+    );
+    return updatePublic();
+  } catch (e) {
+    updateState = { ...updateState, checking: false, error: e?.message || String(e) };
+    return updatePublic();
+  } finally {
+    updateState.checking = false;
+    broadcast("update", updatePublic());
+  }
+}
+
+// Pull the latest commit into the extension's checkout. Fast-forward only so a
+// fork that has diverged (local commits the remote doesn't have) fails cleanly
+// with a message instead of creating a merge commit in the user's working copy.
+// On success the on-disk files are newer than the still-running process, so the
+// caller surfaces a "reload the extension" hint. Re-checks status afterward.
+async function performUpdate() {
+  if (updateState.updating) return { ok: false, error: "An update is already in progress.", state: updatePublic() };
+  if (!(await isCoffilotCheckout())) {
+    return {
+      ok: false,
+      error: "Coffilot isn't running from its own git checkout, so it can't self-update.",
+      state: updatePublic(),
+    };
+  }
+  updateState.updating = true;
+  broadcast("update", updatePublic());
+  try {
+    // Pull explicitly from the ref we compared against (e.g. `origin main`) so the
+    // update works even when the branch has no configured upstream but we matched
+    // it via the `origin/<branch>` fallback; fall back to a bare pull otherwise.
+    const ref = updateState.remoteRef;
+    const slash = ref ? ref.indexOf("/") : -1;
+    const pullArgs =
+      ref && slash > 0 ? ["pull", "--ff-only", ref.slice(0, slash), ref.slice(slash + 1)] : ["pull", "--ff-only"];
+    const pull = await runGit(pullArgs, { timeout: 60000 });
+    const output = [pull.stdout, pull.stderr].filter(Boolean).join("\n").trim();
+    session.log(`[coffilot] git ${pullArgs.join(" ")} -> ${pull.ok ? "ok" : "failed"}\n${output}`, {
+      level: pull.ok ? "info" : "warn",
+    });
+    updateState.updating = false;
+    // Refresh behind/ahead from the new HEAD without another network round-trip.
+    await checkForUpdate({ doFetch: false });
+    if (!pull.ok) {
+      return {
+        ok: false,
+        error: output || "git pull failed.",
+        output,
+        state: updatePublic(),
+      };
+    }
+    return { ok: true, output: output || "Already up to date.", state: updatePublic() };
+  } catch (e) {
+    updateState.updating = false;
+    broadcast("update", updatePublic());
+    return { ok: false, error: e?.message || String(e), state: updatePublic() };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Loopback HTTP server (iframe assets + SSE + control + metrics proxy)
 // ---------------------------------------------------------------------------
 
@@ -5648,6 +5881,7 @@ async function handleRequest(req, res) {
       res.write(`event: tests\ndata: ${JSON.stringify(lastTestReport)}\n\n`);
       res.write(`event: debug\ndata: ${JSON.stringify(debugSnapshot())}\n\n`);
       res.write(`event: profile\ndata: ${JSON.stringify(profilePublic())}\n\n`);
+      res.write(`event: update\ndata: ${JSON.stringify(updatePublic())}\n\n`);
     } catch {
       drop();
     }
@@ -5671,6 +5905,7 @@ async function handleRequest(req, res) {
       debug: debugSnapshot(),
       profile: profilePublic(),
       env: envSnapshot(),
+      update: updatePublic(),
     });
     return;
   }
@@ -5897,6 +6132,19 @@ async function handleRequest(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/update/status") {
+    sendJson(res, 200, updatePublic());
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/update/check") {
+    sendJson(res, 200, await checkForUpdate({ doFetch: true }));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/update") {
+    sendJson(res, 200, await performUpdate());
+    return;
+  }
+
   res.writeHead(404);
   res.end("Not found");
 }
@@ -5938,6 +6186,14 @@ await serverReady;
 // session surfaces the canvas immediately; the UI self-heals via the broadcast
 // env (and its focus refresh / "Check again").
 void refineWorkspaceFromSession();
+
+// One minute after launch, check whether this Coffilot checkout is behind its
+// remote and, if so, light up the header's "Update to latest version" button.
+// Delayed so it never competes with startup work, fetches the network off the
+// hot path, and .unref()'d so the pending timer alone won't keep the process up.
+setTimeout(() => {
+  void checkForUpdate({ doFetch: true });
+}, 60000).unref();
 
 // ---------------------------------------------------------------------------
 // Canvas declaration
