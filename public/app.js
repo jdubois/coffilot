@@ -31,8 +31,14 @@ const exitEl = document.getElementById("exit");
 const metricsEl = document.getElementById("metrics");
 const testsEl = document.getElementById("tests");
 const tabBadge = document.getElementById("tab-tests-badge");
+const tabBuildBadge = document.getElementById("tab-build-badge");
+const tabRunBadge = document.getElementById("tab-run-badge");
+const tabPackageBadge = document.getElementById("tab-package-badge");
 const fullbuildToggle = document.getElementById("fullbuild-toggle");
 const fullbuildInput = document.getElementById("in-fullbuild");
+const buildCleanInput = document.getElementById("in-build-clean");
+const packageCleanInput = document.getElementById("in-package-clean");
+const packageInstallInput = document.getElementById("in-package-install");
 const continuousToggle = document.getElementById("continuous-toggle");
 const continuousInput = document.getElementById("in-continuous");
 const testSelectionEl = document.getElementById("test-selection");
@@ -41,6 +47,13 @@ const warmInput = document.getElementById("in-warm");
 const warmLabel = document.getElementById("warm-label");
 const warmInfo = document.getElementById("warm-info");
 const moduleSelect = document.getElementById("in-module");
+const jdkSelect = document.getElementById("in-jdk");
+const jdkInfo = document.getElementById("jdk-info");
+const jdkBanner = document.getElementById("jdk-banner");
+const jdkMsg = document.getElementById("jdk-msg");
+const jdkCmd = document.getElementById("jdk-cmd");
+const jdkCopied = document.getElementById("jdk-copied");
+const jdkDocs = document.getElementById("jdk-docs");
 const springInput = document.getElementById("in-profiles");
 const springMenu = document.getElementById("spring-menu");
 const lblProfiles = document.getElementById("lbl-profiles");
@@ -178,6 +191,8 @@ let toolPresent = true;
 let fullBuildSetting = true;
 // Last JDTLS availability snapshot (env.jdtls), used for the toolchain pill.
 let jdtlsState = {};
+// Last active-JDK snapshot (env.activeJdk): the JDK actually used to build/run.
+let activeJdkInfo = null;
 
 if (warmCmd) {
   warmCmd.onclick = async () => {
@@ -221,6 +236,22 @@ if (flameCmd) {
     } catch {
       const r = document.createRange();
       r.selectNodeContents(flameCmd);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+  };
+}
+
+if (jdkCmd) {
+  jdkCmd.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(jdkCmd.textContent.trim());
+      jdkCopied.hidden = false;
+      setTimeout(() => (jdkCopied.hidden = true), 1500);
+    } catch {
+      const r = document.createRange();
+      r.selectNodeContents(jdkCmd);
       const sel = window.getSelection();
       sel.removeAllRanges();
       sel.addRange(r);
@@ -643,6 +674,47 @@ function renderStatus(s) {
   // trigger restarts its own lane but is locked out while the other owns the app.
   const runLaneActive = laneActive(s, "run");
   const debugLaneActive = laneActive(s, "debug");
+  // Build tab badge: a red compile-error count when the Build (compile) lane fails,
+  // else a plain "!". Hidden while the lane is active/restarting.
+  const buildLane = s.build || {};
+  const buildCompileErrs = buildLane.compileErrors || 0;
+  if (buildLane.phase === "failed" && !laneActive(s, "build")) {
+    tabBuildBadge.hidden = false;
+    tabBuildBadge.textContent = buildCompileErrs > 0 ? String(buildCompileErrs) : "!";
+    tabBuildBadge.className = "badge bad";
+    tabBuildBadge.title =
+      buildCompileErrs > 0
+        ? buildCompileErrs + " compilation error" + (buildCompileErrs === 1 ? "" : "s")
+        : "Build failed \u2014 check the console or click Fix with Copilot.";
+  } else {
+    tabBuildBadge.hidden = true;
+  }
+  // Run tab badge: a red warning when a Run fails (the app never started — a compile
+  // error or a startup crash, since a clean stop leaves phase "stopped"). Shows the
+  // compile-error count when we could parse one, else a plain "!" like the other
+  // tabs. Hidden while the lane is active/restarting.
+  const runCompileErrs = run.compileErrors || 0;
+  if (run.phase === "failed" && !runLaneActive) {
+    tabRunBadge.hidden = false;
+    tabRunBadge.textContent = runCompileErrs > 0 ? String(runCompileErrs) : "!";
+    tabRunBadge.className = "badge bad";
+    tabRunBadge.title =
+      runCompileErrs > 0
+        ? runCompileErrs + " compilation error" + (runCompileErrs === 1 ? "" : "s")
+        : "Run failed \u2014 check the console or click Fix with Copilot.";
+  } else {
+    tabRunBadge.hidden = true;
+  }
+  // Package tab badge: a red warning when packaging fails (mirrors the other tabs'
+  // failure badges). Hidden while the lane is active/restarting.
+  if ((s.package || {}).phase === "failed" && !laneActive(s, "package")) {
+    tabPackageBadge.hidden = false;
+    tabPackageBadge.textContent = "!";
+    tabPackageBadge.className = "badge bad";
+    tabPackageBadge.title = "Packaging failed \u2014 check the console or click Fix with Copilot.";
+  } else {
+    tabPackageBadge.hidden = true;
+  }
   if (!toolPresent) {
     setLaneButton("run", { label: laneLabel.run, disabled: true, title: "Coffilot needs a Maven or Gradle project." });
   } else if (runLaneActive) {
@@ -1389,10 +1461,13 @@ function renderTests(report, opts) {
   // "0 tests / no reports" view, and point at the console + Fix button. (A Stop
   // leaves buildExit null, so an interrupted run never shows as a build failure.)
   if (report.buildExit != null && report.buildExit !== 0 && s.tests === 0) {
+    const toolName = (caps && caps.toolLabel) || "build";
     testsEl.innerHTML =
       '<p class="empty bad">Build failed (exit ' +
       report.buildExit +
-      ") before any tests ran \u2014 check the Maven console above for the error" +
+      ") before any tests ran \u2014 check the " +
+      esc(toolName) +
+      " console above for the compilation error" +
       ", or click <strong>Fix with Copilot</strong>.</p>";
     tabBadge.hidden = false;
     tabBadge.textContent = "!";
@@ -1655,6 +1730,9 @@ function applySettingsState(s) {
   randomportInput.checked = s.randomPort === true;
   openBrowserInput.checked = s.openBrowser === true;
   fullBuildSetting = s.fullBuild === true;
+  buildCleanInput.checked = s.buildClean === true;
+  packageCleanInput.checked = s.packageClean === true;
+  packageInstallInput.checked = s.packageInstall === true;
   reflectTestToggles();
   if (autoProfileInput) autoProfileInput.checked = s.autoProfile === true;
   if (flameEvent && typeof s.autoProfileEvent === "string" && document.activeElement !== flameEvent) {
@@ -1667,12 +1745,19 @@ function applySettingsState(s) {
   if (document.activeElement !== springInput && typeof s.springProfiles === "string") {
     springInput.value = s.springProfiles;
   }
+  if (jdkSelect && document.activeElement !== jdkSelect) {
+    const want = typeof s.jdkHome === "string" ? s.jdkHome : "";
+    // Only set if the option exists; otherwise fall back to Auto so a stale/removed
+    // JDK doesn't leave the control on a phantom value.
+    jdkSelect.value = [...jdkSelect.options].some((o) => o.value === want) ? want : "";
+  }
 }
 
 function applyEnv(env) {
   moduleList = (env && env.modules) || [];
   populateModules(env && env.modules);
   applyJdtls(env && env.jdtls);
+  applyJdks(env);
   applyCaps(env && env.capabilities);
   // Build the run-profile suggestion lists before updateDevSetup() picks one.
   // "dev" is always offered for Spring (it's the default and activates BootUI);
@@ -1790,6 +1875,17 @@ function applyCaps(c) {
     !!toolLabel,
     toolLabel ? `${toolLabel} build/test.` : "No Maven or Gradle project detected.",
   );
+  // Active JDK: the runtime that Build / Test / Package / Run / Debug use, so the
+  // user can confirm which JDK a run used (selected via Settings, else system).
+  if (activeJdkInfo && activeJdkInfo.version) {
+    html += pill(
+      `JDK ${activeJdkInfo.version}`,
+      true,
+      activeJdkInfo.auto
+        ? `Active JDK ${activeJdkInfo.version} (system default${activeJdkInfo.home ? ` · ${activeJdkInfo.home}` : ""}). Change it in Settings.`
+        : `Active JDK ${activeJdkInfo.version} (selected in Settings${activeJdkInfo.home ? ` · ${activeJdkInfo.home}` : ""}).`,
+    );
+  }
   html += pill(
     "Spring Boot",
     !!caps.springBoot,
@@ -1887,6 +1983,72 @@ function applyJdtls(j) {
   jdtlsBanner.hidden = false;
 }
 
+// Populate the JDK selector from the discovered JDKs, reflect the active one, and
+// (when SDKMAN is present with a single JDK) suggest installing another. The SDKMAN
+// recommendation itself lives in the JDK info tooltip. The selected value is
+// `settings.jdkHome` ("" = Auto), applied later by applySettingsState.
+function applyJdks(env) {
+  if (!jdkSelect) return;
+  activeJdkInfo = (env && env.activeJdk) || null;
+  const jdks = (env && env.jdks) || [];
+  const install = (env && env.jdkInstall) || {};
+
+  // Rebuild the option list: Auto first, then each discovered JDK.
+  const want = jdkSelect.value;
+  jdkSelect.innerHTML = "";
+  const auto = document.createElement("option");
+  auto.value = "";
+  const autoLabel =
+    activeJdkInfo && activeJdkInfo.auto && activeJdkInfo.version
+      ? `Auto (system default · ${activeJdkInfo.version})`
+      : "Auto (system default)";
+  auto.textContent = autoLabel;
+  jdkSelect.appendChild(auto);
+  for (const j of jdks) {
+    if (!j || !j.home) continue;
+    const opt = document.createElement("option");
+    opt.value = j.home;
+    const src = j.source === "JAVA_HOME" ? " · JAVA_HOME" : "";
+    opt.textContent = `${j.label || j.version || j.home}${src}`;
+    opt.title = j.home;
+    jdkSelect.appendChild(opt);
+  }
+  // Restore a pending selection if it survived the rebuild (applySettingsState
+  // sets the authoritative value from settings shortly after).
+  if (want && [...jdkSelect.options].some((o) => o.value === want)) jdkSelect.value = want;
+
+  if (jdkInfo) {
+    // We recommend SDKMAN for installing and switching between JDKs; surfaced in
+    // the tooltip rather than as a banner so it's always one hover away.
+    const sdkmanTip = " We recommend SDKMAN (sdkman.io) to install and switch between JDKs.";
+    if (activeJdkInfo) {
+      const home = activeJdkInfo.home ? ` (${activeJdkInfo.home})` : "";
+      jdkInfo.dataset.tip =
+        `Active JDK: ${activeJdkInfo.version || "unknown"}${home}. ` +
+        "Used for Build / Test / Package / Run / Debug. Change applies to the next launch." +
+        sdkmanTip;
+    } else {
+      jdkInfo.dataset.tip = "Choose the JDK used for Build / Test / Package / Run / Debug." + sdkmanTip;
+    }
+  }
+
+  // Install banner: only when SDKMAN is present but a single JDK is installed
+  // (suggest installing another to switch between). Hidden otherwise — the
+  // recommendation to install SDKMAN itself lives in the JDK info tooltip.
+  if (jdkBanner) {
+    const onlyOne = jdks.length <= 1;
+    if (install.sdkman && onlyOne) {
+      jdkMsg.innerHTML = "Only one JDK was found. Install another with <strong>SDKMAN</strong> to switch between JDKs:";
+      jdkCmd.textContent = install.cmd || "sdk install java";
+      jdkCmd.hidden = false;
+      jdkDocs.href = install.url || "https://sdkman.io/jdks";
+      jdkBanner.hidden = false;
+    } else {
+      jdkBanner.hidden = true;
+    }
+  }
+}
+
 const warm = () => warmInput.checked === true;
 const mvnProfiles = () => mvnProfilesInput.value.trim();
 
@@ -1981,7 +2143,13 @@ function laneAction(op) {
     triggerLane("test", "/api/test", { affected, warm: warm(), mavenProfiles: mvnProfiles() });
     return;
   }
-  triggerLane(op, "/api/" + op, { warm: warm(), mavenProfiles: mvnProfiles() });
+  const body = { warm: warm(), mavenProfiles: mvnProfiles() };
+  if (op === "build") body.clean = buildCleanInput.checked === true;
+  if (op === "package") {
+    body.clean = packageCleanInput.checked === true;
+    body.install = packageInstallInput.checked === true;
+  }
+  triggerLane(op, "/api/" + op, body);
 }
 
 document.getElementById("btn-build").onclick = () => laneAction("build");
@@ -2079,9 +2247,13 @@ function saveSettings() {
     randomPort: randomportInput.checked,
     openBrowser: openBrowserInput.checked,
     fullBuild: fullbuildInput.checked,
+    buildClean: buildCleanInput.checked,
+    packageClean: packageCleanInput.checked,
+    packageInstall: packageInstallInput.checked,
     autoProfile: autoProfileInput ? autoProfileInput.checked : false,
     autoProfileEvent: flameEvent ? flameEvent.value : "cpu",
     autoProfileDuration: flameDuration ? Number(flameDuration.value) : 30,
+    jdkHome: jdkSelect ? jdkSelect.value : "",
   });
 }
 warmInput.addEventListener("change", saveSettings);
@@ -2089,6 +2261,10 @@ devtoolsInput.addEventListener("change", saveSettings);
 randomportInput.addEventListener("change", saveSettings);
 openBrowserInput.addEventListener("change", saveSettings);
 springInput.addEventListener("change", saveSettings);
+if (jdkSelect) jdkSelect.addEventListener("change", saveSettings);
+buildCleanInput.addEventListener("change", saveSettings);
+packageCleanInput.addEventListener("change", saveSettings);
+packageInstallInput.addEventListener("change", saveSettings);
 if (autoProfileInput) autoProfileInput.addEventListener("change", saveSettings);
 if (flameEvent) flameEvent.addEventListener("change", saveSettings);
 if (flameDuration) flameDuration.addEventListener("change", saveSettings);
