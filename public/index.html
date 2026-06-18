@@ -429,6 +429,18 @@
           </button>
           <button
             class="atab"
+            data-atab="spring"
+            title="Spring Boot: version &amp; EOL advisor and DevTools live reload"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M11.251.068a.5.5 0 0 1 .227.58L9.677 6.5H13a.5.5 0 0 1 .364.843l-8 8.5a.5.5 0 0 1-.842-.49L6.323 9.5H3a.5.5 0 0 1-.364-.843l8-8.5a.5.5 0 0 1 .615-.09z"
+              />
+            </svg>
+            <span class="atab-label">Spring Boot</span>
+          </button>
+          <button
+            class="atab"
             data-atab="scans"
             title="BootUI: add it to your project, run advisor scans against the live app, and bridge its MCP server to Copilot"
           >
@@ -490,6 +502,58 @@
             </div>
             <div id="loggers-list">
               <p class="muted">App not running. Click <strong>Run</strong> to control its log levels.</p>
+            </div>
+          </div>
+
+          <div id="atab-spring" class="apane">
+            <h2>Spring Boot version</h2>
+            <div id="spring-version">
+              <p class="muted">Detecting the Spring Boot version…</p>
+            </div>
+            <div class="set-row set-proposals">
+              <button id="btn-upgrade-spring" class="fix tiny" hidden>Upgrade with Copilot</button>
+            </div>
+
+            <h2 class="spring-h2">DevTools</h2>
+            <p class="hint" id="devtools-hint">
+              Spring Boot DevTools recompiles on save and restarts the app in place — the canvas plays the IDE's
+              recompile role, so the dev loop works without an editor.
+            </p>
+            <!-- DevTools live-reload toggle (only meaningful once DevTools is on the
+               classpath). Moved here from Settings so the whole DevTools story lives
+               in one Spring-only place. -->
+            <div class="set-row switch-row" id="set-devtools" hidden>
+              <label class="switch" id="devtools-toggle">
+                <input type="checkbox" id="in-devtools" />
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-label">Enable live reload</span>
+              </label>
+              <span
+                class="info"
+                id="devtools-info"
+                tabindex="0"
+                data-tip="Watch the running module's sources and recompile on save so DevTools restarts the app in place."
+                >&#9432;</span
+              >
+            </div>
+            <!-- Manual dev-loop actions, enabled while the app is running. -->
+            <div class="spring-actions" id="devtools-actions" hidden>
+              <button
+                id="btn-reload"
+                class="fix tiny"
+                disabled
+                title="Recompile now so DevTools restarts the running app in place."
+              >
+                Live reload
+              </button>
+              <button id="btn-restart-app" class="fix tiny" disabled title="Stop and relaunch the running app.">
+                Restart app
+              </button>
+            </div>
+            <!-- Add DevTools (dev profile): shown only for a Spring Boot module that
+               doesn't depend on DevTools yet. -->
+            <div class="set-row set-proposals">
+              <button id="btn-add-devtools" class="fix tiny" hidden>Add DevTools to dev profile</button>
             </div>
           </div>
 
@@ -648,22 +712,6 @@
               <a id="warm-docs" href="#" target="_blank" rel="noopener">install guide</a>
             </div>
 
-            <!-- Enable Spring Boot DevTools (Spring only) -->
-            <div class="set-row switch-row" id="set-devtools" hidden>
-              <label class="switch" id="devtools-toggle">
-                <input type="checkbox" id="in-devtools" />
-                <span class="track"><span class="thumb"></span></span>
-                <span class="switch-label">Enable Spring Boot DevTools</span>
-              </label>
-              <span
-                class="info"
-                id="devtools-info"
-                tabindex="0"
-                data-tip="Watch the running module's sources and recompile on save so DevTools restarts the app in place."
-                >&#9432;</span
-              >
-            </div>
-
             <!-- Use a random HTTP port (Spring Boot / Quarkus only) -->
             <div class="set-row switch-row" id="set-randomport" hidden>
               <label class="switch" id="randomport-toggle">
@@ -705,12 +753,6 @@
                 step="500"
                 title="How often the Live JVM panel refreshes metrics from the running app (500–30000 ms)."
               />
-            </div>
-
-            <!-- Dev setup proposal: add Spring Boot DevTools to the dev profile.
-               (The BootUI proposal now lives in the BootUI panel.) -->
-            <div class="set-row set-proposals">
-              <button id="btn-add-devtools" class="fix tiny" hidden>Add DevTools to dev profile</button>
             </div>
           </div>
         </div>

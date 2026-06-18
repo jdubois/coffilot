@@ -64,6 +64,11 @@ Shipped in the extension today:
 - "Fix with Copilot" for compile, package, test, plain-Java, Spring Boot and Quarkus
   startup failures (including Quarkus dev-mode build/augmentation failures that keep
   the process running), for flame-graph hotspots, and for BootUI advisor-scan findings.
+- For Spring Boot projects, a dedicated **Spring Boot** side tab (between Loggers and
+  BootUI) shows the detected Spring Boot version mapped to a support status (current /
+  supported / EOL) from an embedded endoflife.date table, with an "Upgrade with Copilot"
+  action when behind the latest GA, plus DevTools controls (Add DevTools, Enable live
+  reload, Live reload / Restart app).
 - BootUI advisor scans run over REST (BootUI tab), plus an optional MCP-server
   toggle/register bridge, when the running app exposes BootUI.
 - Per-project persisted settings (warm JVM, Spring profiles, devtools, random port,

@@ -115,6 +115,13 @@ wins; when neither is found the console says so and stays disabled until one is 
   environment (no `sdk use` shelling out). **Auto** keeps the system default; the
   active JDK is shown as a pill next to the build tool. The change takes effect on
   the next launch, so stop a running app before switching.
+- **Spring Boot tab** &mdash; for Spring Boot projects a dedicated **Spring Boot** side
+  tab (between **Loggers** and **BootUI**) reports the project's Spring Boot version and
+  maps its release line to a support status (current / supported / end-of-life) from an
+  embedded [endoflife.date](https://endoflife.date/spring-boot) table, with an
+  **Upgrade with Copilot** button when the line trails the latest GA. It also hosts
+  **DevTools**: an **Add DevTools** button for Spring apps that lack it, an **Enable live
+  reload** toggle, and **Live reload** / **Restart app** actions while the app runs.
 - **Advisor scans (with BootUI)** &mdash; when the running app exposes
   [BootUI](https://github.com/jdubois/boot-ui), the **BootUI** tab lists its advisor
   scans (architecture, Spring, security, Hibernate, …) and runs them directly over
