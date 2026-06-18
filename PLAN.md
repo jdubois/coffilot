@@ -66,8 +66,9 @@ Shipped in the extension today:
   the process running), for flame-graph hotspots, and for BootUI advisor-scan findings.
 - BootUI MCP server toggle + advisor scans when the running app exposes BootUI.
 - Per-project persisted settings (warm JVM, Spring profiles, devtools, random port,
-  auto-open browser, auto-record flame graph at startup) and an always-visible
-  Settings panel.
+  auto-open browser, auto-record flame graph at startup, and the last-opened
+  right-panel tab / collapsed state) and an always-visible Settings panel that opens
+  on first launch.
 - `--enable-native-access=ALL-UNNAMED` applied to the build-tool JVM (via
   `MAVEN_OPTS` / `GRADLE_OPTS`) and, for Maven, the app JVM to silence JDK
   native-access warnings.

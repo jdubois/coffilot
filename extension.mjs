@@ -1280,6 +1280,8 @@ const SETTINGS_KEYS = [
   "maskSecrets",
   "metricsPollMs",
   "jdkHome",
+  "asideTab",
+  "asideOpen",
 ];
 
 // Live-metrics polling cadence bounds (ms). Kept conservative so the UI stays
@@ -1331,6 +1333,12 @@ function defaultSettings() {
     // Selected JDK (absolute JAVA_HOME) for all build/test/package/run/debug
     // actions; null = inherit the system default (JAVA_HOME / PATH java).
     jdkHome: null,
+    // Right-panel (aside) preference, restored across reloads/sessions. asideTab
+    // is the last-opened tab; asideOpen is whether the docked (wide-canvas) panel
+    // is expanded. Defaults open on the Settings tab the first time the canvas
+    // is opened.
+    asideTab: "settings",
+    asideOpen: true,
   };
 }
 
@@ -2371,6 +2379,9 @@ function applySettings(body) {
   if (body.metricsPollMs != null && Number.isFinite(Number(body.metricsPollMs))) {
     settings.metricsPollMs = clampMetricsPollMs(body.metricsPollMs);
   }
+  // Right-panel preference (which aside tab, and whether the docked panel is open).
+  if (["metrics", "loggers", "settings"].includes(body.asideTab)) settings.asideTab = body.asideTab;
+  if (typeof body.asideOpen === "boolean") settings.asideOpen = body.asideOpen;
   // JDK selection. Don't switch the JDK out from under a running/debugging app —
   // the change applies to the next launch, so the user must stop it first. A new
   // selection must point at a real JAVA_HOME (containing bin/java).
