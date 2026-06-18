@@ -940,6 +940,20 @@ aside h2 {
 #mcp .mcp-state:empty {
   display: none;
 }
+/* Quarkus Agent MCP panel (its own aside tab) */
+#quarkus-mcp {
+  margin-top: 0.6rem;
+}
+#quarkus-mcp-state {
+  margin-left: 0.5rem;
+  color: var(--text-color-muted, #656d76);
+  font-style: italic;
+  font-size: 12px;
+  font-weight: 400;
+}
+#quarkus-mcp-state:empty {
+  display: none;
+}
 .scans {
   display: flex;
   flex-wrap: wrap;

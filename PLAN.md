@@ -66,6 +66,14 @@ Shipped in the extension today:
   the process running), for flame-graph hotspots, and for BootUI advisor-scan findings.
 - BootUI advisor scans run over REST (BootUI tab), plus an optional MCP-server
   toggle/register bridge, when the running app exposes BootUI.
+- Quarkus Agent MCP: a dedicated **Quarkus** right-panel tab with a "Register with
+  Copilot" button (JBang, or `java -jar`
+  fallback) that wires the external [quarkus-agent-mcp](https://github.com/quarkusio/quarkus-agent-mcp)
+  server into the Copilot CLI config, plus one-click capability prompts (extension
+  skills, docs search, last exception). Coffilot detects and registers it but does
+  not host or proxy it; shown for Quarkus projects when JBang/Java is available. The
+  Quarkus startup "Fix with Copilot" prompt also prefers `devui-exceptions_getLastException`
+  for structured failure data when the server is registered.
 - Per-project persisted settings (warm JVM, Spring profiles, devtools, random port,
   auto-open browser, auto-record flame graph at startup, and the last-opened
   right-panel tab / collapsed state) and an always-visible Settings panel that opens
