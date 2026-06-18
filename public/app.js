@@ -42,6 +42,9 @@ const packageInstallInput = document.getElementById("in-package-install");
 const continuousToggle = document.getElementById("continuous-toggle");
 const continuousInput = document.getElementById("in-continuous");
 const testSelectionEl = document.getElementById("test-selection");
+const testFilterEl = document.getElementById("test-filter");
+const testSearchEl = document.getElementById("test-search");
+const failuresOnlyInput = document.getElementById("in-failures-only");
 const warmToggle = document.getElementById("warm-toggle");
 const warmInput = document.getElementById("in-warm");
 const warmLabel = document.getElementById("warm-label");
@@ -64,6 +67,7 @@ const mvnProfilesCombo = document.getElementById("mvn-profiles-combo");
 const noToolBanner = document.getElementById("no-tool-banner");
 const btnRecheck = document.getElementById("btn-recheck");
 const btnRefresh = document.getElementById("btn-refresh");
+const btnUpdate = document.getElementById("btn-update");
 const warmBanner = document.getElementById("warm-banner");
 const warmMsg = document.getElementById("warm-msg");
 const warmCmd = document.getElementById("warm-cmd");
@@ -88,6 +92,8 @@ const devtoolsToggle = document.getElementById("devtools-toggle");
 const devtoolsInput = document.getElementById("in-devtools");
 const setRandomport = document.getElementById("set-randomport");
 const randomportInput = document.getElementById("in-randomport");
+const maskSecretsInput = document.getElementById("in-masksecrets");
+const metricsPollInput = document.getElementById("in-metricspoll");
 const openBrowserInput = document.getElementById("in-openbrowser");
 const autoProfileInput = document.getElementById("in-autoprofile");
 const btnOpenBrowser = document.getElementById("btn-open-browser");
@@ -692,9 +698,16 @@ function renderStatus(s) {
   // Run tab badge: a red warning when a Run fails (the app never started — a compile
   // error or a startup crash, since a clean stop leaves phase "stopped"). Shows the
   // compile-error count when we could parse one, else a plain "!" like the other
-  // tabs. Hidden while the lane is active/restarting.
+  // tabs. Hidden while the lane is active/restarting — except for a Quarkus dev-mode
+  // build failure, where the process keeps running (the lane stays active) but the
+  // build is broken, so we badge it anyway.
   const runCompileErrs = run.compileErrors || 0;
-  if (run.phase === "failed" && !runLaneActive) {
+  if (run.buildFailed) {
+    tabRunBadge.hidden = false;
+    tabRunBadge.textContent = "!";
+    tabRunBadge.className = "badge bad";
+    tabRunBadge.title = "Quarkus build failed \u2014 check the console or click Fix with Copilot.";
+  } else if (run.phase === "failed" && !runLaneActive) {
     tabRunBadge.hidden = false;
     tabRunBadge.textContent = runCompileErrs > 0 ? String(runCompileErrs) : "!";
     tabRunBadge.className = "badge bad";
@@ -794,12 +807,24 @@ function renderLaneHeader(l) {
   }
   // Contextual "Fix with Copilot" button, driven by the backend's fixInfo().
   if (l.fix && l.fix.kind) {
+    const wasHidden = btnFix.hidden;
     btnFix.hidden = false;
     btnFix.disabled = false;
     btnFix.dataset.kind = l.fix.kind;
     btnFix.textContent = l.fix.label || "Fix with Copilot";
+    // When the button first appears (e.g. a build flips to "failed"), replay a
+    // one-shot pop. The animation forces the WKWebView to repaint the header so
+    // the button is actually painted, instead of staying invisible until a tab
+    // switch triggers the next layout pass. Removing + reflowing + re-adding the
+    // class restarts the animation each time it re-appears.
+    if (wasHidden) {
+      btnFix.classList.remove("cof-pop-in");
+      void btnFix.offsetWidth;
+      btnFix.classList.add("cof-pop-in");
+    }
   } else {
     btnFix.hidden = true;
+    btnFix.classList.remove("cof-pop-in");
     btnFix.dataset.kind = "";
   }
 }
@@ -1443,18 +1468,59 @@ function renderTestProgress(p) {
   testsEl.innerHTML = html;
 }
 
+// Last rendered graphical test report + opts, kept so the only-failures /
+// search filters can re-render without a new test run.
+let lastTestReportData = null;
+let lastTestRenderOpts = {};
+
+// Read the current test-view filter from the controls.
+function currentTestFilter() {
+  return {
+    failuresOnly: !!(failuresOnlyInput && failuresOnlyInput.checked),
+    query: testSearchEl ? testSearchEl.value.trim().toLowerCase() : "",
+  };
+}
+
+// Pure: return a shallow-filtered copy of a test report keeping only the suites
+// and cases that match the only-failures + search-query filter. A suite whose
+// own name matches the query keeps all its cases; otherwise only matching cases
+// are kept and empty suites are dropped. The summary is left untouched so the
+// chips keep showing run totals.
+function filterTestReport(report, filter) {
+  if (!report || !report.suites) return report;
+  const f = filter || {};
+  const q = (f.query || "").toLowerCase();
+  if (!f.failuresOnly && !q) return report;
+  const suites = [];
+  for (const suite of report.suites) {
+    const isFail = (c) => c.status === "failed" || c.status === "error";
+    const suiteMatches = q && suite.name && suite.name.toLowerCase().includes(q);
+    let cases = suite.cases || [];
+    if (f.failuresOnly) cases = cases.filter(isFail);
+    if (q && !suiteMatches) cases = cases.filter((c) => c.name && c.name.toLowerCase().includes(q));
+    if (cases.length) suites.push({ ...suite, cases });
+  }
+  return { ...report, suites };
+}
+
 function renderTests(report, opts) {
   opts = opts || {};
   if (report === null && opts.running) {
     testsEl.innerHTML = '<p class="empty">Running tests\u2026</p>';
     tabBadge.hidden = true;
+    if (testFilterEl) testFilterEl.hidden = true;
+    lastTestReportData = null;
     return;
   }
   if (!report) {
     testsEl.innerHTML = '<p class="empty">No test run yet. Click <strong>Test</strong> to run the suite.</p>';
     tabBadge.hidden = true;
+    if (testFilterEl) testFilterEl.hidden = true;
+    lastTestReportData = null;
     return;
   }
+  lastTestReportData = report;
+  lastTestRenderOpts = opts;
   const s = report.summary;
   // A non-zero exit with no executed tests means the build failed before any test
   // ran — almost always a compile error. Show that plainly instead of a misleading
@@ -1472,6 +1538,7 @@ function renderTests(report, opts) {
     tabBadge.hidden = false;
     tabBadge.textContent = "!";
     tabBadge.className = "badge bad";
+    if (testFilterEl) testFilterEl.hidden = true;
     return;
   }
   const failed = s.failures + s.errors;
@@ -1492,10 +1559,21 @@ function renderTests(report, opts) {
   if (!report.suites.length) {
     html += '<p class="empty">No test reports found for this run.</p>';
     testsEl.innerHTML = html;
+    if (testFilterEl) testFilterEl.hidden = true;
     return;
   }
 
-  for (const suite of report.suites) {
+  // Show the filter controls now that we have suites to filter, then render the
+  // filtered view (only-failures + search).
+  if (testFilterEl) testFilterEl.hidden = false;
+  const view = filterTestReport(report, currentTestFilter());
+  if (!view.suites.length) {
+    html += '<p class="empty">No tests match the current filter.</p>';
+    testsEl.innerHTML = html;
+    return;
+  }
+
+  for (const suite of view.suites) {
     const bad = suite.failures + suite.errors;
     const open = bad > 0 ? " open" : "";
     html += `<details class="suite"${open}>`;
@@ -1728,6 +1806,10 @@ function applySettingsState(s) {
   warmInput.checked = !warmInput.disabled && s.warm === true;
   devtoolsInput.checked = s.devtools === true;
   randomportInput.checked = s.randomPort === true;
+  if (maskSecretsInput) maskSecretsInput.checked = s.maskSecrets !== false;
+  if (metricsPollInput && document.activeElement !== metricsPollInput) {
+    metricsPollInput.value = Number(s.metricsPollMs) || 2500;
+  }
   openBrowserInput.checked = s.openBrowser === true;
   fullBuildSetting = s.fullBuild === true;
   buildCleanInput.checked = s.buildClean === true;
@@ -2245,6 +2327,8 @@ function saveSettings() {
     springProfiles: springInput.value.trim(),
     devtools: devtoolsInput.checked,
     randomPort: randomportInput.checked,
+    maskSecrets: maskSecretsInput ? maskSecretsInput.checked : true,
+    metricsPollMs: metricsPollInput ? Number(metricsPollInput.value) || 2500 : 2500,
     openBrowser: openBrowserInput.checked,
     fullBuild: fullbuildInput.checked,
     buildClean: buildCleanInput.checked,
@@ -2259,6 +2343,8 @@ function saveSettings() {
 warmInput.addEventListener("change", saveSettings);
 devtoolsInput.addEventListener("change", saveSettings);
 randomportInput.addEventListener("change", saveSettings);
+if (maskSecretsInput) maskSecretsInput.addEventListener("change", saveSettings);
+if (metricsPollInput) metricsPollInput.addEventListener("change", saveSettings);
 openBrowserInput.addEventListener("change", saveSettings);
 springInput.addEventListener("change", saveSettings);
 if (jdkSelect) jdkSelect.addEventListener("change", saveSettings);
@@ -2268,6 +2354,14 @@ packageInstallInput.addEventListener("change", saveSettings);
 if (autoProfileInput) autoProfileInput.addEventListener("change", saveSettings);
 if (flameEvent) flameEvent.addEventListener("change", saveSettings);
 if (flameDuration) flameDuration.addEventListener("change", saveSettings);
+
+// Test-view filters (client-only): re-render the last report when the
+// only-failures toggle or the search box changes. No server round-trip.
+function rerenderTestFilter() {
+  if (lastTestReportData) renderTests(lastTestReportData, lastTestRenderOpts);
+}
+if (failuresOnlyInput) failuresOnlyInput.addEventListener("change", rerenderTestFilter);
+if (testSearchEl) testSearchEl.addEventListener("input", rerenderTestFilter);
 
 // "Full build" persists the affected-vs-full-suite preference for the Test button.
 fullbuildInput.addEventListener("change", () => {
@@ -2366,6 +2460,11 @@ es.addEventListener("env", (e) => {
   // the refreshed env so the build tool, modules, and banners update live.
   applyEnv(JSON.parse(e.data));
 });
+es.addEventListener("update", (e) => {
+  // Self-update availability is checked ~1 min after launch and after a pull;
+  // reflect it live so the "Update to latest version" button appears/hides.
+  applyUpdateState(JSON.parse(e.data));
+});
 es.addEventListener("reset", (e) => {
   // Clear only the console for the op that's (re)starting; the others keep
   // their last output.
@@ -2403,6 +2502,7 @@ fetch(`/api/state?${qs}`)
     applyEnv(s.env);
     renderDebug(debugSnap, s.status);
     if (s.profile) renderProfileState(s.profile);
+    if (s.update) applyUpdateState(s.update);
     if (s.status && s.status.test) lastRunnerLabel = s.status.test.runnerLabel;
     renderTests(s.tests, { runnerLabel: lastRunnerLabel });
     for (const l of s.console || []) appendLine(l.line, l.stream, l.op);
@@ -2467,6 +2567,62 @@ if (btnRefresh) {
   });
 }
 
+// "Update to latest version": shown only when the extension is its own Coffilot
+// git checkout that's behind its remote. Reflects the backend's update state —
+// available, in-progress, or freshly updated (which needs a reload to take hold).
+let updateApplied = false;
+function applyUpdateState(u) {
+  if (!btnUpdate) return;
+  u = u || {};
+  // Once a pull has succeeded this session, keep the "reload" prompt visible:
+  // the new code only runs after the user reloads the extension, so don't revert
+  // to a plain hidden/available state from a later background check.
+  if (updateApplied) {
+    btnUpdate.hidden = false;
+    return;
+  }
+  if (btnUpdate.classList.contains("is-busy")) return; // mid-pull; leave the button as-is
+  const show = !!u.available;
+  btnUpdate.hidden = !show;
+  if (show) {
+    const n = u.behind || 0;
+    const where = u.remoteRef ? ` on ${u.remoteRef}` : "";
+    btnUpdate.title =
+      n > 0
+        ? `${n} new commit${n === 1 ? "" : "s"} available${where} — click to run "git pull"`
+        : 'A newer version of Coffilot is available — click to run "git pull"';
+  }
+}
+
+if (btnUpdate) {
+  btnUpdate.addEventListener("click", async () => {
+    if (updateApplied) return; // already pulled; waiting for a reload
+    if (btnUpdate.classList.contains("is-busy")) return;
+    btnUpdate.classList.add("is-busy");
+    btnUpdate.disabled = true;
+    const labelEl = btnUpdate.querySelector(".update-btn-label");
+    const prevLabel = labelEl ? labelEl.textContent : "";
+    if (labelEl) labelEl.textContent = "Updating…";
+    const res = await postJson("/api/update");
+    btnUpdate.classList.remove("is-busy");
+    if (res && res.ok) {
+      updateApplied = true;
+      // Keep the button visible and enabled as a persistent "reload to finish"
+      // reminder: the pulled code only runs once the extension is reloaded, so a
+      // greyed-out (disabled) button here reads as if the action vanished.
+      btnUpdate.disabled = false;
+      btnUpdate.hidden = false;
+      if (labelEl) labelEl.textContent = "Restart to finish update";
+      btnUpdate.title = "Coffilot was updated on disk. Reload the Copilot extensions and re-open this canvas.";
+    } else {
+      const err = (res && (res.error || res.output)) || "unknown error";
+      btnUpdate.disabled = false;
+      if (labelEl) labelEl.textContent = prevLabel || "New version available";
+      btnUpdate.title = "Update failed: " + err;
+    }
+  });
+}
+
 // The iframe can't open a browser via target="_blank"; route external
 // http(s) links through the backend opener instead.
 document.addEventListener("click", (e) => {
@@ -2516,7 +2672,8 @@ function applyProfilerEnv(p) {
   if (flameUnavailable) {
     if (!supported) {
       flameUnavailable.hidden = false;
-      flameMsg.textContent = "async-profiler has no Windows build, so flame graphs aren't available on this platform.";
+      flameMsg.textContent =
+        "Flame graphs aren't available: async-profiler has no Windows build, and the JDK's JFR tools (jcmd) weren't found. Install a JDK (or set JAVA_HOME) to enable the JFR fallback.";
       flameCmd.hidden = true;
       flameDocs.href = (p && p.install && p.install.url) || "https://github.com/async-profiler/async-profiler";
     } else if (!available) {
@@ -2524,8 +2681,10 @@ function applyProfilerEnv(p) {
       const inst = (p && p.install) || {};
       const os = inst.os ? ` on ${inst.os}` : "";
       flameMsg.innerHTML =
-        `<strong>async-profiler</strong> isn't installed${os}, so flame graphs are disabled. ` +
-        (inst.cmd ? "Install it to enable them:" : "Install it (and reopen the canvas) to enable them:");
+        `<strong>async-profiler</strong> isn't installed${os}, and no JDK <code>jcmd</code> was found for the JFR fallback, so flame graphs are disabled. ` +
+        (inst.cmd
+          ? "Install async-profiler to enable them:"
+          : "Install async-profiler or a JDK (and reopen the canvas) to enable them:");
       if (inst.cmd) {
         flameCmd.textContent = inst.cmd;
         flameCmd.hidden = false;
@@ -2551,10 +2710,12 @@ function renderProfileState(p) {
   if (profileSpin) profileSpin.hidden = !running;
   if (flameStatus) {
     if (running) {
-      flameStatus.textContent = `Sampling ${eventLabel(p.event)}${p.pid ? ` (pid ${p.pid})` : ""} for ${p.duration}s\u2026`;
+      const eng = p.engine === "jfr" ? " · JFR" : "";
+      flameStatus.textContent = `Sampling ${eventLabel(p.event)}${p.pid ? ` (pid ${p.pid})` : ""} for ${p.duration}s${eng}\u2026`;
       flameStatus.className = "muted";
     } else if (p.status === "done") {
-      flameStatus.textContent = `${fmtInt(p.total)} samples \u00b7 ${eventLabel(p.event)} \u00b7 ${p.duration}s`;
+      const eng = p.engine === "jfr" ? " \u00b7 JFR" : "";
+      flameStatus.textContent = `${fmtInt(p.total)} samples \u00b7 ${eventLabel(p.event)} \u00b7 ${p.duration}s${eng}`;
       flameStatus.className = "muted ok";
     } else if (p.status === "error") {
       flameStatus.textContent = p.error || "Profiling failed.";

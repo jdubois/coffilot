@@ -37,6 +37,14 @@
           />
         </svg>
       </button>
+      <button id="btn-update" class="update-btn" hidden title="A newer version of Coffilot is available — pull it now">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path
+            d="M7.47 1.47a.75.75 0 0 1 1.06 0l3.75 3.75a.75.75 0 0 1-1.06 1.06L8.75 3.81v6.44a.75.75 0 0 1-1.5 0V3.81L4.78 6.28a.75.75 0 0 1-1.06-1.06l3.75-3.75ZM2.75 12.5a.75.75 0 0 0 0 1.5h10.5a.75.75 0 0 0 0-1.5H2.75Z"
+          />
+        </svg>
+        <span class="update-btn-label">New version available</span>
+      </button>
     </header>
 
     <div id="no-tool-banner" hidden>
@@ -194,6 +202,19 @@
             </div>
           </div>
           <div id="test-selection" class="test-selection" hidden></div>
+          <div id="test-filter" class="test-filter" hidden>
+            <input
+              type="search"
+              id="test-search"
+              class="test-search"
+              placeholder="Filter tests\u2026"
+              aria-label="Filter tests by name"
+            />
+            <label class="chip-toggle" id="failures-only-toggle">
+              <input type="checkbox" id="in-failures-only" />
+              <span>Only failures</span>
+            </label>
+          </div>
           <div class="subpane-wrap">
             <div id="tests" class="tsub active">
               <p class="empty">No test run yet. Click <strong>Test</strong> to run the suite.</p>
@@ -586,6 +607,34 @@
                 data-tip="Run the app on a free port the console picks (server.port) instead of the default, to avoid conflicts."
                 >&#9432;</span
               >
+            </div>
+
+            <!-- Mask likely secrets in streamed build/run output -->
+            <div class="set-row switch-row" id="set-masksecrets">
+              <label class="switch" id="masksecrets-toggle">
+                <input type="checkbox" id="in-masksecrets" checked />
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-label">Mask secrets in output</span>
+              </label>
+              <span
+                class="info"
+                tabindex="0"
+                data-tip="Redact likely secrets (tokens, credentials in URLs, key=value secrets) from the console and from 'Fix with Copilot' context. Heuristic, not exhaustive."
+                >&#9432;</span
+              >
+            </div>
+
+            <!-- Live-metrics polling cadence -->
+            <div class="set-row" id="set-metricspoll">
+              <label class="cap-label" for="in-metricspoll">Metrics poll (ms)</label>
+              <input
+                id="in-metricspoll"
+                type="number"
+                min="500"
+                max="30000"
+                step="500"
+                title="How often the Live JVM panel refreshes metrics from the running app (500–30000 ms)."
+              />
             </div>
 
             <!-- Dev setup proposals (moved here from the top banners) -->

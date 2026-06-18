@@ -25,10 +25,12 @@
   ],
   "scripts": {
     "check": "node --check extension.mjs",
+    "test": "node --test",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
   "devDependencies": {
+    "jsdom": "^29.1.1",
     "prettier": "^3.8.4"
   }
 }
