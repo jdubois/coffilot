@@ -293,7 +293,7 @@ function quoteWinShellArgs(args) {
 }
 
 /** Decide the build tool for a project root: Maven preferred, else Gradle, else null. */
-function detectBuildTool(root) {
+export function detectBuildTool(root) {
   const has = (f) => existsSync(path.join(root, f));
   if (MAVEN_MARKERS.some(has)) return "maven";
   if (GRADLE_MARKERS.some(has)) return "gradle";
@@ -1203,7 +1203,7 @@ async function getSessionPrimaryDir() {
   return null;
 }
 
-function findProjectRoot(primary) {
+export function findProjectRoot(primary) {
   const markers = [...MAVEN_MARKERS, ...GRADLE_MARKERS];
   const owns = (dir) => markers.some((f) => existsSync(path.join(dir, f)));
   // Walk up from `start` (max 8 hops) to the first directory that owns a Maven or
@@ -1477,7 +1477,7 @@ function pomMainClass(xml) {
 }
 
 // Per-pom capability flags, derived purely from the pom text (cheap + offline).
-function pomCaps(xml, name) {
+export function pomCaps(xml, name) {
   const quarkus = /quarkus-maven-plugin|io\.quarkus/.test(xml);
   return {
     name,
@@ -1522,7 +1522,7 @@ function gradleHasApplicationPlugin(text) {
 // Per-build-file capability flags for Gradle, derived from the build script text
 // (Groovy or Kotlin DSL). Spring Boot and Quarkus are detected from their Gradle
 // plugin ids (org.springframework.boot / io.quarkus).
-function gradleCaps(text, name) {
+export function gradleCaps(text, name) {
   const quarkus = text.includes("io.quarkus");
   return {
     name,
@@ -1537,6 +1537,16 @@ function gradleCaps(text, name) {
   };
 }
 
+// The run strategy for a module, inferred from its capability flags: Quarkus
+// (quarkus:dev / quarkusDev) and Spring Boot (spring-boot:run / bootRun) are both
+// "runnable"; anything else is launched as plain Java. Pure so the Run lane and
+// the integration tests agree on how each framework maps to a run mode.
+export function inferRunMode(mod) {
+  if (mod && mod.quarkus) return "quarkus";
+  if (mod && mod.runnable) return "spring";
+  return "java";
+}
+
 // The project's own artifactId (skip the <parent> block so we don't read the
 // parent/BOM artifactId by mistake). Used as a display label for the root module.
 function artifactIdOf(xml) {
@@ -1546,7 +1556,7 @@ function artifactIdOf(xml) {
 }
 
 /** Read a module's Gradle build script (Groovy or Kotlin DSL), or null if absent. */
-function readGradleBuildFile(dir) {
+export function readGradleBuildFile(dir) {
   for (const f of ["build.gradle", "build.gradle.kts"]) {
     try {
       return readFileSync(path.join(dir, f), "utf8");
@@ -3788,10 +3798,9 @@ async function startApp({ module, profiles, mavenProfiles, mode, dbg = null } = 
   broadcastProfile();
 
   // Pick the run strategy: explicit mode wins, else infer from the chosen
-  // module's framework — Quarkus (quarkus:dev / quarkusDev) and Spring Boot
-  // (spring-boot:run / bootRun) are both "runnable"; anything else is plain Java.
+  // module's framework (see inferRunMode).
   const mod = listModules().find((m) => m.name === module);
-  const inferred = mod && mod.quarkus ? "quarkus" : mod && mod.runnable ? "spring" : "java";
+  const inferred = inferRunMode(mod);
   const resolved = mode === "java" || mode === "spring" || mode === "quarkus" ? mode : inferred;
   app.runMode = resolved;
   app.module = module || "";
@@ -4847,12 +4856,12 @@ function xmlAttr(tag, name) {
  * {@code sinceMs} filters out stale reports left by earlier builds of other
  * modules so only the freshly-run module's results are reported.
  */
-async function collectSurefireReport(sinceMs) {
+export async function collectSurefireReport(sinceMs, root = workspacePath) {
   const report = {
     summary: { tests: 0, passed: 0, failures: 0, errors: 0, skipped: 0, timeSec: 0, files: 0 },
     suites: [],
   };
-  const dirs = await findTestResultDirs(workspacePath, 0);
+  const dirs = await findTestResultDirs(root, 0);
   for (const dir of dirs) {
     let files;
     try {
@@ -4976,7 +4985,7 @@ const SKIP_DIRS = new Set(["node_modules", ".git", ".m2", ".gradle", "src", "fro
 // Collect every directory that may hold JUnit TEST-*.xml: Maven's
 // target/surefire-reports + failsafe-reports, and Gradle's
 // build/test-results/<task> subfolders.
-async function findTestResultDirs(root, depth, acc = []) {
+export async function findTestResultDirs(root, depth, acc = []) {
   if (depth > 4) return acc;
   let entries;
   try {

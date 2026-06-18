@@ -105,3 +105,26 @@ Then open a Copilot session on that project, reload extensions, and open the
 - `spring-mvc-actuator-devtools` for the Actuator metrics tier.
 - `spring-mvc-bootui` (run with `-Pdev`) for the full BootUI metrics + advisor scan.
 - `quarkus-rest` for the Quarkus Run lane (`quarkus:dev`) and the Quarkus metrics tier.
+
+## Automated tests against these projects
+
+Coffilot's own test suite drives these projects on two levels (see `test/`):
+
+- **Detection tests** (`test/integration-projects.test.mjs`) run as part of
+  `npm test`. They point Coffilot's real build-tool detection, capability/tier
+  classification, run-mode inference and project-root resolution at each project's
+  actual build files and assert the tier each scenario in the table above is meant
+  to exercise. They are deterministic and need no JDK or network.
+
+- **End-to-end tests** (`test/e2e-projects.test.mjs`) actually build and test each
+  project with its own wrapper, then feed the JUnit reports the build produced
+  through Coffilot's own report discovery + parser and assert the parsed results.
+  They need a JDK 17 and network access, so they are **skipped unless
+  `COFFILOT_E2E=1`** is set:
+
+  ```bash
+  COFFILOT_E2E=1 node --test test/e2e-projects.test.mjs
+  ```
+
+  CI runs them per project in the `E2E (<project>)` matrix job.
+
