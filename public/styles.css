@@ -911,8 +911,10 @@ aside h2 {
 }
 #mcp.mcp-settings {
   border-top: 1px solid var(--border-color-default, #d0d7de);
+  border-bottom: 1px solid var(--border-color-default, #d0d7de);
   margin-top: 0.4rem;
   padding-top: 0.9rem;
+  padding-bottom: 0.9rem;
 }
 #mcp .mcp-state {
   color: var(--text-color-muted, #656d76);
@@ -925,6 +927,7 @@ aside h2 {
 .scans {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 0.35rem;
   margin: 0.6rem 0 0;
 }
@@ -932,9 +935,28 @@ aside h2 {
   padding: 0.2rem 0.55rem;
   font-size: 12px;
 }
+/* The "Scan all" CTA leads the row and is filled (blue) so it reads as the
+   prominent way to run every advisor scan at once, distinct from the neutral
+   per-scan buttons that follow it. */
+.scans button.scan-all {
+  font-weight: 600;
+  margin-right: 0.15rem;
+  border-color: var(--true-color-blue, #0969da);
+  color: var(--color-white, #fff);
+  background: var(--true-color-blue, #0969da);
+}
+.scans button.scan-all:not(:disabled):hover {
+  background: color-mix(in srgb, #000 14%, var(--true-color-blue, #0969da));
+  border-color: color-mix(in srgb, #000 14%, var(--true-color-blue, #0969da));
+}
 #scans-result {
   margin-top: 0.6rem;
   font-size: 12px;
+}
+.scan-result-item + .scan-result-item {
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--border-color-muted, #d8dee4);
 }
 #scans-result pre {
   margin: 0.35rem 0 0;
@@ -947,6 +969,130 @@ aside h2 {
   font-size: 11.5px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* A scan report: a header row (label + severity/finding counts + Fix CTA) above a
+   list of findings, each finding a single collapsible line. */
+.scan-result-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.scan-result-head strong {
+  flex: 0 0 auto;
+}
+.scan-result-head .scan-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-right: auto;
+}
+.scan-result-head button {
+  flex: 0 0 auto;
+}
+.scan-findings {
+  margin-top: 0.5rem;
+  border: 1px solid var(--border-color-muted, #d8dee4);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.scan-finding {
+  border-top: 1px solid var(--border-color-muted, #d8dee4);
+}
+.scan-finding:first-child {
+  border-top: none;
+}
+.scan-finding > summary,
+.scan-finding.flat {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.5rem;
+  cursor: pointer;
+  list-style: none;
+}
+.scan-finding.flat {
+  cursor: default;
+}
+.scan-finding > summary::-webkit-details-marker {
+  display: none;
+}
+/* Caret that rotates when the row is open. */
+.scan-finding > summary::before {
+  content: "\u203A";
+  flex: 0 0 auto;
+  color: var(--text-color-muted, #656d76);
+  transition: transform var(--dur-fast, 0.12s) var(--ease-out, ease);
+}
+.scan-finding[open] > summary::before {
+  transform: rotate(90deg);
+}
+.scan-finding > summary:hover {
+  background: var(--background-color-muted, #f6f8fa);
+}
+.scan-finding .finding-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scan-finding[open] .finding-title {
+  white-space: normal;
+}
+.finding-body {
+  padding: 0.1rem 0.6rem 0.5rem 1.4rem;
+  font-size: 11.5px;
+}
+.finding-kv {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.15rem 0;
+}
+.finding-kv .fk {
+  flex: 0 0 8rem;
+  color: var(--text-color-muted, #656d76);
+}
+.finding-kv .fv {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-word;
+}
+.finding-list {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+.finding-json {
+  margin: 0.2rem 0 0 !important;
+}
+.scan-empty {
+  margin: 0.5rem 0 0;
+}
+/* Severity badge, coloured by level. */
+.sev-badge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.05rem 0.3rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  line-height: 1.5;
+}
+.sev-badge.sev-critical {
+  color: var(--true-color-red, #cf222e);
+}
+.sev-badge.sev-high {
+  color: var(--true-color-orange, #bc4c00);
+}
+.sev-badge.sev-medium {
+  color: var(--true-color-yellow, #9a6700);
+}
+.sev-badge.sev-low {
+  color: var(--true-color-blue, #0969da);
+}
+.sev-badge.sev-info {
+  color: var(--text-color-muted, #656d76);
 }
 
 /* Install hint banner (shown only when mvnd is missing) */
@@ -1534,6 +1680,7 @@ button.is-restarting .btn-spin::before {
   color: var(--text-color-muted, #656d76);
   padding: 0.25rem;
   margin-left: auto;
+  order: 200;
   border-radius: 6px;
   display: inline-flex;
   align-items: center;
@@ -1736,6 +1883,13 @@ button.is-restarting .btn-spin::before {
   flex: 0 0 auto;
   width: min(310px, 80vw);
   border-left: 1px solid var(--border-color-default, #d0d7de);
+  transition: width var(--dur-slow, 0.24s) var(--ease-out, ease);
+}
+/* Scan reports (severity badges + expandable findings) can be wide, so the aside
+   grows to a roomier width while scan results are on screen and snaps back to its
+   slim default otherwise. */
+#workspace.aside-rail.aside-wide .aside-body {
+  width: min(560px, 92vw);
 }
 #workspace.aside-rail:not(.aside-open) .aside-body {
   display: none;
