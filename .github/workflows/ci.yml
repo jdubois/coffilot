@@ -82,6 +82,8 @@ jobs:
       # the produced JUnit reports through Coffilot's own report discovery + parser
       # (collectSurefireReport) and asserts the results. The failing-tests shard
       # also covers the failure path (build exits non-zero, report still parses).
+      # The hello-world / gradle-hello-world shards additionally run the real
+      # outdated-library scan and assert the ancient guava 19.0 is flagged.
       - name: Build, test, package & validate Coffilot parsing
         env:
           COFFILOT_E2E: "1"

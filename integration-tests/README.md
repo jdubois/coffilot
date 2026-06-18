@@ -10,8 +10,8 @@ rung of that ladder:
 
 | Project | What it is | Coffilot tier exercised |
 | ------- | ---------- | ----------------------- |
-| [`hello-world`](hello-world) | Plain Maven project (no Spring), one JUnit 5 test | **Plain Java** — Build / Test / Package only |
-| [`gradle-hello-world`](gradle-hello-world) | Plain Gradle project (no Spring), one JUnit 5 test | **Plain Java (Gradle)** — Build / Test / Package via `./gradlew` |
+| [`hello-world`](hello-world) | Plain Maven project (no Spring), one JUnit 5 test, plus a deliberately ancient `guava:19.0` for the upgrades scan | **Plain Java** — Build / Test / Package + outdated-library scan |
+| [`gradle-hello-world`](gradle-hello-world) | Plain Gradle project (no Spring), one JUnit 5 test, plus a deliberately ancient `guava:19.0` for the upgrades scan | **Plain Java (Gradle)** — Build / Test / Package + outdated-library scan via `./gradlew` |
 | [`spring-mvc`](spring-mvc) | Spring Boot MVC app (`web`), from start.spring.io | **Spring Boot** — Run lane + process-level JVM metrics |
 | [`spring-mvc-actuator-devtools`](spring-mvc-actuator-devtools) | Same app + Actuator + DevTools | **Actuator** — richer live metrics via `/actuator` |
 | [`spring-mvc-bootui`](spring-mvc-bootui) | Same app with BootUI in a `dev` Maven profile | **BootUI** — richest metrics + advisor scan |
@@ -136,8 +136,12 @@ Coffilot's own test suite drives these projects on two levels (see `test/`):
   then feed the JUnit reports the build produced through Coffilot's own report
   discovery + parser and assert the parsed results. `failing-tests` additionally
   covers the failure path: the build exits non-zero, yet the report still parses
-  with the right pass/fail/error split. They need a JDK 17 and network access, so
-  they are **skipped unless `COFFILOT_E2E=1`** is set:
+  with the right pass/fail/error split. They also drive the **Upgrades-tab
+  outdated-library scan** end to end for one Maven (`hello-world`) and one Gradle
+  (`gradle-hello-world`) project — running the real scan commands (for Gradle, the
+  ben-manes plugin injected through a throwaway `--init-script`) and asserting the
+  ancient `guava:19.0` is reported as an outdated, direct dependency. They need a
+  JDK 17 and network access, so they are **skipped unless `COFFILOT_E2E=1`** is set:
 
   ```bash
   COFFILOT_E2E=1 node --test test/e2e-projects.test.mjs

@@ -7104,10 +7104,29 @@ function updatesSupportedFor(tool) {
   return tool === "maven" || tool === "gradle";
 }
 
+// Dependency-scan command vectors, exported so the e2e harness drives exactly
+// what the scan runs (no hand-maintained copy), mirroring testArgsFor/buildArgsFor.
+/** Maven: `dependency:tree` in text form (current versions + direct/transitive). */
+export function mavenDepTreeArgs() {
+  return ["-ntp", "-B", `${DEP_TREE_PLUGIN}:tree`, "-DoutputType=text"];
+}
+/** Maven: `versions:display-dependency-updates` (latest available versions). */
+export function mavenDepUpdatesArgs() {
+  return ["-ntp", "-B", `${VERSIONS_PLUGIN}:display-dependency-updates`];
+}
+/** Gradle: the built-in `dependencies` report for the runtime classpath. */
+export function gradleDepTreeArgs() {
+  return ["dependencies", "--configuration", "runtimeClasspath", "-q"];
+}
+/** Gradle: the ben-manes `dependencyUpdates` task, injected via an init script. */
+export function gradleDepUpdatesArgs(initScript) {
+  return ["--init-script", initScript, "dependencyUpdates", "-q"];
+}
+
 /** Maven outdated-libraries scan: dependency:tree + display-dependency-updates. */
 async function runMavenDependencyScan() {
-  const treeRes = await captureBuildTool(["-ntp", "-B", `${DEP_TREE_PLUGIN}:tree`, "-DoutputType=text"]);
-  const updRes = await captureBuildTool(["-ntp", "-B", `${VERSIONS_PLUGIN}:display-dependency-updates`]);
+  const treeRes = await captureBuildTool(mavenDepTreeArgs());
+  const updRes = await captureBuildTool(mavenDepUpdatesArgs());
   const nodes = parseDependencyTree(treeRes.out || "");
   const updMap = parseDependencyUpdates(updRes.out || "");
   const updates = mergeDependencyUpdates(nodes, updMap);
@@ -7121,8 +7140,8 @@ async function runMavenDependencyScan() {
 
 /** Body of the throwaway Gradle init script that injects the ben-manes
  * gradle-versions-plugin and points its JSON report at our temp dir, one file per
- * project so subprojects don't overwrite each other. */
-function gradleDependencyUpdatesInitBody(outDir) {
+ * project so subprojects don't overwrite each other. Exported for the e2e harness. */
+export function gradleDependencyUpdatesInitBody(outDir) {
   const dir = outDir.replace(/\\/g, "/"); // forward slashes are safe in a Groovy string on every OS
   return [
     "// Coffilot: inject the ben-manes versions plugin to list outdated libraries (read-only).",
@@ -7154,8 +7173,8 @@ async function runGradleDependencyScan() {
   try {
     mkdirSync(outDir, { recursive: true });
     writeFileSync(initScript, gradleDependencyUpdatesInitBody(outDir));
-    const treeRes = await captureBuildTool(["dependencies", "--configuration", "runtimeClasspath", "-q"]);
-    const updRes = await captureBuildTool(["--init-script", initScript, "dependencyUpdates", "-q"]);
+    const treeRes = await captureBuildTool(gradleDepTreeArgs());
+    const updRes = await captureBuildTool(gradleDepUpdatesArgs(initScript));
     const nodes = parseGradleDependencyTree(treeRes.out || "");
     const updMap = new Map();
     try {
