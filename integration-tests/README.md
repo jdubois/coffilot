@@ -30,6 +30,16 @@ exposing a trivial `GET /` plus two tests (a `@QuarkusTest` that boots the app a
 plain unit test). It adds SmallRye Health and the Micrometer/Prometheus registry so its
 `/q/health` and `/q/metrics` endpoints feed Coffilot's Quarkus metrics tier.
 
+Because it tracks a current Quarkus release, `quarkus-rest` builds, tests and runs in
+`quarkus:dev` on modern JDKs — verified through JDK 26 — so it's the Quarkus project to
+use when exercising Coffilot on a recent JDK. Legacy Quarkus 1.x/2.x apps are the
+opposite: their build-time bytecode enhancement (Hibernate/ByteBuddy) can't read newer
+class files, so they only build on the older JDK they were written for (often JDK 11) and
+fail on a newer one with a `net.bytebuddy…ClassReader` error during Quarkus augmentation —
+not a Coffilot bug. For those, pick the JDK the project targets in **Settings → JDK**; the
+selection is pinned via `JAVA_HOME` for every Build / Test / Package / Run (with Maven's
+`mvnd`, each pinned JDK gets its own daemon).
+
 ## Running them by hand
 
 Each project builds, tests, packages and runs on its own:
