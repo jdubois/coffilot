@@ -64,7 +64,9 @@ Shipped in the extension today:
   available.
 - "Fix with Copilot" for compile, package, test, plain-Java, Spring Boot and Quarkus
   startup failures (including Quarkus dev-mode build/augmentation failures that keep
-  the process running), for flame-graph hotspots, and for BootUI advisor-scan findings.
+  the process running), for a running app with no runtime-logger endpoint (offers to
+  add Spring Boot Actuator or the Quarkus logging-manager extension), for flame-graph
+  hotspots, and for BootUI advisor-scan findings.
 - BootUI advisor scans run over REST (BootUI tab), plus an optional MCP-server
   toggle/register bridge, when the running app exposes BootUI.
 - Quarkus Agent MCP: a dedicated **Quarkus** right-panel tab with a "Register with

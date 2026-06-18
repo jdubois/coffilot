@@ -6307,6 +6307,76 @@ function buildFixPrompt(kind, extra = {}) {
         .filter(Boolean)
         .join("\n\n");
     }
+    case "install-actuator-loggers": {
+      const moduleName = extra.module || "";
+      const resDir = moduleName ? `${moduleName}/src/main/resources` : "src/main/resources";
+      if (buildTool === "gradle") {
+        const { rel, kts } = gradleModuleBuildFile(moduleName);
+        const dep = kts
+          ? `implementation("org.springframework.boot:spring-boot-starter-actuator")`
+          : `implementation 'org.springframework.boot:spring-boot-starter-actuator'`;
+        return [
+          "This is a Spring Boot application whose runtime log-level endpoint isn't reachable, so the canvas can't read or change loggers live. Add Spring Boot Actuator and expose its `/loggers` endpoint.",
+          `1. Edit \`${rel}\` and add the Actuator starter inside \`dependencies { }\`:`,
+          codeBlock(`dependencies {\n  ${dep}\n}`, kts ? "kotlin" : "groovy"),
+          "   Omit the version so it inherits from the Spring Boot plugin's dependency management. Don't duplicate the line if it's already present.",
+          `2. In \`${resDir}/application.properties\` (create it if it doesn't exist), expose the loggers endpoint over HTTP:`,
+          codeBlock("management.endpoints.web.exposure.include=health,loggers", "properties"),
+          "   If an `exposure.include` line already exists, add `loggers` to it rather than replacing it. The `/loggers` endpoint serves both reads and live level changes — no extra config needed.",
+          "After editing, tell me to run the app again (e.g. `./gradlew bootRun`); the Loggers tab then lists every logger and lets you change levels live.",
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+      }
+      const pomRel = moduleName ? `${moduleName}/pom.xml` : "pom.xml";
+      return [
+        "This is a Spring Boot application whose runtime log-level endpoint isn't reachable, so the canvas can't read or change loggers live. Add Spring Boot Actuator and expose its `/loggers` endpoint.",
+        `1. Edit \`${pomRel}\` and add a dependency on \`org.springframework.boot:spring-boot-starter-actuator\` inside the \`<dependencies>\` block (omit the \`<version>\` so it inherits from the Spring Boot parent/BOM). Don't duplicate it if it's already present.`,
+        `2. In \`${resDir}/application.properties\` (create it if it doesn't exist), expose the loggers endpoint over HTTP:`,
+        codeBlock("management.endpoints.web.exposure.include=health,loggers", "properties"),
+        "   If an `exposure.include` line already exists, add `loggers` to it rather than replacing it. The `/loggers` endpoint serves both reads and live level changes — no extra config needed.",
+        "After editing, tell me to run the app again (e.g. `./mvnw spring-boot:run`); the Loggers tab then lists every logger and lets you change levels live.",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
+    case "install-logging-manager": {
+      const moduleName = extra.module || "";
+      if (buildTool === "gradle") {
+        const { rel, kts } = gradleModuleBuildFile(moduleName);
+        const dep = kts
+          ? `runtimeOnly("io.quarkiverse.loggingmanager:quarkus-logging-manager:VERSION")`
+          : `runtimeOnly 'io.quarkiverse.loggingmanager:quarkus-logging-manager:VERSION'`;
+        return [
+          "This is a Quarkus application that doesn't expose a runtime log-level endpoint, so the canvas can't read or change loggers live. Add the Quarkus Logging Manager extension, which serves `/q/logging-manager`.",
+          `Edit \`${rel}\` and add the extension inside \`dependencies { }\`:`,
+          codeBlock(`dependencies {\n  ${dep}\n}`, kts ? "kotlin" : "groovy"),
+          [
+            "- If a line for this extension already exists, leave it; don't duplicate it.",
+            "- Use the latest released version of `io.quarkiverse.loggingmanager:quarkus-logging-manager` from Maven Central; pin a concrete version rather than a range (replace `VERSION`).",
+          ].join("\n"),
+          "After editing, tell me to run the app again (e.g. `./gradlew quarkusDev`); the Loggers tab then lists every logger and lets you change levels live.",
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+      }
+      const pomRel = moduleName ? `${moduleName}/pom.xml` : "pom.xml";
+      return [
+        "This is a Quarkus application that doesn't expose a runtime log-level endpoint, so the canvas can't read or change loggers live. Add the Quarkus Logging Manager extension, which serves `/q/logging-manager`.",
+        `Edit \`${pomRel}\` and add this dependency inside the \`<dependencies>\` block:`,
+        codeBlock(
+          "<dependency>\n  <groupId>io.quarkiverse.loggingmanager</groupId>\n  <artifactId>quarkus-logging-manager</artifactId>\n  <version>VERSION</version>\n  <scope>runtime</scope>\n</dependency>",
+          "xml",
+        ),
+        [
+          "- If this dependency already exists, leave it; don't duplicate it.",
+          "- Use the latest released version of `io.quarkiverse.loggingmanager:quarkus-logging-manager` from Maven Central; pin a concrete version rather than a range (replace `VERSION`).",
+        ].join("\n"),
+        "After editing, tell me to run the app again (e.g. `./mvnw quarkus:dev`); the Loggers tab then lists every logger and lets you change levels live.",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
     case "register-mcp": {
       const base = appBase();
       const mcpUrl = base ? `${base}/bootui/api/mcp` : "http://127.0.0.1:<app-port>/bootui/api/mcp";
@@ -7349,7 +7419,10 @@ async function handleRequest(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/loggers") {
-    sendJson(res, 200, await loggersStatus());
+    const status = await loggersStatus();
+    // runMode lets the UI tailor the "no logger endpoint" hint (and its fix button)
+    // to the framework actually running.
+    sendJson(res, 200, { ...status, runMode: app.runMode });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/loggers") {

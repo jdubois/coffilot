@@ -1631,6 +1631,12 @@ const LOGGER_LEVELS = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
 let appRunning = false;
 let loggersData = null;
 let loggersTimer = null;
+// Tracks whether the user already pressed "Fix with Copilot" on the current
+// no-endpoint view, so the 5s poll re-render doesn't reset the button. Cleared when
+// the app goes down or loggers become available. loggersUnavailKey guards against
+// rebuilding an identical unavailable view on every poll.
+let loggersFixAsked = false;
+let loggersUnavailKey = null;
 
 function loggersTabActive() {
   const pane = document.getElementById("atab-loggers");
@@ -1663,26 +1669,23 @@ async function loadLoggers() {
 }
 
 function renderLoggers(data, force) {
-  if (!data || data.appDown || (!data.available && !appRunning)) {
+  if (!data || data.appDown) {
     loggersSrc.hidden = true;
     loggersControls.hidden = true;
     loggersListEl.innerHTML =
       '<p class="muted">App not running. Click <strong>Run</strong> to control its log levels.</p>';
     loggersData = null;
+    loggersFixAsked = false;
+    loggersUnavailKey = null;
     return;
   }
   if (!data.available) {
-    loggersSrc.hidden = true;
-    loggersControls.hidden = true;
-    loggersListEl.innerHTML =
-      '<p class="muted">No runtime logger endpoint is exposed on the running app, so log levels ' +
-      "can\u2019t be changed here. For Spring Boot, add <code>spring-boot-starter-actuator</code> and expose it " +
-      "(<code>management.endpoints.web.exposure.include=loggers</code>). For Quarkus, add the " +
-      "<code>quarkus-logging-manager</code> extension.</p>";
-    loggersData = null;
+    renderLoggersUnavailable(data.runMode);
     return;
   }
   loggersData = data;
+  loggersFixAsked = false;
+  loggersUnavailKey = null;
   loggersSrc.hidden = false;
   const quarkus = data.source === "quarkus";
   loggersSrc.className = quarkus ? "src quarkus" : "src actuator";
@@ -1692,6 +1695,53 @@ function renderLoggers(data, force) {
   // (an open select or focused search box) unless explicitly forced.
   if (!force && loggersListEl.contains(document.activeElement)) return;
   renderLoggersList();
+}
+
+// The app is up but exposes no runtime-logger endpoint. Tailor the hint to the
+// framework: Spring Boot and Quarkus each get a one-click "Fix with Copilot" that
+// asks the agent to add the missing dependency; anything else just explains the
+// feature only works for those two.
+function renderLoggersUnavailable(runMode) {
+  loggersSrc.hidden = true;
+  loggersControls.hidden = true;
+  loggersData = null;
+  const key = (runMode || "other") + ":" + (loggersFixAsked ? "asked" : "open");
+  if (key === loggersUnavailKey) return;
+  loggersUnavailKey = key;
+  let html;
+  let fix = null;
+  if (runMode === "spring") {
+    html =
+      '<p class="muted">No Spring Boot Actuator <code>/loggers</code> endpoint is exposed on the running app, ' +
+      "so log levels can\u2019t be changed here. Add <code>spring-boot-starter-actuator</code> and expose it " +
+      "(<code>management.endpoints.web.exposure.include=loggers</code>).</p>";
+    fix = "install-actuator-loggers";
+  } else if (runMode === "quarkus") {
+    html =
+      '<p class="muted">No Quarkus logging-manager endpoint is exposed on the running app, so log levels ' +
+      "can\u2019t be changed here. Add the <code>quarkus-logging-manager</code> extension.</p>";
+    fix = "install-logging-manager";
+  } else {
+    html =
+      '<p class="muted">Live log-level control works only for Spring Boot apps (via the Actuator ' +
+      "<code>/loggers</code> endpoint) or Quarkus apps (via the <code>quarkus-logging-manager</code> extension).</p>";
+  }
+  if (fix) {
+    html += loggersFixAsked
+      ? '<button class="fix fix-copilot tiny" style="margin-top: 0.4rem" disabled>Asked Copilot \u2713</button>'
+      : '<button id="loggers-fix" class="fix fix-copilot tiny" style="margin-top: 0.4rem">Fix with Copilot</button>';
+  }
+  loggersListEl.innerHTML = html;
+  const btn = fix && document.getElementById("loggers-fix");
+  if (btn) {
+    btn.onclick = () => {
+      loggersFixAsked = true;
+      loggersUnavailKey = null;
+      btn.disabled = true;
+      btn.textContent = "Asked Copilot \u2713";
+      post("/api/fix", { kind: fix, module: moduleSelect.value });
+    };
+  }
 }
 
 function renderLoggersList() {
