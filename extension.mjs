@@ -1334,11 +1334,11 @@ function defaultSettings() {
     // actions; null = inherit the system default (JAVA_HOME / PATH java).
     jdkHome: null,
     // Right-panel (aside) preference, restored across reloads/sessions. asideTab
-    // is the last-opened tab; asideOpen is whether the docked (wide-canvas) panel
-    // is expanded. Defaults open on the Settings tab the first time the canvas
-    // is opened.
+    // is the last-opened tab; asideOpen is whether a panel is expanded beside the
+    // vertical bar. Defaults minimized (just the bar) the first time the canvas is
+    // opened, then remembers whatever the user last did.
     asideTab: "settings",
-    asideOpen: true,
+    asideOpen: false,
   };
 }
 
@@ -2379,8 +2379,8 @@ function applySettings(body) {
   if (body.metricsPollMs != null && Number.isFinite(Number(body.metricsPollMs))) {
     settings.metricsPollMs = clampMetricsPollMs(body.metricsPollMs);
   }
-  // Right-panel preference (which aside tab, and whether the docked panel is open).
-  if (["metrics", "loggers", "settings"].includes(body.asideTab)) settings.asideTab = body.asideTab;
+  // Right-panel preference (which aside tab, and whether the panel is open).
+  if (["metrics", "loggers", "scans", "settings"].includes(body.asideTab)) settings.asideTab = body.asideTab;
   if (typeof body.asideOpen === "boolean") settings.asideOpen = body.asideOpen;
   // JDK selection. Don't switch the JDK out from under a running/debugging app —
   // the change applies to the next launch, so the user must stop it first. A new

@@ -327,22 +327,24 @@ function showRunView(view) {
 }
 document.querySelectorAll(".subtab[data-rview]").forEach((t) => (t.onclick = () => showRunView(t.dataset.rview)));
 
-// Aside sub-tabs (Live JVM Metrics / Loggers / Settings) and the collapsible
-// right panel. #workspace.aside-open = expanded (the pane body is shown);
-// #workspace.aside-rail = render the vertical icon rail instead of the docked
-// panel. The rail is used automatically on a narrow canvas, or on demand (via the
-// toggle button) on a wide one. See styles.css for the matching presentation.
+// Aside tool panels (Live JVM Metrics / Loggers / Scans / Settings) live in an
+// always-present IntelliJ-style vertical bar on the right edge. Each panel is
+// minimized by default; clicking a bar button opens that one panel docked beside
+// the bar, and only one is ever open at a time. #workspace.aside-rail = the
+// vertical bar is rendered (always on); #workspace.aside-open = a panel body is
+// docked open beside it. See styles.css for the matching presentation.
 const workspaceEl = document.getElementById("workspace");
 const asideToggle = document.getElementById("aside-toggle");
 const asideDrawer = window.matchMedia("(max-width: 819px)");
 
 // Persisted right-panel preference (settings.asideTab / settings.asideOpen),
 // restored from the server on the first env load. asideTabPref is the last-opened
-// tab; asideOpenPref is whether the docked (wide-canvas) panel is expanded. The
+// tab; asideOpenPref is whether the panel is expanded beside the bar. The
 // narrow-canvas overlay is transient and never updates asideOpenPref. Defaults
-// open on Settings so the panel is shown the first time the canvas is opened.
+// minimized so the panel starts as just the vertical bar the first time the canvas
+// is opened, then remembers whatever the user last did.
 let asideTabPref = "settings";
-let asideOpenPref = true;
+let asideOpenPref = false;
 let asideStateApplied = false;
 
 function activeAsideTab() {
@@ -353,10 +355,11 @@ function syncLoggersPolling() {
   if (loggersTabActive()) startLoggersPolling();
   else stopLoggersPolling();
 }
-// Show the rail look whenever the canvas is narrow or the panel is collapsed.
+// The tool panels always live in the vertical bar; only the open/closed state of
+// a panel body changes. Keep aside-rail on at all widths.
 function syncAsideMode() {
   const open = workspaceEl.classList.contains("aside-open");
-  workspaceEl.classList.toggle("aside-rail", asideDrawer.matches || !open);
+  workspaceEl.classList.add("aside-rail");
   if (asideToggle) {
     asideToggle.setAttribute("aria-label", open ? "Hide panel" : "Show panel");
     asideToggle.title = open ? "Hide panel" : "Show panel";
@@ -388,10 +391,10 @@ function rememberAsideState() {
 function applyAsideState(s) {
   if (asideStateApplied || !s) return;
   asideStateApplied = true;
-  asideTabPref = ["metrics", "loggers", "settings"].includes(s.asideTab) ? s.asideTab : "settings";
-  asideOpenPref = s.asideOpen !== false;
+  asideTabPref = ["metrics", "loggers", "scans", "settings"].includes(s.asideTab) ? s.asideTab : "settings";
+  asideOpenPref = s.asideOpen === true;
   showAsideTab(asideTabPref);
-  // The remembered open state applies to the docked layout only; on a narrow
+  // The remembered open state applies to the in-flow layout only; on a narrow
   // canvas the overlay stays collapsed until the user opens it.
   if (!asideDrawer.matches) setAsideOpen(asideOpenPref);
 }
@@ -418,23 +421,52 @@ if (asideToggle)
     setAsideOpen(!workspaceEl.classList.contains("aside-open"));
     rememberAsideState();
   };
-// Esc collapses the overlay drawer on a narrow canvas.
+// Esc closes the open tool panel (any width), unless focus is in one of its
+// fields (e.g. the profiles combo), which gets its own Escape.
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && asideDrawer.matches && workspaceEl.classList.contains("aside-open")) {
-    setAsideOpen(false);
-  }
+  if (e.key !== "Escape" || !workspaceEl.classList.contains("aside-open")) return;
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) return;
+  setAsideOpen(false);
 });
-// Crossing the breakpoint resets to the natural default for that width: the
-// remembered docked preference when wide, collapsed to the overlay rail when
-// narrow. Neither transition is persisted (it's layout-driven, not a user choice).
+// Crossing the breakpoint keeps the always-on bar; restore the remembered open
+// state when wide and collapse the overlay when narrow. Neither transition is
+// persisted (it's layout-driven, not a user choice).
 asideDrawer.addEventListener("change", () => setAsideOpen(asideDrawer.matches ? false : asideOpenPref));
-// Initial state: open on a wide canvas, collapsed on a narrow one. No loggers
-// sync here (it would touch state declared later in this module) — polling is
-// driven by tab activation and the Settings tab is the default, so loggers
-// polling stays off until that tab is opened. The persisted preference is
-// applied later by applyAsideState once the settings land.
-workspaceEl.classList.toggle("aside-open", !asideDrawer.matches);
+// Initial state: start minimized at every width — the panels open on demand from
+// the vertical bar. No loggers sync here (it would touch state declared later in
+// this module); polling is driven by tab activation, so it stays off until a panel
+// is opened. The persisted preference is applied later by applyAsideState once the
+// settings land.
+workspaceEl.classList.remove("aside-open");
 syncAsideMode();
+
+// Tool-panel availability. Settings is always usable; the others need a running
+// app with the right capability (see updateAsideAvailability callers). Unavailable
+// panels are greyed and sorted to the bottom of the bar; clicking one still opens
+// it so its in-panel text explains what's missing.
+const ASIDE_ALWAYS = new Set(["settings"]);
+const ASIDE_REASON = {
+  metrics:
+    "Live JVM metrics need a running app that exposes metrics — Spring Boot Actuator/BootUI or Quarkus Micrometer. Click to learn more.",
+  loggers: "Live log levels need a running Spring Boot app with the Actuator /loggers endpoint. Click to learn more.",
+  scans: "Advisor scans need a running BootUI app. Click to learn more.",
+};
+function updateAsideAvailability(avail) {
+  document.querySelectorAll(".atab").forEach((btn) => {
+    const name = btn.dataset.atab;
+    const ok = ASIDE_ALWAYS.has(name) || !!(avail && avail[name]);
+    btn.classList.toggle("unavailable", !ok);
+    btn.setAttribute("aria-disabled", ok ? "false" : "true");
+    // Available tools keep their DOM order at the top; unavailable ones sink down.
+    btn.style.order = ok ? "1" : "2";
+    if (!btn.dataset.titleAvail) btn.dataset.titleAvail = btn.getAttribute("title") || "";
+    btn.title = ok ? btn.dataset.titleAvail : ASIDE_REASON[name] || btn.dataset.titleAvail;
+  });
+}
+// Nothing is reachable until the first metrics snapshot lands, so start with only
+// Settings enabled (renderMetrics refines this on every push).
+updateAsideAvailability(null);
 
 // Floating tooltip controller for [data-tip] elements (the settings info
 // icons). Native title tooltips don't render reliably in the canvas
@@ -1046,6 +1078,14 @@ async function refreshVars() {
 let lastHeapPct = 0;
 function renderMetrics(m) {
   const nowUp = !!(m && m.appUp);
+  // The metrics tier is the single source of truth for which tool panels are
+  // reachable, so refresh the bar's availability on every snapshot.
+  const tier = nowUp ? m.metricsTier || "process" : null;
+  updateAsideAvailability({
+    metrics: nowUp && tier !== "process",
+    loggers: nowUp && (tier === "bootui" || tier === "actuator"),
+    scans: nowUp && tier === "bootui",
+  });
   if (nowUp !== appRunning) {
     appRunning = nowUp;
     // Reflect the app coming up / going down in the Loggers tab if it's open.
@@ -1061,7 +1101,6 @@ function renderMetrics(m) {
       'To get metrics, add <strong>Spring Boot Actuator</strong> or <strong>Quarkus Micrometer/health</strong>. For even richer metrics with Spring Boot, add <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a>.';
     return;
   }
-  const tier = m.metricsTier || "process";
   metricsSrc.hidden = false;
   metricsSrc.className = "src " + tier;
   metricsSrc.textContent =
