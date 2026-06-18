@@ -55,12 +55,15 @@ Shipped in the extension today:
   control via Spring Boot Actuator `/loggers` (a Loggers side tab + the `set_log_level`
   action), so loggers can be changed live without a restart.
 - On-demand CPU / allocation / wall-clock / lock-contention flame graph of the
-  running app via async-profiler (`asprof`), rendered interactively (zoom, hover,
-  search) in the Run tab with a top-hotspots list; an "Automatically record at
-  startup" toggle (off by default) records on each app start. Detected and degraded
-  gracefully when the profiler is absent (and unavailable on Windows).
+  running app via async-profiler (`asprof`) when present, or the JDK-bundled JDK
+  Flight Recorder (`jcmd JFR.*`) as a cross-platform fallback (so flame graphs work
+  on Windows too), rendered interactively (zoom, hover, search) in the Run tab with
+  a top-hotspots list; an "Automatically record at startup" toggle (off by default)
+  records on each app start. Detected and degraded gracefully when neither engine is
+  available.
 - "Fix with Copilot" for compile, package, test, plain-Java, Spring Boot and Quarkus
-  startup failures, for flame-graph hotspots, and for BootUI advisor-scan findings.
+  startup failures (including Quarkus dev-mode build/augmentation failures that keep
+  the process running), for flame-graph hotspots, and for BootUI advisor-scan findings.
 - BootUI MCP server toggle + advisor scans when the running app exposes BootUI.
 - Per-project persisted settings (warm JVM, Spring profiles, devtools, random port,
   auto-open browser, auto-record flame graph at startup) and an always-visible
@@ -77,11 +80,14 @@ Shipped in the extension today:
 
 ## Known limitations
 
-- **State is in-memory** and single-app (one build lane + one Run at a time). It is
-  reset on extension reload rather than persisted.
-- **Run output is raw build-tool / app stdout** — unlike BootUI's API it is not run
-  through a secret masker, so build output could echo secrets. Hardening this means
-  masking before streaming to the iframe and before sending "fix" context.
+- **Live state is in-memory** and single-app (one build lane + one Run at a time).
+  Live processes (a running app, an attached debugger) do not survive an extension
+  reload, but each lane's recent terminal results are persisted and restored so the
+  canvas shows the last Build/Test/Package/Run outcome immediately after a reload.
+- **Run output is raw build-tool / app stdout**, but it now passes through a
+  conservative secret masker before streaming to the iframe and before sending
+  "fix" context (toggle via the `maskSecrets` setting). Masking is heuristic, so
+  unusual secret formats can still slip through.
 - **Port detection is best-effort.** Coffilot first scrapes the startup banner
   (Tomcat / Netty / Undertow, plus Quarkus' "Listening on" line) and, when no
   recognised line appears, falls back to probing the running app's process tree
@@ -93,22 +99,27 @@ Shipped in the extension today:
   Frame-local variables also require classes compiled with debug info (`-g`, the
   default for Maven/Gradle). The Quarkus-on-Gradle `-Ddebug` forwarding is
   best-effort and unverified.
-- **The flame graph needs async-profiler installed** and resolves the app JVM via
-  `lsof` on the detected HTTP port (falling back to the run lane's child for
-  plain-`java` runs), so a port-less app started through a forked wrapper can't be
-  attached to. On macOS the `cpu` event maps to `itimer` (no perf_events), and the
-  whole feature is unavailable on Windows (async-profiler has no Windows build).
+- **The flame graph prefers async-profiler** (richer events) when installed, and
+  otherwise falls back to JDK Flight Recorder via `jcmd` (bundled with every JDK,
+  including on Windows). It resolves the app JVM via `lsof` on the detected HTTP port
+  (falling back to the run lane's child for plain-`java` runs, and to `jcmd -l`/`jps`
+  when `lsof` is unavailable, e.g. on Windows), so a port-less app started through a
+  forked wrapper can still usually be attached to. On macOS the async-profiler `cpu`
+  event maps to `itimer` (no perf_events). Flame graphs are only unavailable when
+  neither async-profiler nor a JDK `jcmd` can be found.
 
 ## Roadmap
 
 Near-term, roughly in priority order:
 
-- [ ] Mask obvious secrets in streamed build/run output and in "fix" context.
-- [ ] Persist recent lane history / last results across reloads.
-- [ ] Surface test output filtering (only-failures, search) in the graphical view.
-- [ ] Make the metrics poll interval and endpoints configurable from Settings.
-- [ ] Add a lightweight automated check for `public/index.html` (jsdom smoke test)
-      wired into CI alongside `npm run check`.
+- [x] Mask obvious secrets in streamed build/run output and in "fix" context.
+- [x] Persist recent lane history / last results across reloads.
+- [x] Surface test output filtering (only-failures, search) in the graphical view.
+- [x] Make the metrics poll interval configurable from Settings.
+- [x] Add a lightweight automated check for the iframe UI (jsdom smoke test of
+      `public/index.html` + `public/app.js`) wired into CI alongside `npm run check`,
+      plus `node:test` unit tests for the pure parsers/normalizers and an
+      integration-project matrix (Maven + Gradle) in CI.
 - [ ] Document and test the share-as-gist / install-from-repo round trip.
 
 Explicitly **out of scope**: remote (non-loopback) access, and anything that mutates

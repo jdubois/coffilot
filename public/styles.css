@@ -425,6 +425,11 @@ select {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+  /* The canvas runs in a macOS WKWebView (Tauri), whose compositor leaves blank
+     tiles in tall `overflow: auto` regions after scrolling away and back.
+     Promoting the scroller to its own backing layer keeps it rasterized and
+     fixes the empty gap. */
+  transform: translateZ(0);
 }
 .term .err {
   color: var(--true-color-red, #cf222e);
@@ -480,6 +485,35 @@ select {
 }
 .test-selection.warn {
   color: var(--text-color-default, #1f2328);
+}
+.test-filter {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  border-bottom: 1px solid var(--border-color-muted, #d8dee4);
+  background: var(--background-color-muted, #f6f8fa);
+}
+.test-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.2rem 0.5rem;
+  font-size: 12px;
+  color: var(--text-color-default, #1f2328);
+  background: var(--background-color-default, #ffffff);
+  border: 1px solid var(--border-color-default, #d0d7de);
+  border-radius: 6px;
+}
+.chip-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 12px;
+  color: var(--text-color-muted, #656d76);
+  cursor: pointer;
+  user-select: none;
 }
 .subpane-wrap {
   flex: 1 1 auto;
@@ -1772,6 +1806,14 @@ button.is-restarting .btn-spin::before {
 .copied,
 .tab .badge.bad,
 .tab .badge.good {
+  animation: cof-pop var(--dur) var(--ease-spring);
+}
+/* The "Fix with Copilot" button replays this pop each time it transitions from
+   hidden to shown. Beyond looking intentional, starting an animation forces the
+   WKWebView compositor to repaint the header region — without it, a status
+   update that only flips the button visible sometimes leaves it unpainted until
+   the next layout pass (e.g. switching tabs). */
+button.fix.cof-pop-in {
   animation: cof-pop var(--dur) var(--ease-spring);
 }
 .tab .badge {

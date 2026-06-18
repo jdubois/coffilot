@@ -82,18 +82,21 @@ wins; when neither is found the console says so and stays disabled until one is 
   app's loggers from Spring Boot Actuator <code>/loggers</code> and lets you change any
   level live &mdash; no restart &mdash; so you can flip a package to <code>DEBUG</code>,
   reproduce, and dial it back.
-- **Flame graph (with async-profiler)** &mdash; when [async-profiler](https://github.com/async-profiler/async-profiler)
+- **Flame graph (async-profiler or JFR)** &mdash; when [async-profiler](https://github.com/async-profiler/async-profiler)
   (`asprof`) is installed, the Run tab's **Flame graph** view records an on-demand
   CPU / allocation / wall-clock / lock-contention profile of the running app's JVM
   and renders an interactive flame graph (zoom, hover, search) plus a **Top
-  hotspots** list. An **Analyze hotspots with Copilot** button sends the hottest
+  hotspots** list. When async-profiler isn't present, Coffilot falls back to the
+  JDK-bundled JDK Flight Recorder (via `jcmd`), so flame graphs also work on
+  Windows. An **Analyze hotspots with Copilot** button sends the hottest
   methods to the agent. An **Automatically record at startup** toggle (off by
   default) kicks off a recording on its own each time the app becomes reachable.
-  Degrades gracefully with an install hint when the profiler
-  is missing (and is unavailable on Windows, which async-profiler does not support).
-- **Fix with Copilot** &mdash; on a compile error, failing tests, or a startup
-  crash, a button pushes a context-rich request back into the chat so the agent
-  can diagnose and fix it.
+  Degrades gracefully with an install hint only when neither async-profiler nor a
+  JDK `jcmd` is available.
+- **Fix with Copilot** &mdash; on a compile error, failing tests, a startup
+  crash, or a Quarkus dev-mode build/augmentation failure (where the process stays
+  up waiting for a fix), a button pushes a context-rich request back into the chat
+  so the agent can diagnose and fix it.
 - **Responsive layout** &mdash; on a wide canvas the **Live JVM / Loggers / Settings**
   panel is docked on the right; as the canvas narrows it collapses to an icon rail on
   the right edge, and tapping an icon slides that pane out as an overlay over the main

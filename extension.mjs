@@ -43,7 +43,6 @@ import { inflateRawSync } from "node:zlib";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createCanvas, joinSession } from "@github/copilot-sdk/extension";
 import { DebugSession } from "./jdwp.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -55,7 +54,33 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isWindows = process.platform === "win32";
 const isMac = process.platform === "darwin";
 
-const session = await joinSession({ canvases: [makeCanvas()] });
+// Test mode: when COFFILOT_TEST=1 the module is being imported by the unit-test
+// suite (node:test) rather than launched by the Copilot CLI over JSON-RPC. In
+// that mode we skip the side-effectful bootstrap — joining a session, declaring
+// the canvas, and starting the loopback HTTP server — so the pure functions this
+// file exports can be imported and exercised in isolation. The exported helpers
+// never touch `session` at call time, so a no-op stub is sufficient.
+const TEST_MODE = process.env.COFFILOT_TEST === "1";
+
+// The Copilot SDK is resolved by the Copilot CLI at runtime and is intentionally
+// not a declared dependency (no node_modules entry). Import it dynamically so the
+// unit-test suite — which imports this module only for its pure exports — does not
+// fail to resolve a package the CLI injects.
+let createCanvas, joinSession;
+if (!TEST_MODE) {
+  ({ createCanvas, joinSession } = await import("@github/copilot-sdk/extension"));
+}
+
+const session = TEST_MODE
+  ? {
+      log() {},
+      on() {},
+      once() {},
+      send() {},
+      sendPrompt() {},
+      rpc: {},
+    }
+  : await joinSession({ canvases: [makeCanvas()] });
 
 // Safety net: a background failure — a metrics poll, a port probe, a child-process
 // event, or an SSE write to a canvas that went away — must never terminate the
@@ -404,14 +429,70 @@ function profilerInstall() {
 /** Profiler capability the UI uses to enable/disable the flame-graph controls. */
 function profilerSnapshot() {
   const a = detectAsprof();
+  const j = detectJfr();
+  const engine = a.available ? "async-profiler" : j.available ? "jfr" : null;
   return {
-    available: a.available,
-    supported: !isWindows, // async-profiler has no Windows build
+    available: a.available || j.available,
+    // Profiling is supported on every platform that can record by some engine.
+    // async-profiler has no Windows build, but JFR (JDK-bundled) covers Windows.
+    supported: !isWindows || j.available,
+    engine,
+    jfr: { available: j.available },
     // The default events the picker offers; "cpu" is mapped to itimer on macOS
-    // by the backend (no perf_events there).
+    // by the backend (no perf_events there). JFR records execution (CPU) samples
+    // regardless of the selected event.
     events: ["cpu", "alloc", "wall", "lock"],
     install: profilerInstall(),
   };
+}
+
+// JDK-bundled profiling fallback (Java Flight Recorder).
+//
+// async-profiler is richer but has no Windows build and needs a separate install.
+// `jcmd`/`jfr` ship with every modern JDK, so when async-profiler is missing we
+// fall back to JFR: start a recording with `jcmd <pid> JFR.start`, then parse the
+// dumped `.jfr` with `jfr print` into the same flame tree + hotspots the UI and
+// the "Analyze hotspots with Copilot" action already consume.
+// ---------------------------------------------------------------------------
+
+/** Resolve a JDK tool (jcmd / jfr / jps) from JAVA_HOME/bin, else the bare name
+ *  on PATH (so it still works when only `java` is on PATH). */
+function jdkTool(name) {
+  const exe = isWindows ? `${name}.exe` : name;
+  const home = process.env.JAVA_HOME;
+  if (home) {
+    const p = path.join(home, "bin", exe);
+    try {
+      if (existsSync(p)) return p;
+    } catch {
+      /* ignore */
+    }
+  }
+  return name; // rely on PATH
+}
+
+let jfrInfo = null;
+function detectJfr() {
+  if (jfrInfo && jfrInfo.available) return jfrInfo;
+  const jcmd = jdkTool("jcmd");
+  const jfr = jdkTool("jfr");
+  try {
+    // `jcmd -h` exits 0 and is cheap; confirms the JDK diagnostic tool exists.
+    const res = spawnSync(jcmd, ["-h"], { encoding: "utf8", timeout: 5000 });
+    const ok = res.status === 0 || /Usage:|jcmd/i.test(`${res.stdout || ""}${res.stderr || ""}`);
+    jfrInfo = ok ? { available: true, jcmd, jfr } : { available: false, jcmd: null, jfr: null };
+  } catch {
+    jfrInfo = { available: false, jcmd: null, jfr: null };
+  }
+  return jfrInfo;
+}
+
+/** Which engine startProfile will use: async-profiler when present (richer),
+ *  else JFR, else none. */
+function profileEngine() {
+  if (detectAsprof().available) return "async-profiler";
+  if (detectJfr().available) return "jfr";
+  return null;
 }
 
 // When a project ships a pom.xml but no Maven wrapper, fall back to a system
@@ -1167,8 +1248,24 @@ const SETTINGS_KEYS = [
   "autoProfile",
   "autoProfileEvent",
   "autoProfileDuration",
+  "maskSecrets",
+  "metricsPollMs",
   "jdkHome",
 ];
+
+// Live-metrics polling cadence bounds (ms). Kept conservative so the UI stays
+// responsive without hammering the running app's actuator/metrics endpoints.
+const METRICS_POLL_MIN = 500;
+const METRICS_POLL_MAX = 30000;
+const METRICS_POLL_DEFAULT = 2500;
+
+// Clamp a requested metrics poll interval to the supported range, falling back
+// to the default for non-finite input. Pure.
+export function clampMetricsPollMs(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n)) return METRICS_POLL_DEFAULT;
+  return Math.min(METRICS_POLL_MAX, Math.max(METRICS_POLL_MIN, Math.round(n)));
+}
 
 function settingsPaths() {
   const home = process.env.COPILOT_HOME || path.join(os.homedir(), ".copilot");
@@ -1197,6 +1294,11 @@ function defaultSettings() {
     autoProfile: false,
     autoProfileEvent: "cpu",
     autoProfileDuration: 30,
+    // Mask obvious secret shapes in streamed build/run output and in the
+    // "Fix with Copilot" context. On by default.
+    maskSecrets: true,
+    // Live-metrics polling cadence in milliseconds (clamped on use).
+    metricsPollMs: METRICS_POLL_DEFAULT,
     // Selected JDK (absolute JAVA_HOME) for all build/test/package/run/debug
     // actions; null = inherit the system default (JAVA_HOME / PATH java).
     jdkHome: null,
@@ -1258,6 +1360,77 @@ function persistLastTestTotal(total) {
   } catch (e) {
     session.log(`[coffilot] failed to persist last test total: ${e.message}`, { level: "warn" });
   }
+}
+
+// Recent per-lane run history, persisted so the canvas can show the last result
+// for each lane immediately after an extension reload (state is otherwise
+// in-memory). Bounded in both entry count and console-tail length to keep the
+// file small, mirroring the CONSOLE_CAP philosophy.
+const HISTORY_CAP = 5; // entries kept per lane
+const HISTORY_TAIL = 40; // console lines kept per entry
+const HISTORY_OPS = ["build", "test", "package", "run", "debug"];
+
+function historyFile() {
+  const { dir } = settingsPaths();
+  const key = createHash("sha1").update(workspacePath).digest("hex").slice(0, 16);
+  return path.join(dir, `history-${key}.json`);
+}
+
+// Build a compact, serializable history entry from a lane's terminal state.
+// Pure (no I/O) so it can be unit-tested.
+export function buildHistoryEntry(lane, { testSummary = null, tailLines = [], now = Date.now() } = {}) {
+  return {
+    op: lane.op,
+    phase: lane.phase,
+    command: lane.command || "",
+    exitCode: lane.exitCode == null ? null : lane.exitCode,
+    ts: now,
+    testSummary: testSummary || null,
+    tail: Array.isArray(tailLines) ? tailLines.slice(-HISTORY_TAIL).map((l) => String(l)) : [],
+  };
+}
+
+// Prepend an entry and bound the list to the most recent `cap`. Pure.
+export function clampHistory(list, entry, cap = HISTORY_CAP) {
+  const next = [entry, ...(Array.isArray(list) ? list : [])];
+  return next.slice(0, Math.max(1, cap));
+}
+
+function loadHistory() {
+  try {
+    const saved = JSON.parse(readFileSync(historyFile(), "utf8"));
+    const out = {};
+    for (const op of HISTORY_OPS) out[op] = Array.isArray(saved[op]) ? saved[op] : [];
+    return out;
+  } catch {
+    const out = {};
+    for (const op of HISTORY_OPS) out[op] = [];
+    return out;
+  }
+}
+
+function persistHistory() {
+  try {
+    const { dir } = settingsPaths();
+    mkdirSync(dir, { recursive: true });
+    const out = {};
+    for (const op of HISTORY_OPS) out[op] = lanes[op] ? lanes[op].history : [];
+    writeFileSync(historyFile(), JSON.stringify(out, null, 2));
+  } catch (e) {
+    session.log(`[coffilot] failed to persist lane history: ${e.message}`, { level: "warn" });
+  }
+}
+
+// Append the just-finished lane's terminal state to its history and persist.
+function recordLaneHistory(op) {
+  const lane = lanes[op];
+  if (!lane) return;
+  const entry = buildHistoryEntry(lane, {
+    testSummary: op === "test" ? lastTest : null,
+    tailLines: tail(op, HISTORY_TAIL),
+  });
+  lane.history = clampHistory(lane.history, entry);
+  persistHistory();
 }
 
 const settings = loadSettings();
@@ -1680,6 +1853,7 @@ function newLane(op) {
     exitCode: null,
     child: null, // the process this op currently owns (null when not running)
     console: [], // { line, stream, op }
+    history: [], // recent terminal results, most-recent first (persisted)
   };
 }
 
@@ -1706,6 +1880,28 @@ const app = {
 // Latest unit-test results (from a foreground Test run).
 let lastTest = null; // summary { tests, failures, errors, skipped }
 let lastTestReport = null; // full { summary, suites: [{ name, cases: [...] }] }
+
+// Restore persisted per-lane history so the canvas can show each lane's last
+// result immediately after a reload. For the batch lanes (build/test/package)
+// we also reflect the most recent terminal phase/command/exit in the lane so the
+// header is populated; the run/debug lanes stay "idle" because no JVM is live
+// this session. The test lane's last summary is restored for the progress view.
+function restoreLaneHistory() {
+  const saved = loadHistory();
+  for (const op of HISTORY_OPS) {
+    const lane = lanes[op];
+    lane.history = Array.isArray(saved[op]) ? saved[op] : [];
+    const latest = lane.history[0];
+    if (!latest) continue;
+    if (op === "build" || op === "test" || op === "package") {
+      lane.phase = latest.phase || "idle";
+      lane.command = latest.command || "";
+      lane.exitCode = latest.exitCode == null ? null : latest.exitCode;
+    }
+    if (op === "test" && latest.testSummary) lastTest = latest.testSummary;
+  }
+}
+restoreLaneHistory();
 
 // Build, Test and Package share the Maven lane: at most one runs at a time.
 function mvnLaneBusy() {
@@ -2121,6 +2317,7 @@ function applySettings(body) {
   if (typeof body.devtools === "boolean") settings.devtools = body.devtools;
   if (typeof body.randomPort === "boolean") settings.randomPort = body.randomPort;
   if (typeof body.openBrowser === "boolean") settings.openBrowser = body.openBrowser;
+  if (typeof body.maskSecrets === "boolean") settings.maskSecrets = body.maskSecrets;
   if (typeof body.fullBuild === "boolean") settings.fullBuild = body.fullBuild;
   if (typeof body.buildClean === "boolean") settings.buildClean = body.buildClean;
   if (typeof body.packageClean === "boolean") settings.packageClean = body.packageClean;
@@ -2131,6 +2328,9 @@ function applySettings(body) {
   }
   if (Number.isFinite(Number(body.autoProfileDuration))) {
     settings.autoProfileDuration = Math.min(120, Math.max(3, Math.round(Number(body.autoProfileDuration))));
+  }
+  if (body.metricsPollMs != null && Number.isFinite(Number(body.metricsPollMs))) {
+    settings.metricsPollMs = clampMetricsPollMs(body.metricsPollMs);
   }
   // JDK selection. Don't switch the JDK out from under a running/debugging app —
   // the change applies to the next launch, so the user must stop it first. A new
@@ -2158,6 +2358,10 @@ function applySettings(body) {
     else stopLiveReload();
   }
 
+  // Apply a changed polling cadence immediately if a poll loop is running.
+  if (settings.metricsPollMs !== prev.metricsPollMs && metricsTimer) {
+    startMetricsPolling();
+  }
   // A JDK change affects which runtime the next action uses; refresh the env so
   // the canvas updates the active-JDK display and dropdown selection.
   if (settings.jdkHome !== prev.jdkHome) broadcast("env", envSnapshot());
@@ -2243,6 +2447,38 @@ function compileErrorCount(op) {
   return seen.size;
 }
 
+// Quarkus dev mode (quarkus:dev / quarkusDev) keeps the process alive after a
+// failed build/augmentation: instead of exiting, it logs the error and "starts a
+// hot replacement endpoint to recover from previous Quarkus startup failure",
+// then waits for you to fix the code and live-reload. So the lane stays "running"
+// and never flips to "failed", which would otherwise hide the Fix button. Decide
+// whether the *most recent* (re)start attempt failed by comparing the last failure
+// marker against the last success marker — a successful start/reload after the
+// failure means it recovered, so the badge/button clear on the next live reload.
+const QUARKUS_DEV_FAIL_RE =
+  /Failed to start quarkus|Failed to build quarkus application|io\.quarkus\.builder\.BuildException|recover from previous Quarkus startup failure|Re-compilation failed/;
+const QUARKUS_DEV_OK_RE =
+  /\bstarted in \d|Listening on:|Installed features|Profile \w+ activated|Live Coding activated/;
+export function quarkusDevConsoleFailed(lines) {
+  let lastFail = -1;
+  let lastOk = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (QUARKUS_DEV_FAIL_RE.test(l)) lastFail = i;
+    else if (QUARKUS_DEV_OK_RE.test(l)) lastOk = i;
+  }
+  return lastFail > lastOk;
+}
+
+// Live wrapper: gate on a Quarkus run/debug lane that is currently "running", then
+// scan that lane's console buffer.
+function quarkusDevFailed(op = "run") {
+  if (app.runMode !== "quarkus") return false;
+  const lane = lanes[op];
+  if (!lane || lane.phase !== "running") return false;
+  return quarkusDevConsoleFailed(lane.console.map((e) => e.line));
+}
+
 function fixInfo(op) {
   const lane = lanes[op];
   if (op === "build" && lane.phase === "failed") {
@@ -2266,15 +2502,18 @@ function fixInfo(op) {
       return { kind: "test-compile", label: "Fix build error with Copilot" };
     }
   }
-  if (op === "run" && lane.phase === "failed") {
-    if (app.runMode === "java") return { kind: "run-java", label: "Fix startup failure with Copilot" };
-    if (app.runMode === "quarkus") return { kind: "run-quarkus", label: "Fix Quarkus startup with Copilot" };
-    return { kind: "run-spring", label: "Fix Spring Boot startup with Copilot" };
-  }
-  if (op === "debug" && lane.phase === "failed") {
-    if (app.runMode === "java") return { kind: "run-java", label: "Fix startup failure with Copilot" };
-    if (app.runMode === "quarkus") return { kind: "run-quarkus", label: "Fix Quarkus startup with Copilot" };
-    return { kind: "run-spring", label: "Fix Spring Boot startup with Copilot" };
+  if (op === "run" || op === "debug") {
+    // Quarkus dev mode keeps the process alive after a build/augmentation failure
+    // (the lane stays "running"), so check for that first — otherwise the lane only
+    // flips to "failed" when the JVM actually exits (Spring Boot / plain Java).
+    if (quarkusDevFailed(op)) {
+      return { kind: "run-quarkus-build", label: "Fix Quarkus build error with Copilot" };
+    }
+    if (lane.phase === "failed") {
+      if (app.runMode === "java") return { kind: "run-java", label: "Fix startup failure with Copilot" };
+      if (app.runMode === "quarkus") return { kind: "run-quarkus", label: "Fix Quarkus startup with Copilot" };
+      return { kind: "run-spring", label: "Fix Spring Boot startup with Copilot" };
+    }
   }
   return null;
 }
@@ -2310,6 +2549,10 @@ function laneStatus(op) {
       const ce = compileErrorCount("run");
       if (ce > 0) s.compileErrors = ce;
     }
+    // Quarkus dev mode stays "running" after a build/augmentation failure, so the
+    // phase==="failed" badge above never fires — flag it separately so the UI can
+    // badge the still-running lane and show the Fix button.
+    if (quarkusDevFailed("run")) s.buildFailed = true;
   }
   if (op === "debug") {
     s.runMode = app.runMode;
@@ -2318,8 +2561,10 @@ function laneStatus(op) {
     s.paused = !!(debug.session && debug.session.paused);
     s.attached = !!(debug.session && debug.session.active);
     s.attaching = debug.attaching;
+    if (quarkusDevFailed("debug")) s.buildFailed = true;
   }
   if (op === "test") s.lastTest = lastTest;
+  s.history = lane.history;
   return s;
 }
 
@@ -2371,11 +2616,77 @@ function envSnapshot() {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Secret masking
+// ---------------------------------------------------------------------------
+
+// Build- and run-output is raw process stdout/stderr, so it can echo secrets
+// (a printed env var, a datasource URL with a password, an access token in a
+// log line). We mask obvious secret shapes before they are stored, streamed to
+// the iframe, or folded into a "Fix with Copilot" prompt. Conservative on
+// purpose: each pattern targets a recognizable token/credential shape so normal
+// build output is not riddled with redactions. Toggleable via the `maskSecrets`
+// setting (default on).
+const SECRET_REDACTION = "***REDACTED***";
+
+// Patterns applied in order. Each replaces only the sensitive span (a capture
+// group when present, else the whole match) with the redaction marker.
+const SECRET_PATTERNS = [
+  // Credentials embedded in a URL: ******host → mask "user:pass".
+  { re: /([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+:[^/\s:@]+)@/gi, group: 2 },
+  // Authorization header values: ****** Basic <token>.
+  { re: /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, group: 0, keepPrefix: true },
+  // Provider-specific token shapes.
+  { re: /\bAKIA[0-9A-Z]{16}\b/g, group: 0 }, // AWS access key id
+  { re: /\bASIA[0-9A-Z]{16}\b/g, group: 0 }, // AWS temporary access key id
+  { re: /\bgh[posur]_[A-Za-z0-9]{20,}\b/g, group: 0 }, // GitHub PAT/OAuth tokens (ghp_/gho_/ghu_/ghs_/ghr_)
+  { re: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, group: 0 }, // GitHub fine-grained PAT
+  { re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, group: 0 }, // Slack tokens
+  { re: /\bAIza[0-9A-Za-z_-]{35}\b/g, group: 0 }, // Google API key
+  // JWTs (header.payload.signature, base64url).
+  { re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, group: 0 },
+  // PEM private-key header line (the body lines are generic base64, so we mark
+  // the BEGIN line rather than risk masking unrelated base64 output).
+  { re: /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/g, group: 0 },
+  // key=value / key: value assignments whose key names a credential. Masks the
+  // value (optionally quoted). Catches DB_PASSWORD=…, spring.datasource.password: …,
+  // api-key="…", access_token=…, etc.
+  {
+    re: /\b([\w.-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|client[_-]?secret)[\w.-]*)(\s*[=:]\s*)(["']?)([^\s"']{4,})\3/gi,
+    valueReplace: true,
+  },
+];
+
+/** Redact obvious secret shapes from a chunk of text (multi-line safe). */
+export function maskSecrets(text) {
+  if (text == null) return text;
+  let out = String(text);
+  for (const p of SECRET_PATTERNS) {
+    if (p.valueReplace) {
+      // key + separator + optional-quote + value + optional-quote → keep the
+      // key/separator/quotes, replace only the value.
+      out = out.replace(p.re, (_m, key, sep, quote) => `${key}${sep}${quote}${SECRET_REDACTION}${quote}`);
+    } else if (p.keepPrefix) {
+      // Preserve the scheme word (Bearer/Basic) but redact the token after it.
+      out = out.replace(p.re, (m) => m.replace(/(\s+).*/s, `$1${SECRET_REDACTION}`));
+    } else if (p.group === 2) {
+      out = out.replace(p.re, (_m, g1) => `${g1}${SECRET_REDACTION}@`);
+    } else {
+      out = out.replace(p.re, SECRET_REDACTION);
+    }
+  }
+  return out;
+}
+
 function pushConsole(line, stream, op = "build") {
   // op tags which tab's console (build | test | run) the line belongs to so the
   // UI can keep three separate consoles. Each lane owns its own buffer.
   const o = lanes[op] ? op : "build";
-  const entry = { line, stream, op: o };
+  // Mask secrets at this single choke point so every lane's stored + streamed
+  // output is sanitized; the "Fix with Copilot" context, which reads back these
+  // buffers (tail / errorLines), inherits the masking for free.
+  const safe = settings.maskSecrets === false ? line : maskSecrets(line);
+  const entry = { line: safe, stream, op: o };
   const buf = lanes[o].console;
   buf.push(entry);
   if (buf.length > CONSOLE_CAP) buf.shift();
@@ -2467,6 +2778,7 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
       lane.child = null;
       lane.phase = "failed";
       lane.exitCode = -1;
+      recordLaneHistory(op);
       broadcast("status", statusSnapshot());
       resolve(-1);
     });
@@ -2499,6 +2811,7 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
       } else {
         lane.phase = code === 0 ? "idle" : "failed";
       }
+      recordLaneHistory(op);
       broadcast("status", statusSnapshot());
       resolve(code);
     });
@@ -2767,7 +3080,7 @@ const DYNAMIC_TEST_PREFIXES = ["com.tngtech.archunit"];
 // Turn an internal JVM class/type descriptor into a dotted class name, or null
 // for primitives/arrays-of-primitives. Handles `com/example/Foo`, `Lcom/...;`
 // and array forms like `[Lcom/...;`.
-function internalToDotted(name) {
+export function internalToDotted(name) {
   if (!name) return null;
   let s = name;
   while (s.startsWith("[")) s = s.slice(1);
@@ -2780,7 +3093,7 @@ function internalToDotted(name) {
 // references (its "imports"). We only need the constant pool,
 // so we stop before the field/method/attribute tables. Returns null if the bytes
 // are not a recognisable class file.
-function parseClassRefs(buf) {
+export function parseClassRefs(buf) {
   if (buf.length < 10 || buf.readUInt32BE(0) !== 0xcafebabe) return null;
   const cpCount = buf.readUInt16BE(8);
   let off = 10;
@@ -2948,7 +3261,7 @@ const enclosingClass = (name) => name.split("$")[0];
 // dependency graph backwards to every transitive dependent and return the test
 // classes among them (plus always-run dynamic tests). Each returned test is a
 // top-level class with its owning module.
-function affectedTestsFromIndex(index, changedClasses) {
+export function affectedTestsFromIndex(index, changedClasses) {
   // Reverse adjacency: referenced → set of referrers, restricted to project
   // classes (we only keep edges between indexed classes).
   const reverse = new Map();
@@ -3627,6 +3940,7 @@ function failRunLane(msg, op = "run") {
   pushConsole(`[coffilot] ${msg}`, "stderr", op);
   lanes[op].phase = "failed";
   lanes[op].exitCode = -1;
+  recordLaneHistory(op);
   broadcast("status", statusSnapshot());
 }
 
@@ -4563,42 +4877,8 @@ async function collectSurefireReport(sinceMs) {
       } catch {
         continue;
       }
-      const suiteTag = (xml.match(/<testsuite\b[^>]*>/) || [""])[0];
-      const suite = {
-        name: xmlAttr(suiteTag, "name") || f.replace(/^TEST-/, "").replace(/\.xml$/, ""),
-        tests: Number(xmlAttr(suiteTag, "tests")) || 0,
-        failures: Number(xmlAttr(suiteTag, "failures")) || 0,
-        errors: Number(xmlAttr(suiteTag, "errors")) || 0,
-        skipped: Number(xmlAttr(suiteTag, "skipped")) || 0,
-        timeSec: Number(xmlAttr(suiteTag, "time")) || 0,
-        cases: [],
-      };
-      const caseRe = /<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g;
-      let m;
-      while ((m = caseRe.exec(xml)) !== null) {
-        const openAttrs = m[1] || "";
-        const inner = m[2] || "";
-        const fail = inner.match(/<(failure|error|skipped)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1>)/);
-        let status = "passed";
-        let message = null;
-        let type = null;
-        let detail = null;
-        if (fail) {
-          status = fail[1] === "skipped" ? "skipped" : fail[1] === "error" ? "error" : "failed";
-          message = xmlAttr(fail[2] || "", "message");
-          type = xmlAttr(fail[2] || "", "type");
-          detail = fail[3] ? decodeXml(fail[3]).trim() : null;
-        }
-        suite.cases.push({
-          name: xmlAttr(openAttrs, "name") || "(unknown)",
-          classname: xmlAttr(openAttrs, "classname"),
-          timeSec: Number(xmlAttr(openAttrs, "time")) || 0,
-          status,
-          message,
-          type,
-          detail,
-        });
-      }
+      const fallbackName = f.replace(/^TEST-/, "").replace(/\.xml$/, "");
+      const suite = parseSurefireSuiteXml(xml, fallbackName);
       report.suites.push(suite);
       report.summary.tests += suite.tests || suite.cases.length;
       report.summary.failures += suite.failures;
@@ -4616,6 +4896,52 @@ async function collectSurefireReport(sinceMs) {
   // Surface failing suites first.
   report.suites.sort((a, b) => b.failures + b.errors - (a.failures + a.errors) || a.name.localeCompare(b.name));
   return report;
+}
+
+/**
+ * Parse a single JUnit/Surefire `TEST-*.xml` document (Maven Surefire or Gradle
+ * `build/test-results`) into a suite object: counts plus a per-`<testcase>` list
+ * with pass/fail/error/skipped status and failure detail. Pure (string in,
+ * object out) so it can be unit-tested without a build.
+ */
+export function parseSurefireSuiteXml(xml, fallbackName = "(unknown)") {
+  const suiteTag = (xml.match(/<testsuite\b[^>]*>/) || [""])[0];
+  const suite = {
+    name: xmlAttr(suiteTag, "name") || fallbackName,
+    tests: Number(xmlAttr(suiteTag, "tests")) || 0,
+    failures: Number(xmlAttr(suiteTag, "failures")) || 0,
+    errors: Number(xmlAttr(suiteTag, "errors")) || 0,
+    skipped: Number(xmlAttr(suiteTag, "skipped")) || 0,
+    timeSec: Number(xmlAttr(suiteTag, "time")) || 0,
+    cases: [],
+  };
+  const caseRe = /<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g;
+  let m;
+  while ((m = caseRe.exec(xml)) !== null) {
+    const openAttrs = m[1] || "";
+    const inner = m[2] || "";
+    const fail = inner.match(/<(failure|error|skipped)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1>)/);
+    let status = "passed";
+    let message = null;
+    let type = null;
+    let detail = null;
+    if (fail) {
+      status = fail[1] === "skipped" ? "skipped" : fail[1] === "error" ? "error" : "failed";
+      message = xmlAttr(fail[2] || "", "message");
+      type = xmlAttr(fail[2] || "", "type");
+      detail = fail[3] ? decodeXml(fail[3]).trim() : null;
+    }
+    suite.cases.push({
+      name: xmlAttr(openAttrs, "name") || "(unknown)",
+      classname: xmlAttr(openAttrs, "classname"),
+      timeSec: Number(xmlAttr(openAttrs, "time")) || 0,
+      status,
+      message,
+      type,
+      detail,
+    });
+  }
+  return suite;
 }
 
 /** Compact a full report for an agent action result (failures + per-suite counts only). */
@@ -4690,7 +5016,7 @@ function startMetricsPolling() {
   // refreshMetrics is async; neither setInterval nor a bare call awaits it, so
   // guard both so a failed poll can never escape as an unhandled rejection.
   const poll = () => Promise.resolve(refreshMetrics()).catch(() => {});
-  metricsTimer = setInterval(poll, 2500);
+  metricsTimer = setInterval(poll, clampMetricsPollMs(settings.metricsPollMs));
   poll();
 }
 
@@ -4768,7 +5094,7 @@ async function jvmMetricsFromJson(base, prefix) {
 }
 
 /** Parse a Prometheus/OpenMetrics scrape into name -> [{ labels, value }]. */
-function parsePrometheus(text) {
+export function parsePrometheus(text) {
   const samples = new Map();
   for (const raw of text.split("\n")) {
     const line = raw.trim();
@@ -4793,7 +5119,7 @@ function parsePrometheus(text) {
 }
 
 /** Sum non-negative samples of a metric, optionally filtered by area label. */
-function promSum(samples, name, area) {
+export function promSum(samples, name, area) {
   const arr = samples.get(name);
   if (!arr) return null;
   let sum = 0;
@@ -4807,13 +5133,13 @@ function promSum(samples, name, area) {
   return found ? sum : null;
 }
 
-function promSingle(samples, name) {
+export function promSingle(samples, name) {
   const arr = samples.get(name);
   return arr && arr.length ? arr[0].value : null;
 }
 
 /** Read a label off a metric's first sample (e.g. jvm_info{version="21"}). */
-function promFirstLabel(samples, name, label) {
+export function promFirstLabel(samples, name, label) {
   const arr = samples.get(name);
   return arr && arr.length ? (arr[0].labels[label] ?? null) : null;
 }
@@ -4883,7 +5209,7 @@ async function actuatorMetrics(base) {
 // Actuator tiers.
 
 /** Normalize Quarkus /q/metrics + /q/health into the same shape as the other tiers. */
-function quarkusMetrics(metricsText, health) {
+export function quarkusMetrics(metricsText, health) {
   const s = metricsText ? parsePrometheus(metricsText) : null;
   const out = {
     appUp: true,
@@ -5010,6 +5336,7 @@ function resolveProfileEvent(event) {
 let profile = {
   status: "idle", // idle | running | done | error
   event: null, // logical event (cpu | alloc | wall | lock)
+  engine: null, // async-profiler | jfr — which engine produced this run
   duration: 0,
   pid: null,
   startedAt: 0,
@@ -5022,10 +5349,12 @@ let profile = {
 let flameTree = null; // { n, v, c: [...] } built from the last collapsed run
 let profileChild = null; // the running `asprof -d` process
 let profileResolve = null; // resolves the in-flight run's promise (agent action)
+let jfrTimer = null; // pending parse timer for an in-flight JFR recording
+let jfrPid = null; // PID of the JVM the in-flight JFR recording targets
 
 function profilePublic() {
-  const { event, duration, status, pid, startedAt, finishedAt, error, total, hasGraph } = profile;
-  return { status, event, duration, pid, startedAt, finishedAt, error, total, hasGraph };
+  const { event, engine, duration, status, pid, startedAt, finishedAt, error, total, hasGraph } = profile;
+  return { status, event, engine, duration, pid, startedAt, finishedAt, error, total, hasGraph };
 }
 
 function broadcastProfile() {
@@ -5036,6 +5365,7 @@ function resetProfile() {
   profile = {
     status: "idle",
     event: null,
+    engine: null,
     duration: 0,
     pid: null,
     startedAt: 0,
@@ -5053,6 +5383,13 @@ function profileOutFile() {
   const { dir } = settingsPaths();
   const key = createHash("sha1").update(workspacePath).digest("hex").slice(0, 16);
   return path.join(dir, `flame-${key}.collapsed`);
+}
+
+/** The .jfr recording file the JFR engine dumps for this workspace. */
+function jfrOutFile() {
+  const { dir } = settingsPaths();
+  const key = createHash("sha1").update(workspacePath).digest("hex").slice(0, 16);
+  return path.join(dir, `flame-${key}.jfr`);
 }
 
 // Find the PID of the JVM actually serving the app. spring-boot:run / bootRun /
@@ -5084,6 +5421,68 @@ function resolveAppPid() {
   const fromPort = pidOnPort(app.appPort);
   if (fromPort) return fromPort;
   if (app.runMode === "java" && lanes.run.child && lanes.run.child.pid) return lanes.run.child.pid;
+  // Where lsof isn't available (notably Windows), fall back to the JDK's own JVM
+  // listing to find the forked app process.
+  const fromJvmList = pidViaJvmList();
+  if (fromJvmList) return fromJvmList;
+  return null;
+}
+
+// jps/jcmd prints this literal main class when it can't determine the entry point
+// (e.g. a process it lacks permission to introspect); never a real app to attach to.
+const UNKNOWN_MAIN_CLASS = "Unknown";
+
+// Build-tool / wrapper main classes that are never the app JVM we want to attach
+// to. Used to filter the `jcmd -l` / `jps -l` listing down to the app process.
+const NON_APP_MAINS = [
+  "jdk.jcmd",
+  "sun.tools",
+  "org.apache.maven",
+  "org.codehaus.plexus.classworlds.launcher.Launcher", // Maven launcher
+  "org.gradle.launcher",
+  "org.gradle.wrapper.GradleWrapperMain",
+  "GradleWrapperMain",
+  "GradleMain",
+];
+
+// Pick the most likely app PID from a `pid main-class args` listing produced by
+// `jcmd -l` (or `jps -l`). Pure so it can be unit-tested. Skips this process, the
+// listing tool itself, and known build-tool / wrapper launchers; prefers the
+// last remaining entry (the app is forked after the wrapper).
+export function pickAppPidFromJvmList(listing, selfPid) {
+  const candidates = [];
+  for (const raw of String(listing || "").split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const sp = line.indexOf(" ");
+    const pidStr = sp === -1 ? line : line.slice(0, sp);
+    const pid = Number(pidStr);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    if (selfPid && pid === selfPid) continue;
+    const main = sp === -1 ? "" : line.slice(sp + 1).trim();
+    if (!main || main === UNKNOWN_MAIN_CLASS) continue;
+    if (NON_APP_MAINS.some((skip) => main.startsWith(skip) || main.includes(skip))) continue;
+    candidates.push(pid);
+  }
+  return candidates.length ? candidates[candidates.length - 1] : null;
+}
+
+function pidViaJvmList() {
+  const j = detectJfr();
+  const tools = [];
+  if (j.available && j.jcmd) tools.push([j.jcmd, ["-l"]]);
+  tools.push([jdkTool("jps"), ["-l"]]);
+  for (const [bin, args] of tools) {
+    try {
+      const res = spawnSync(bin, args, { encoding: "utf8", timeout: 5000 });
+      if (res.stdout) {
+        const pid = pickAppPidFromJvmList(res.stdout, process.pid);
+        if (pid) return pid;
+      }
+    } catch {
+      /* tool missing — try the next */
+    }
+  }
   return null;
 }
 
@@ -5133,6 +5532,52 @@ function buildFlame(collapsed) {
   return { tree: toArray(root), total, top };
 }
 
+// Convert the text output of `jfr print --events jdk.ExecutionSample` into the
+// same "collapsed" stack format async-profiler emits (one `root;...;leaf count`
+// line per sample), so the existing buildFlame() can consume it. Each
+// ExecutionSample's stackTrace is listed leaf-first; collapsed wants root-first,
+// so we reverse it. Frame decorations (`line: N`, descriptors) are trimmed to a
+// stable `pkg.Class.method` label. Pure so it can be unit-tested.
+export function parseJfrStacks(text) {
+  const lines = String(text || "").split("\n");
+  const stacks = new Map(); // collapsed-key -> sample count
+  let frames = null; // current stackTrace frames (leaf-first)
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (line.startsWith("stackTrace")) {
+      frames = [];
+      continue;
+    }
+    if (frames === null) continue;
+    if (line === "]" || line === "}" || line === "") {
+      if (line === "]" && frames.length) {
+        const collapsed = frames.slice().reverse().join(";");
+        stacks.set(collapsed, (stacks.get(collapsed) || 0) + 1);
+      }
+      if (line === "]") frames = null;
+      continue;
+    }
+    const frame = jfrFrameLabel(line);
+    if (frame) frames.push(frame);
+  }
+  let out = "";
+  for (const [collapsed, count] of stacks) out += `${collapsed} ${count}\n`;
+  return out;
+}
+
+// Normalize one JFR stack frame line (e.g.
+// "com.example.Foo.bar(java.lang.String) line: 42" or
+// "java.lang.Thread.run() [optimized]") to a "pkg.Class.method" label, dropping
+// argument descriptors, line numbers, and compilation annotations.
+function jfrFrameLabel(line) {
+  let s = line.replace(/^-+\s*/, "").trim();
+  if (!s || s.startsWith("...")) return "";
+  const paren = s.indexOf("(");
+  if (paren !== -1) s = s.slice(0, paren);
+  else s = s.split(/\s+/)[0];
+  return s.trim();
+}
+
 function finishProfileFromFile(stderrTail) {
   const out = profileOutFile();
   let collapsed = "";
@@ -5157,24 +5602,74 @@ function finishProfileFromFile(stderrTail) {
   profile.finishedAt = Date.now();
 }
 
+// Build the flame tree + hotspots from the JFR recording by piping it through
+// `jfr print` and reusing the collapsed-stack parser. Mirrors
+// finishProfileFromFile but for the JFR engine.
+function finishProfileFromJfr(stderrTail) {
+  const j = detectJfr();
+  const out = jfrOutFile();
+  let collapsed = "";
+  try {
+    if (j.jfr && existsSync(out)) {
+      const res = spawnSync(j.jfr, ["print", "--events", "jdk.ExecutionSample", "--stack-depth", "64", out], {
+        encoding: "utf8",
+        timeout: 30000,
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      collapsed = parseJfrStacks(`${res.stdout || ""}`);
+    }
+  } catch {
+    /* jfr print failed or unreadable */
+  }
+  if (collapsed.trim()) {
+    const { tree, total, top } = buildFlame(collapsed);
+    flameTree = tree;
+    profile.total = total;
+    profile.top = top;
+    profile.hasGraph = true;
+    profile.status = "done";
+    profile.error = null;
+  } else {
+    profile.status = "error";
+    profile.hasGraph = false;
+    profile.error = stderrTail || "JFR produced no execution samples (the app may have been idle).";
+  }
+  profile.finishedAt = Date.now();
+}
+
+// Shared "run finished" console line for both engines.
+function logProfileCompletion() {
+  if (profile.status === "done") {
+    pushConsole(
+      `[coffilot] flame graph ready — ${profile.total} samples; open the Flame graph tab in Run.`,
+      "stdout",
+      "run",
+    );
+  } else {
+    pushConsole(`[coffilot] profiling failed: ${profile.error}`, "stderr", "run");
+  }
+}
+
 /**
- * Attach async-profiler to the running app for `duration` seconds and collect a
- * flame graph. Returns the immediate validation/ack synchronously plus a `done`
- * promise that resolves with the final summary once the run completes (used by
- * the profile_app agent action; the HTTP endpoint ignores it and relies on SSE).
+ * Record a flame graph from the running app for `duration` seconds, using
+ * async-profiler when present (richer events) and falling back to JFR (JDK
+ * bundled, all platforms) otherwise. Returns the immediate validation/ack
+ * synchronously plus a `done` promise that resolves with the final summary once
+ * the run completes (used by the profile_app agent action; the HTTP endpoint
+ * ignores it and relies on SSE).
  */
 function startProfile({ duration, event } = {}) {
   if (profile.status === "running") {
     return { ok: false, status: "running", error: "A profiling run is already in progress." };
   }
-  const ap = detectAsprof();
-  if (isWindows || !ap.available) {
+  const engine = profileEngine();
+  if (!engine) {
     return {
       ok: false,
       status: "unavailable",
       error: isWindows
-        ? "async-profiler has no Windows build, so flame graphs aren't available."
-        : "async-profiler (asprof) isn't installed. Install it to record flame graphs.",
+        ? "No profiler available: async-profiler has no Windows build, and the JDK's JFR tools (jcmd) weren't found on PATH or in JAVA_HOME."
+        : "No profiler available: install async-profiler, or a JDK that provides jcmd/jfr for the JFR fallback.",
     };
   }
   if (!runLaneBusy()) {
@@ -5190,6 +5685,25 @@ function startProfile({ duration, event } = {}) {
   }
   const { event: logical, token } = resolveProfileEvent(event);
   const dur = Math.min(120, Math.max(3, Math.round(Number(duration) || 30)));
+
+  resetProfile();
+  profile.status = "running";
+  profile.event = logical;
+  profile.engine = engine;
+  profile.duration = dur;
+  profile.pid = pid;
+  profile.startedAt = Date.now();
+  broadcastProfile();
+
+  const done = new Promise((resolve) => (profileResolve = resolve));
+  return engine === "async-profiler"
+    ? startProfileAsprof({ pid, dur, token, logical, done })
+    : startProfileJfr({ pid, dur, logical, done });
+}
+
+/** async-profiler engine: attach `asprof -d` and parse its collapsed output. */
+function startProfileAsprof({ pid, dur, token, logical, done }) {
+  const ap = detectAsprof();
   const out = profileOutFile();
   try {
     mkdirSync(path.dirname(out), { recursive: true });
@@ -5197,17 +5711,8 @@ function startProfile({ duration, event } = {}) {
   } catch {
     /* best effort */
   }
-
-  resetProfile();
-  profile.status = "running";
-  profile.event = logical;
-  profile.duration = dur;
-  profile.pid = pid;
-  profile.startedAt = Date.now();
-  broadcastProfile();
   pushConsole(`[coffilot] profiling pid ${pid} for ${dur}s (event=${token}) with async-profiler…`, "stdout", "run");
 
-  const done = new Promise((resolve) => (profileResolve = resolve));
   let stderr = "";
   try {
     profileChild = spawn(ap.path, ["-d", String(dur), "-e", token, "-o", "collapsed", "-f", out, String(pid)], {
@@ -5236,19 +5741,62 @@ function startProfile({ duration, event } = {}) {
     profileChild = null;
     const stderrTail = stderr.trim().split("\n").slice(-6).join("\n");
     finishProfileFromFile(stderrTail);
-    if (profile.status === "done") {
-      pushConsole(
-        `[coffilot] flame graph ready — ${profile.total} samples; open the Flame graph tab in Run.`,
-        "stdout",
-        "run",
-      );
-    } else {
-      pushConsole(`[coffilot] profiling failed: ${profile.error}`, "stderr", "run");
-    }
+    logProfileCompletion();
     broadcastProfile();
     if (profileResolve) profileResolve(profileSummary());
   });
-  return { ok: true, status: "running", event: logical, duration: dur, pid, done };
+  return { ok: true, status: "running", event: logical, engine: "async-profiler", duration: dur, pid, done };
+}
+
+/** JFR engine: start a fixed-duration recording via `jcmd JFR.start`; the JVM
+ *  dumps the .jfr when it ends, which we then parse with `jfr print`. */
+function startProfileJfr({ pid, dur, logical, done }) {
+  const j = detectJfr();
+  const out = jfrOutFile();
+  try {
+    mkdirSync(path.dirname(out), { recursive: true });
+    if (existsSync(out)) unlinkSync(out);
+  } catch {
+    /* best effort */
+  }
+  pushConsole(`[coffilot] profiling pid ${pid} for ${dur}s with Java Flight Recorder…`, "stdout", "run");
+
+  const args = [String(pid), "JFR.start", "name=coffilot", "settings=profile", `duration=${dur}s`, `filename=${out}`];
+  let startOut = "";
+  try {
+    const res = spawnSync(j.jcmd, args, { encoding: "utf8", timeout: 10000 });
+    startOut = `${res.stdout || ""}${res.stderr || ""}`;
+    // Prefer the exit code; jcmd has historically exited 0 while still printing a
+    // failure, so also catch its own error markers ("Could not …", a Java stack
+    // trace) — but keep them specific to avoid tripping on benign app output.
+    if ((res.status != null && res.status !== 0) || /\bcould not\b|Exception:/i.test(startOut)) {
+      throw new Error(startOut.trim().split("\n").slice(-4).join("\n") || "JFR.start failed.");
+    }
+  } catch (e) {
+    profile.status = "error";
+    profile.error = e.message;
+    profile.finishedAt = Date.now();
+    pushConsole(`[coffilot] JFR.start failed: ${profile.error}`, "stderr", "run");
+    broadcastProfile();
+    if (profileResolve) profileResolve(profileSummary());
+    return { ok: false, status: "error", error: profile.error, done };
+  }
+
+  jfrPid = pid;
+  // Parse once the recording window has elapsed (plus a small buffer for the
+  // JVM to flush the dump to disk).
+  jfrTimer = setTimeout(
+    () => {
+      jfrTimer = null;
+      jfrPid = null;
+      finishProfileFromJfr();
+      logProfileCompletion();
+      broadcastProfile();
+      if (profileResolve) profileResolve(profileSummary());
+    },
+    dur * 1000 + 1500,
+  );
+  return { ok: true, status: "running", event: logical, engine: "jfr", duration: dur, pid, done };
 }
 
 // Fired by finishMetrics when "Automatically record at startup" is on and the app
@@ -5256,12 +5804,11 @@ function startProfile({ duration, event } = {}) {
 // clear reason to the Run console when it can't (so it never just "does nothing").
 function startAutoProfile() {
   if (profile.status === "running") return;
-  const ap = detectAsprof();
-  if (isWindows || !ap.available) {
+  if (!profileEngine()) {
     pushConsole(
       isWindows
-        ? "[coffilot] auto-record is on, but async-profiler has no Windows build — skipping the flame graph."
-        : "[coffilot] auto-record is on, but async-profiler (asprof) isn't installed — skipping the flame graph.",
+        ? "[coffilot] auto-record is on, but no profiler is available (async-profiler has no Windows build and the JDK's jcmd wasn't found) — skipping the flame graph."
+        : "[coffilot] auto-record is on, but no profiler is available (install async-profiler, or a JDK providing jcmd/jfr) — skipping the flame graph.",
       "stderr",
       "run",
     );
@@ -5275,6 +5822,30 @@ function startAutoProfile() {
 /** Stop an in-flight profiling run early, dumping whatever has been collected. */
 function stopProfile() {
   if (profile.status !== "running") return { ok: false, error: "No profiling run is in progress." };
+  // JFR engine: stop the recording (dumping partial results), then parse and
+  // resolve directly — there is no long-running child to wait on.
+  if (profile.engine === "jfr") {
+    if (jfrTimer) {
+      clearTimeout(jfrTimer);
+      jfrTimer = null;
+    }
+    const j = detectJfr();
+    const out = jfrOutFile();
+    const pid = jfrPid || profile.pid;
+    jfrPid = null;
+    if (j.jcmd && pid) {
+      try {
+        spawnSync(j.jcmd, [String(pid), "JFR.stop", "name=coffilot", `filename=${out}`], { timeout: 8000 });
+      } catch {
+        /* best effort — parse whatever was written */
+      }
+    }
+    finishProfileFromJfr();
+    logProfileCompletion();
+    broadcastProfile();
+    if (profileResolve) profileResolve(profileSummary());
+    return { ok: true, stopping: true };
+  }
   const ap = detectAsprof();
   const out = profileOutFile();
   if (ap.available && profile.pid) {
@@ -5362,6 +5933,7 @@ const FIX_OP = {
   "run-java": "run",
   "run-spring": "run",
   "run-quarkus": "run",
+  "run-quarkus-build": "run",
   profile: "run",
 };
 
@@ -5429,6 +6001,19 @@ function buildFixPrompt(kind, extra = {}) {
         where,
         "Recent output:",
         codeBlock(tail("run", 90)),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    case "run-quarkus-build":
+      // Quarkus dev mode does not exit on a build/augmentation failure — it logs the
+      // error and keeps a hot-replacement endpoint alive waiting for a fix. The
+      // error lives in the still-running lane's console, so prefer the filtered
+      // error lines and fall back to a longer tail.
+      return [
+        "The Quarkus application failed to build/augment in dev mode (quarkus:dev / quarkusDev). Quarkus did not exit — it logged the failure and is waiting for the code to be fixed so it can hot-reload. This is a build-time failure (a compilation error in the changed sources, a failed Quarkus build step / bytecode enhancement / annotation processing, a missing or misconfigured extension, an incompatible dependency, etc.), not a runtime startup problem. Find the root cause and fix the code so the build/augmentation succeeds.",
+        where,
+        "Build/augmentation errors:",
+        codeBlock(errorLines("run").length ? errorLines("run") : tail("run", 90)),
       ]
         .filter(Boolean)
         .join("\n\n");
@@ -5608,8 +6193,12 @@ function buildFixPrompt(kind, extra = {}) {
 }
 
 async function sendFix(kind, extra) {
-  const prompt = buildFixPrompt(kind, extra);
-  if (!prompt) return { ok: false, error: `Unknown fix kind: ${kind}` };
+  const raw = buildFixPrompt(kind, extra);
+  if (!raw) return { ok: false, error: `Unknown fix kind: ${kind}` };
+  // Defense in depth: console-derived context is already masked at pushConsole,
+  // but a fix prompt can also carry parsed test-failure detail and scan JSON, so
+  // mask the assembled prompt before it leaves for the conversation.
+  const prompt = settings.maskSecrets === false ? raw : maskSecrets(raw);
   try {
     await session.send({ prompt });
     session.log(`[coffilot] asked the agent to fix: ${kind}`, { level: "info" });
@@ -6486,29 +7075,35 @@ const server = createServer((req, res) => {
 
 let serverUrl = null;
 const serverReady = new Promise((resolve) => {
+  if (TEST_MODE) {
+    resolve();
+    return;
+  }
   server.listen(0, "127.0.0.1", () => {
     serverUrl = `http://127.0.0.1:${server.address().port}`;
     resolve();
   });
 });
-await serverReady;
+if (!TEST_MODE) {
+  await serverReady;
 
-// Now that the canvas is registered and its loopback server is listening, refine
-// the project root from the session's primary working directory in the
-// background. Kept off the synchronous startup path on purpose so opening a
-// session surfaces the canvas immediately; the loading overlay stays up until
-// the first /api/state lands, which awaits workspaceReady so the build tool is
-// known before the buttons render. The UI also self-heals via the broadcast env
-// (and its focus refresh / "Check again").
-workspaceReady = refineWorkspaceFromSession().catch(() => {});
+  // Now that the canvas is registered and its loopback server is listening, refine
+  // the project root from the session's primary working directory in the
+  // background. Kept off the synchronous startup path on purpose so opening a
+  // session surfaces the canvas immediately; the loading overlay stays up until
+  // the first /api/state lands, which awaits workspaceReady so the build tool is
+  // known before the buttons render. The UI also self-heals via the broadcast env
+  // (and its focus refresh / "Check again").
+  workspaceReady = refineWorkspaceFromSession().catch(() => {});
 
-// One minute after launch, check whether this Coffilot checkout is behind its
-// remote and, if so, light up the header's "Update to latest version" button.
-// Delayed so it never competes with startup work, fetches the network off the
-// hot path, and .unref()'d so the pending timer alone won't keep the process up.
-setTimeout(() => {
-  void checkForUpdate({ doFetch: true });
-}, 60000).unref();
+  // One minute after launch, check whether this Coffilot checkout is behind its
+  // remote and, if so, light up the header's "Update to latest version" button.
+  // Delayed so it never competes with startup work, fetches the network off the
+  // hot path, and .unref()'d so the pending timer alone won't keep the process up.
+  setTimeout(() => {
+    void checkForUpdate({ doFetch: true });
+  }, 60000).unref();
+}
 
 // ---------------------------------------------------------------------------
 // Canvas declaration
@@ -6868,7 +7463,7 @@ function makeCanvas() {
       {
         name: "fix_issue",
         description:
-          "Send a context-rich request into this chat asking to fix the current problem. Kind: compile (build failed), package (package failed), test (failing tests), test-compile (a test run failed to compile before any tests ran), run-java/run-spring/run-quarkus (startup failure), profile (optimize the flame-graph hotspots), or mcp (advisor scan findings).",
+          "Send a context-rich request into this chat asking to fix the current problem. Kind: compile (build failed), package (package failed), test (failing tests), test-compile (a test run failed to compile before any tests ran), run-java/run-spring/run-quarkus (startup failure), run-quarkus-build (Quarkus dev mode hit a build/augmentation failure but kept running), profile (optimize the flame-graph hotspots), or mcp (advisor scan findings).",
         inputSchema: {
           type: "object",
           properties: {
@@ -6882,6 +7477,7 @@ function makeCanvas() {
                 "run-java",
                 "run-spring",
                 "run-quarkus",
+                "run-quarkus-build",
                 "profile",
                 "mcp",
               ],

@@ -35,11 +35,13 @@ the project being worked on. By design it:
 
 ### Known limitations
 
-- **Build and run output is not secret-masked.** Build-tool and application stdout
-  are streamed verbatim to the iframe and can be included in "Fix with Copilot"
-  context. If your build prints secrets, they will be visible in the console and in
-  any fix request sent to the agent. Masking this output is on the
-  [roadmap](PLAN.md).
+- **Best-effort secret masking.** Build-tool and application stdout are passed
+  through a conservative masker before they are streamed to the iframe or included
+  in "Fix with Copilot" context, redacting common token shapes (provider keys,
+  bearer tokens, JWTs, credentials in URLs, and `key=value` secret assignments).
+  This is heuristic, not exhaustive — unusual secret formats can still slip through.
+  Masking is on by default and can be disabled with the `maskSecrets` setting for a
+  trusted local build.
 - Coffilot trusts the Maven or Gradle project it is pointed at. Only use it on
   projects you trust, exactly as you would before running `./mvnw` or `./gradlew`
   yourself.
