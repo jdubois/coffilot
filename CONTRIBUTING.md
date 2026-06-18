@@ -127,13 +127,20 @@ test files to that list. CI runs the same command.
   project-classification logic (build-tool detection, capability/tier
   classification, run-mode inference, project-root resolution) against the actual
   build files of every project under `integration-tests/`, asserting the tier each
-  scenario is meant to exercise. Deterministic — no JDK or network — so it runs as
-  part of `npm test`.
-- **`test/e2e-projects.test.mjs`** is the realistic pass: it actually builds and
-  tests each `integration-tests/` project with its own wrapper, then feeds the
-  JUnit reports the build produced through Coffilot's own report discovery +
-  parser (`collectSurefireReport`) and asserts the parsed results. It needs a
-  JDK 17 and network access, so it is **skipped unless `COFFILOT_E2E=1`**:
+  scenario is meant to exercise. It also asserts Coffilot's lane command builders
+  (`buildArgsFor` / `testArgsFor` / `packageArgsFor` / `affectedTestArgsFor`) for
+  both Maven and Gradle, so the documented per-lane command vectors can't silently
+  drift. Deterministic — no JDK or network — so it runs as part of `npm test`.
+- **`test/e2e-projects.test.mjs`** is the realistic pass: it actually builds,
+  tests and packages each `integration-tests/` project with its own wrapper —
+  using Coffilot's own lane commands (`testArgsFor` / `buildArgsFor` /
+  `packageArgsFor`) rather than a hand-maintained copy — then feeds the JUnit
+  reports the build produced through Coffilot's own report discovery + parser
+  (`collectSurefireReport`) and asserts the parsed results. The `failing-tests`
+  project covers the failure path (build exits non-zero, report still parses with
+  the right pass/fail/error split), and two projects additionally assert the Build
+  and Package lanes each produce a jar. It needs a JDK 17 and network access, so it
+  is **skipped unless `COFFILOT_E2E=1`**:
 
   ```bash
   COFFILOT_E2E=1 npm test                     # all projects

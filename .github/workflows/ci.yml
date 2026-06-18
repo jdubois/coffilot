@@ -58,6 +58,8 @@ jobs:
             tool: maven
           - project: quarkus-rest
             tool: maven
+          - project: failing-tests
+            tool: maven
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -74,10 +76,12 @@ jobs:
           java-version: 17
           cache: ${{ matrix.tool }}
 
-      # Drives Coffilot end-to-end: actually builds & tests the project with its
-      # own wrapper, then runs the produced JUnit reports through Coffilot's own
-      # report discovery + parser (collectSurefireReport) and asserts the results.
-      - name: Build, test & validate Coffilot parsing
+      # Drives Coffilot end-to-end: actually builds, tests and packages the
+      # project with its own wrapper using Coffilot's own lane commands, then runs
+      # the produced JUnit reports through Coffilot's own report discovery + parser
+      # (collectSurefireReport) and asserts the results. The failing-tests shard
+      # also covers the failure path (build exits non-zero, report still parses).
+      - name: Build, test, package & validate Coffilot parsing
         env:
           COFFILOT_E2E: "1"
         run: node --test --test-name-pattern "^${{ matrix.project }}:" test/e2e-projects.test.mjs

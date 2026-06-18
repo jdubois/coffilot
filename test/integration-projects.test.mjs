@@ -6,7 +6,7 @@
 // not synthetic fixtures. They are deterministic and need no JDK/network, so they
 // run as part of `npm test`. The heavier "actually build it" pass lives in
 // e2e-projects.test.mjs (gated behind COFFILOT_E2E=1).
-import { test } from "node:test";
+import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -17,9 +17,18 @@ import { fileURLToPath } from "node:url";
 // extension.mjs / parsers.test.mjs.
 process.env.COFFILOT_TEST = "1";
 
-const { detectBuildTool, pomCaps, gradleCaps, readGradleBuildFile, findProjectRoot, inferRunMode } =
-  await import("../extension.mjs");
-
+const {
+  detectBuildTool,
+  pomCaps,
+  gradleCaps,
+  readGradleBuildFile,
+  findProjectRoot,
+  inferRunMode,
+  buildArgsFor,
+  testArgsFor,
+  packageArgsFor,
+  affectedTestArgsFor,
+} = await import("../extension.mjs");
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const projectsDir = path.join(repoRoot, "integration-tests");
 
@@ -110,6 +119,23 @@ const SCENARIOS = [
     tier: "quarkus",
     caps: { runnable: true, springBoot: false, quarkus: true, actuator: false, devtools: false, bootui: false },
   },
+  {
+    project: "failing-tests",
+    tool: "maven",
+    runMode: "java",
+    tier: "java",
+    // Plain Maven project; its JUnit suite intentionally fails/errors so the E2E
+    // pass can exercise failure parsing. Statically it classifies like hello-world.
+    caps: {
+      runnable: false,
+      springBoot: false,
+      quarkus: false,
+      actuator: false,
+      devtools: false,
+      bootui: false,
+      mainClass: "com.example.failing.Calculator",
+    },
+  },
 ];
 
 for (const s of SCENARIOS) {
@@ -159,4 +185,63 @@ test("Maven wins when both Maven and Gradle markers are present", () => {
 
 test("a directory with no build markers detects no tool", () => {
   assert.equal(detectBuildTool(repoRoot), null);
+});
+
+// Lane command builders: the same pure helpers the Build/Test/Package/affected
+// lanes use to assemble their runner arguments. Asserting them here keeps the
+// documented per-tool command vectors from drifting, and the E2E pass drives the
+// very same builders against the real wrappers.
+describe("lane command builders", () => {
+  test("Maven build/test/package vectors match the documented goals", () => {
+    assert.deepEqual(buildArgsFor("maven"), ["-ntp", "-DskipTests", "install"]);
+    assert.deepEqual(buildArgsFor("maven", false, true), ["-ntp", "-DskipTests", "clean", "install"]);
+    assert.deepEqual(testArgsFor("maven"), ["-ntp", "test"]);
+    assert.deepEqual(packageArgsFor("maven"), ["-ntp", "package"]);
+    assert.deepEqual(packageArgsFor("maven", false, true, true), ["-ntp", "clean", "install"]);
+  });
+
+  test("Gradle build/test/package vectors swap goals and honor the warm daemon", () => {
+    // Cold (warm=false) appends --no-daemon; warm drops it.
+    assert.deepEqual(buildArgsFor("gradle"), ["build", "-x", "test", "--console=plain", "--no-daemon"]);
+    assert.deepEqual(buildArgsFor("gradle", true), ["build", "-x", "test", "--console=plain"]);
+    assert.deepEqual(testArgsFor("gradle"), ["cleanTest", "test", "--console=plain", "--no-daemon"]);
+    assert.deepEqual(packageArgsFor("gradle"), ["assemble", "--console=plain", "--no-daemon"]);
+    assert.deepEqual(packageArgsFor("gradle", false, true, true), [
+      "clean",
+      "publishToMavenLocal",
+      "--console=plain",
+      "--no-daemon",
+    ]);
+  });
+
+  test("affected-test args target only the changed classes (Maven by simple name)", () => {
+    const tests = [
+      { fqcn: "com.example.FooTest", module: "" },
+      { fqcn: "com.example.BarTest$Inner", module: "" },
+    ];
+    // Inner classes collapse to their enclosing class; Surefire matches by simple name.
+    assert.deepEqual(affectedTestArgsFor("maven", tests), [
+      "-ntp",
+      "-Dtest=FooTest,BarTest",
+      "-Dsurefire.failIfNoSpecifiedTests=false",
+      "test",
+    ]);
+  });
+
+  test("affected-test args target only the owning modules (Gradle by FQCN)", () => {
+    const tests = [
+      { fqcn: "com.example.FooTest", module: "web" },
+      { fqcn: "com.example.BarTest", module: "" },
+    ];
+    assert.deepEqual(affectedTestArgsFor("gradle", tests), [
+      ":web:test",
+      "test",
+      "--console=plain",
+      "--no-daemon",
+      "--tests",
+      "com.example.FooTest",
+      "--tests",
+      "com.example.BarTest",
+    ]);
+  });
 });

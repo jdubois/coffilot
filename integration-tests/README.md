@@ -1,7 +1,7 @@
 # Coffilot integration-test projects
 
-Six **independent** projects used to exercise Coffilot against every capability
-tier it supports. Five are Maven and one is Gradle, so both build tools get real
+Seven **independent** projects used to exercise Coffilot against every capability
+tier it supports. Six are Maven and one is Gradle, so both build tools get real
 coverage. Each folder is a self-contained project with its own wrapper (`./mvnw`
 or `./gradlew`) — none of them depend on each other or on this repo's Node tooling.
 
@@ -16,6 +16,7 @@ rung of that ladder:
 | [`spring-mvc-actuator-devtools`](spring-mvc-actuator-devtools) | Same app + Actuator + DevTools | **Actuator** — richer live metrics via `/actuator` |
 | [`spring-mvc-bootui`](spring-mvc-bootui) | Same app with BootUI in a `dev` Maven profile | **BootUI** — richest metrics + advisor scan |
 | [`quarkus-rest`](quarkus-rest) | Quarkus REST app with SmallRye Health + Micrometer/Prometheus | **Quarkus** — Run via `quarkus:dev` + live metrics from `/q/metrics` & `/q/health` |
+| [`failing-tests`](failing-tests) | Plain Maven project whose JUnit suite has a pass, a failure and an error | **Failure path** — Test lane parses a real report with failures/errors |
 
 The three Spring projects were generated with
 [start.spring.io](https://start.spring.io) (Maven, Java 17, Spring Boot 4.1) and
@@ -105,6 +106,8 @@ Then open a Copilot session on that project, reload extensions, and open the
 - `spring-mvc-actuator-devtools` for the Actuator metrics tier.
 - `spring-mvc-bootui` (run with `-Pdev`) for the full BootUI metrics + advisor scan.
 - `quarkus-rest` for the Quarkus Run lane (`quarkus:dev`) and the Quarkus metrics tier.
+- `failing-tests` to see the Test lane surface a failing + erroring suite (and to drive
+  "Fix with Copilot" from a real failure).
 
 ## Automated tests against these projects
 
@@ -114,13 +117,17 @@ Coffilot's own test suite drives these projects on two levels (see `test/`):
   `npm test`. They point Coffilot's real build-tool detection, capability/tier
   classification, run-mode inference and project-root resolution at each project's
   actual build files and assert the tier each scenario in the table above is meant
-  to exercise. They are deterministic and need no JDK or network.
+  to exercise. The same file also asserts Coffilot's lane command builders
+  (Build / Test / Package / affected-test args) for both Maven and Gradle. They are
+  deterministic and need no JDK or network.
 
-- **End-to-end tests** (`test/e2e-projects.test.mjs`) actually build and test each
-  project with its own wrapper, then feed the JUnit reports the build produced
-  through Coffilot's own report discovery + parser and assert the parsed results.
-  They need a JDK 17 and network access, so they are **skipped unless
-  `COFFILOT_E2E=1`** is set:
+- **End-to-end tests** (`test/e2e-projects.test.mjs`) actually build, test and
+  package each project with its own wrapper — using Coffilot's own lane commands —
+  then feed the JUnit reports the build produced through Coffilot's own report
+  discovery + parser and assert the parsed results. `failing-tests` additionally
+  covers the failure path: the build exits non-zero, yet the report still parses
+  with the right pass/fail/error split. They need a JDK 17 and network access, so
+  they are **skipped unless `COFFILOT_E2E=1`** is set:
 
   ```bash
   COFFILOT_E2E=1 node --test test/e2e-projects.test.mjs
