@@ -180,9 +180,11 @@ const metricsHint = document.getElementById("metrics-hint");
 const mcpToggle = document.getElementById("mcp-toggle");
 const mcpToggleLabel = document.getElementById("mcp-toggle-label");
 const mcpState = document.getElementById("mcp-state");
-const mcpScansEl = document.getElementById("mcp-scans");
-const mcpResultEl = document.getElementById("mcp-result");
 const mcpRegisterBtn = document.getElementById("mcp-register");
+const scansSrc = document.getElementById("scans-src");
+const scansHint = document.getElementById("scans-hint");
+const scansListEl = document.getElementById("scans-list");
+const scansResultEl = document.getElementById("scans-result");
 let caps = {};
 // Whether a Maven/Gradle build tool is present. When false the canvas runs
 // in degraded mode: Build/Test/Package/Run stay disabled.
@@ -284,7 +286,9 @@ function esc(s) {
   return String(s == null ? "" : s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 // Main tabs (Build / Test / Package / Run)
@@ -323,22 +327,24 @@ function showRunView(view) {
 }
 document.querySelectorAll(".subtab[data-rview]").forEach((t) => (t.onclick = () => showRunView(t.dataset.rview)));
 
-// Aside sub-tabs (Live JVM Metrics / Loggers / Settings) and the collapsible
-// right panel. #workspace.aside-open = expanded (the pane body is shown);
-// #workspace.aside-rail = render the vertical icon rail instead of the docked
-// panel. The rail is used automatically on a narrow canvas, or on demand (via the
-// toggle button) on a wide one. See styles.css for the matching presentation.
+// Aside tool panels (Live JVM Metrics / Loggers / Scans / Settings) live in an
+// always-present IntelliJ-style vertical bar on the right edge. Each panel is
+// minimized by default; clicking a bar button opens that one panel docked beside
+// the bar, and only one is ever open at a time. #workspace.aside-rail = the
+// vertical bar is rendered (always on); #workspace.aside-open = a panel body is
+// docked open beside it. See styles.css for the matching presentation.
 const workspaceEl = document.getElementById("workspace");
 const asideToggle = document.getElementById("aside-toggle");
 const asideDrawer = window.matchMedia("(max-width: 819px)");
 
 // Persisted right-panel preference (settings.asideTab / settings.asideOpen),
 // restored from the server on the first env load. asideTabPref is the last-opened
-// tab; asideOpenPref is whether the docked (wide-canvas) panel is expanded. The
+// tab; asideOpenPref is whether the panel is expanded beside the bar. The
 // narrow-canvas overlay is transient and never updates asideOpenPref. Defaults
-// open on Settings so the panel is shown the first time the canvas is opened.
+// minimized so the panel starts as just the vertical bar the first time the canvas
+// is opened, then remembers whatever the user last did.
 let asideTabPref = "settings";
-let asideOpenPref = true;
+let asideOpenPref = false;
 let asideStateApplied = false;
 
 function activeAsideTab() {
@@ -349,10 +355,11 @@ function syncLoggersPolling() {
   if (loggersTabActive()) startLoggersPolling();
   else stopLoggersPolling();
 }
-// Show the rail look whenever the canvas is narrow or the panel is collapsed.
+// The tool panels always live in the vertical bar; only the open/closed state of
+// a panel body changes. Keep aside-rail on at all widths.
 function syncAsideMode() {
   const open = workspaceEl.classList.contains("aside-open");
-  workspaceEl.classList.toggle("aside-rail", asideDrawer.matches || !open);
+  workspaceEl.classList.add("aside-rail");
   if (asideToggle) {
     asideToggle.setAttribute("aria-label", open ? "Hide panel" : "Show panel");
     asideToggle.title = open ? "Hide panel" : "Show panel";
@@ -367,6 +374,7 @@ function showAsideTab(name) {
   document.querySelectorAll(".atab").forEach((t) => t.classList.toggle("active", t.dataset.atab === name));
   document.getElementById("atab-metrics").classList.toggle("active", name === "metrics");
   document.getElementById("atab-loggers").classList.toggle("active", name === "loggers");
+  document.getElementById("atab-scans").classList.toggle("active", name === "scans");
   document.getElementById("atab-settings").classList.toggle("active", name === "settings");
   syncLoggersPolling();
 }
@@ -383,10 +391,10 @@ function rememberAsideState() {
 function applyAsideState(s) {
   if (asideStateApplied || !s) return;
   asideStateApplied = true;
-  asideTabPref = ["metrics", "loggers", "settings"].includes(s.asideTab) ? s.asideTab : "settings";
-  asideOpenPref = s.asideOpen !== false;
+  asideTabPref = ["metrics", "loggers", "scans", "settings"].includes(s.asideTab) ? s.asideTab : "settings";
+  asideOpenPref = s.asideOpen === true;
   showAsideTab(asideTabPref);
-  // The remembered open state applies to the docked layout only; on a narrow
+  // The remembered open state applies to the in-flow layout only; on a narrow
   // canvas the overlay stays collapsed until the user opens it.
   if (!asideDrawer.matches) setAsideOpen(asideOpenPref);
 }
@@ -413,23 +421,52 @@ if (asideToggle)
     setAsideOpen(!workspaceEl.classList.contains("aside-open"));
     rememberAsideState();
   };
-// Esc collapses the overlay drawer on a narrow canvas.
+// Esc closes the open tool panel (any width), unless focus is in one of its
+// fields (e.g. the profiles combo), which gets its own Escape.
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && asideDrawer.matches && workspaceEl.classList.contains("aside-open")) {
-    setAsideOpen(false);
-  }
+  if (e.key !== "Escape" || !workspaceEl.classList.contains("aside-open")) return;
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) return;
+  setAsideOpen(false);
 });
-// Crossing the breakpoint resets to the natural default for that width: the
-// remembered docked preference when wide, collapsed to the overlay rail when
-// narrow. Neither transition is persisted (it's layout-driven, not a user choice).
+// Crossing the breakpoint keeps the always-on bar; restore the remembered open
+// state when wide and collapse the overlay when narrow. Neither transition is
+// persisted (it's layout-driven, not a user choice).
 asideDrawer.addEventListener("change", () => setAsideOpen(asideDrawer.matches ? false : asideOpenPref));
-// Initial state: open on a wide canvas, collapsed on a narrow one. No loggers
-// sync here (it would touch state declared later in this module) — polling is
-// driven by tab activation and the Settings tab is the default, so loggers
-// polling stays off until that tab is opened. The persisted preference is
-// applied later by applyAsideState once the settings land.
-workspaceEl.classList.toggle("aside-open", !asideDrawer.matches);
+// Initial state: start minimized at every width — the panels open on demand from
+// the vertical bar. No loggers sync here (it would touch state declared later in
+// this module); polling is driven by tab activation, so it stays off until a panel
+// is opened. The persisted preference is applied later by applyAsideState once the
+// settings land.
+workspaceEl.classList.remove("aside-open");
 syncAsideMode();
+
+// Tool-panel availability. Settings is always usable; the others need a running
+// app with the right capability (see updateAsideAvailability callers). Unavailable
+// panels are greyed and sorted to the bottom of the bar; clicking one still opens
+// it so its in-panel text explains what's missing.
+const ASIDE_ALWAYS = new Set(["settings"]);
+const ASIDE_REASON = {
+  metrics:
+    "Live JVM metrics need a running app that exposes metrics — Spring Boot Actuator/BootUI or Quarkus Micrometer. Click to learn more.",
+  loggers: "Live log levels need a running Spring Boot app with the Actuator /loggers endpoint. Click to learn more.",
+  scans: "Advisor scans need a running BootUI app. Click to learn more.",
+};
+function updateAsideAvailability(avail) {
+  document.querySelectorAll(".atab").forEach((btn) => {
+    const name = btn.dataset.atab;
+    const ok = ASIDE_ALWAYS.has(name) || !!(avail && avail[name]);
+    btn.classList.toggle("unavailable", !ok);
+    btn.setAttribute("aria-disabled", ok ? "false" : "true");
+    // Available tools keep their DOM order at the top; unavailable ones sink down.
+    btn.style.order = ok ? "1" : "2";
+    if (!btn.dataset.titleAvail) btn.dataset.titleAvail = btn.getAttribute("title") || "";
+    btn.title = ok ? btn.dataset.titleAvail : ASIDE_REASON[name] || btn.dataset.titleAvail;
+  });
+}
+// Nothing is reachable until the first metrics snapshot lands, so start with only
+// Settings enabled (renderMetrics refines this on every push).
+updateAsideAvailability(null);
 
 // Floating tooltip controller for [data-tip] elements (the settings info
 // icons). Native title tooltips don't render reliably in the canvas
@@ -1041,6 +1078,14 @@ async function refreshVars() {
 let lastHeapPct = 0;
 function renderMetrics(m) {
   const nowUp = !!(m && m.appUp);
+  // The metrics tier is the single source of truth for which tool panels are
+  // reachable, so refresh the bar's availability on every snapshot.
+  const tier = nowUp ? m.metricsTier || "process" : null;
+  updateAsideAvailability({
+    metrics: nowUp && tier !== "process",
+    loggers: nowUp && (tier === "bootui" || tier === "actuator"),
+    scans: nowUp && tier === "bootui",
+  });
   if (nowUp !== appRunning) {
     appRunning = nowUp;
     // Reflect the app coming up / going down in the Loggers tab if it's open.
@@ -1050,12 +1095,12 @@ function renderMetrics(m) {
     lastHeapPct = 0;
     metricsSrc.hidden = true;
     renderMcp(null);
+    renderScans(false);
     metricsEl.innerHTML = '<p class="muted">Application isn\u2019t running or doesn\u2019t expose metrics.</p>';
     metricsHint.innerHTML =
       'To get metrics, add <strong>Spring Boot Actuator</strong> or <strong>Quarkus Micrometer/health</strong>. For even richer metrics with Spring Boot, add <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a>.';
     return;
   }
-  const tier = m.metricsTier || "process";
   metricsSrc.hidden = false;
   metricsSrc.className = "src " + tier;
   metricsSrc.textContent =
@@ -1068,6 +1113,7 @@ function renderMetrics(m) {
     metricsHint.innerHTML =
       "Add <code>spring-boot-starter-actuator</code> / BootUI (Spring) or <code>quarkus-micrometer-registry-prometheus</code> (Quarkus) to surface heap, threads and health here.";
     renderMcp(null);
+    renderScans(false);
     return;
   }
 
@@ -1105,19 +1151,24 @@ function renderMetrics(m) {
     metricsHint.innerHTML =
       "Rich metrics read from the running app\u2019s <code>/bootui/api/**</code> endpoints \u2014 reused directly from BootUI.";
     renderMcp(m.mcp);
+    renderScans(true);
   } else if (tier === "quarkus") {
     metricsHint.innerHTML =
       "Metrics read from Quarkus Micrometer (<code>/q/metrics</code>) and SmallRye Health (<code>/q/health</code>).";
     renderMcp(null);
+    renderScans(false);
   } else {
     metricsHint.innerHTML =
       "Metrics normalized from Spring Boot <code>/actuator/**</code>. Add BootUI for advisor scans and richer detail.";
     renderMcp(null);
+    renderScans(false);
   }
 }
 
-// ---- BootUI MCP server panel ------------------------------------------
-let mcpScansLoaded = false;
+// ---- BootUI MCP server panel (agent bridge only) ----------------------
+// Coffilot reads advisor scans over REST (see the Scans tab); this panel just
+// manages the in-app MCP server that exposes those scans to the Copilot CLI as
+// native tools, so the toggle/register controls are all that remain here.
 
 // Offer "Register with Copilot" only while the MCP server is enabled (and
 // therefore reachable). Reset the button's label/enabled state only on the
@@ -1142,15 +1193,11 @@ function showMcpRegister(show) {
 // hidden); the whole panel is hidden for non-Spring modules in
 // updateDevSetup(), since BootUI is a Spring-only tier.
 function setMcpUnavailable() {
-  mcpScansLoaded = false;
   mcpToggle.checked = false;
   mcpToggle.disabled = true;
   mcpToggleLabel.classList.add("disabled");
   mcpState.textContent = "";
   showMcpRegister(false);
-  mcpScansEl.innerHTML =
-    '<span class="muted" style="font-size:12px">Start a BootUI app (dev profile) with <strong>Run</strong> to manage its MCP server and advisor scans.</span>';
-  mcpResultEl.innerHTML = "";
 }
 
 function renderMcp(mcp) {
@@ -1164,12 +1211,6 @@ function renderMcp(mcp) {
   mcpToggle.checked = enabled;
   mcpState.textContent = "";
   showMcpRegister(enabled);
-  if (!enabled) {
-    mcpScansLoaded = false;
-    mcpScansEl.innerHTML = '<span class="muted" style="font-size:12px">Enable the server to run advisor scans.</span>';
-    return;
-  }
-  if (!mcpScansLoaded) loadMcpScans();
 }
 
 async function getJson(path) {
@@ -1181,53 +1222,61 @@ async function getJson(path) {
   }
 }
 
-async function loadMcpScans() {
-  const st = await getJson("/api/mcp/status");
-  if (!st || !st.available) {
-    setMcpUnavailable();
+// ---- BootUI advisor scans (Scans aside tab) ---------------------------
+// Read straight from BootUI's REST API: /api/scans lists the advisor scans the
+// running app exposes (sourced from /bootui/api/panels), and /api/scan runs one
+// (POST /bootui/api/{id}/scan). No MCP server round-trip and no enable step — the
+// scans show up whenever a BootUI app is up on the metrics "bootui" tier.
+let scansLoaded = false;
+
+function renderScans(available) {
+  if (!available) {
+    scansLoaded = false;
+    scansSrc.hidden = true;
+    scansHint.innerHTML =
+      'Start a <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a> app (dev profile) with <strong>Run</strong> to run its advisor scans against the live app.';
+    scansListEl.innerHTML = "";
+    scansResultEl.innerHTML = "";
     return;
   }
-  mcpToggle.disabled = false;
-  mcpToggleLabel.classList.remove("disabled");
-  const enabled = st.enabled === true;
-  mcpToggle.checked = enabled;
-  mcpState.textContent = "";
-  showMcpRegister(enabled);
-  const scans = (st && st.scans) || [];
-  if (!enabled) {
-    mcpScansLoaded = false;
-    mcpScansEl.innerHTML = '<span class="muted" style="font-size:12px">Enable the server to run advisor scans.</span>';
-    return;
-  }
-  mcpScansLoaded = true;
-  if (!scans.length) {
-    mcpScansEl.innerHTML = '<span class="muted" style="font-size:12px">No advisor scans advertised.</span>';
-    return;
-  }
-  mcpScansEl.innerHTML = scans
-    .map((s) => {
-      const label = esc(s.name.replace(/_scan$/, "").replace(/_/g, " "));
-      return `<button class="tiny" data-scan="${esc(s.name)}" title="${esc(s.description || s.name)}">${label}</button>`;
-    })
-    .join("");
-  mcpScansEl.querySelectorAll("button[data-scan]").forEach((b) => (b.onclick = () => runScan(b.dataset.scan)));
+  scansSrc.hidden = false;
+  if (!scansLoaded) loadScans();
 }
 
-async function runScan(tool) {
-  mcpResultEl.innerHTML = `<span class="muted">Running ${esc(tool)}\u2026</span>`;
-  const r = await postJson("/api/mcp/scan", { tool });
-  if (!r || r.ok === false) {
-    mcpResultEl.innerHTML = `<span style="color:var(--true-color-red,#cf222e)">Scan failed: ${esc((r && r.error) || "unknown error")}</span>`;
+async function loadScans() {
+  const st = await getJson("/api/scans");
+  const scans = (st && st.scans) || [];
+  scansLoaded = true;
+  if (!scans.length) {
+    scansHint.textContent = "No advisor scans are available on the running app.";
+    scansListEl.innerHTML = "";
     return;
   }
-  lastScan = { tool, result: r.result };
+  scansHint.textContent = "Run a BootUI advisor scan against the running app, then push its findings to Copilot.";
+  scansListEl.innerHTML = scans
+    .map(
+      (s) =>
+        `<button class="tiny" data-scan="${esc(s.id)}" title="${esc(s.description || s.label)}">${esc(s.label)}</button>`,
+    )
+    .join("");
+  scansListEl.querySelectorAll("button[data-scan]").forEach((b) => (b.onclick = () => runScan(b.dataset.scan)));
+}
+
+async function runScan(scanKey) {
+  scansResultEl.innerHTML = `<span class="muted">Running ${esc(scanKey)}\u2026</span>`;
+  const r = await postJson("/api/scan", { tool: scanKey });
+  if (!r || r.ok === false) {
+    scansResultEl.innerHTML = `<span style="color:var(--true-color-red,#cf222e)">Scan failed: ${esc((r && r.error) || "unknown error")}</span>`;
+    return;
+  }
+  lastScan = { tool: r.tool || scanKey, result: r.result };
   const text = typeof r.result === "string" ? r.result : JSON.stringify(r.result, null, 2);
-  mcpResultEl.innerHTML =
+  scansResultEl.innerHTML =
     `<div style="display:flex;align-items:center;gap:0.5rem;justify-content:space-between">` +
-    `<strong>${esc(tool)}</strong>` +
-    `<button class="fix fix-copilot tiny" id="mcp-send">Fix findings with Copilot</button></div>` +
+    `<strong>${esc(r.label || scanKey)}</strong>` +
+    `<button class="fix fix-copilot tiny" id="scan-send">Fix findings with Copilot</button></div>` +
     `<pre>${esc(text)}</pre>`;
-  const send = document.getElementById("mcp-send");
+  const send = document.getElementById("scan-send");
   if (send)
     send.onclick = async () => {
       send.disabled = true;
@@ -2352,10 +2401,9 @@ btnFix.onclick = async () => {
 mcpToggle.onclick = async () => {
   const enabled = mcpToggle.checked;
   mcpState.textContent = enabled ? "enabling\u2026" : "disabling\u2026";
-  mcpScansLoaded = false;
-  await post("/api/mcp/toggle", { enabled });
-  // Reflect the server's actual state and (re)load advisor scans.
-  loadMcpScans();
+  const r = await postJson("/api/mcp/toggle", { enabled });
+  // Reflect the server's actual state from the toggle response.
+  renderMcp((r && r.status) || null);
 };
 
 mcpRegisterBtn.onclick = async () => {

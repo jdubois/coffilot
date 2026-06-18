@@ -157,8 +157,9 @@ real Maven and Gradle builds.
 
 The loopback control endpoints are mostly safe to `curl` for inspection
 (`/api/state`, `/api/settings`, `/api/recheck`, `/api/build`, `/api/test`, `/api/run`, `/api/stop`, `/api/restart`,
-`/events`, …), but **`/api/fix` and `/api/mcp/scan` fire prompts / scans into the
-conversation** — don't call them casually. The HTTP server binds to `127.0.0.1`
+`/api/scans`, `/events`, …), but **`/api/fix` fires a prompt into the conversation**
+(and `/api/scan` triggers an advisor scan on the running app) — don't call them
+casually. The HTTP server binds to `127.0.0.1`
 only; keep it that way.
 
 Coffilot persists a little per-project state under

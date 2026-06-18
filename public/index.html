@@ -407,7 +407,7 @@
       </div>
       <aside id="aside">
         <div class="aside-tabs">
-          <button class="atab" data-atab="metrics">
+          <button class="atab" data-atab="metrics" title="Live JVM metrics of the running app">
             <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
               <path
                 d="M8 4a.5.5 0 0 1 .5.5V6a.5.5 0 0 1-1 0V4.5A.5.5 0 0 1 8 4M3.732 5.732a.5.5 0 0 1 .707 0l.915.914a.5.5 0 1 1-.708.708l-.914-.915a.5.5 0 0 1 0-.707M2 10a.5.5 0 0 1 .5-.5h1.586a.5.5 0 0 1 0 1H2.5A.5.5 0 0 1 2 10m9.5 0a.5.5 0 0 1 .5-.5H14a.5.5 0 0 1 0 1h-2a.5.5 0 0 1-.5-.5m.754-4.246a.39.39 0 0 0-.527-.02L7.547 9.31a.91.91 0 1 0 1.302 1.258l3.434-4.297a.39.39 0 0 0-.029-.518z"
@@ -419,7 +419,7 @@
             </svg>
             <span class="atab-label">Live JVM</span>
           </button>
-          <button class="atab" data-atab="loggers">
+          <button class="atab" data-atab="loggers" title="Change the running app’s log levels live">
             <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
               <path
                 d="M5 11.5a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9a.5.5 0 0 1-.5-.5m-3-4a.5.5 0 0 1 .5-.5h12a.5.5 0 0 1 0 1H2.5a.5.5 0 0 1-.5-.5m-2-4a.5.5 0 0 1 .5-.5h15a.5.5 0 0 1 0 1H.5a.5.5 0 0 1-.5-.5"
@@ -427,7 +427,15 @@
             </svg>
             <span class="atab-label">Loggers</span>
           </button>
-          <button class="atab active" data-atab="settings">
+          <button class="atab" data-atab="scans" title="Run BootUI advisor scans against the live app">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001q.044.06.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1 1 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0"
+              />
+            </svg>
+            <span class="atab-label">Scans</span>
+          </button>
+          <button class="atab active" data-atab="settings" title="Per-project settings">
             <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
               <path
                 d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492M5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0"
@@ -472,6 +480,16 @@
             <div id="loggers-list">
               <p class="muted">App not running. Click <strong>Run</strong> to control its log levels.</p>
             </div>
+          </div>
+
+          <div id="atab-scans" class="apane">
+            <h2>Advisor scans<span id="scans-src" class="src bootui" hidden>BootUI</span></h2>
+            <p class="hint" id="scans-hint">
+              Start a <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a> app (dev
+              profile) with <strong>Run</strong> to run its advisor scans against the live app.
+            </p>
+            <div id="scans-list" class="scans"></div>
+            <div id="scans-result"></div>
           </div>
 
           <div id="atab-settings" class="apane active">
@@ -643,8 +661,9 @@
               <button id="btn-add-devtools" class="fix tiny" hidden>Add DevTools to dev profile</button>
             </div>
 
-            <!-- BootUI MCP server (advisor scans); the toggle is enabled once a
-               running BootUI app (dev profile) exposes its MCP endpoint. -->
+            <!-- BootUI MCP server: optional bridge that exposes the running app's
+               advisor scans to the Copilot CLI as native MCP tools. Coffilot's own
+               Scans tab reads those scans over REST and does not need this. -->
             <div id="mcp" class="mcp-settings">
               <div class="switch-row">
                 <label class="switch disabled" id="mcp-toggle-label">
@@ -656,20 +675,17 @@
                 <span
                   class="info"
                   tabindex="0"
-                  data-tip="Run BootUI's MCP server inside the running app so its advisor scans (architecture, security, Hibernate, …) can analyze the project from this console."
+                  data-tip="Run BootUI's MCP server inside the running app and register it with the Copilot CLI so the agent can call its advisor scans (architecture, security, Hibernate, …) natively in chat. The Scans tab runs these directly over REST and doesn't need this."
                   >&#9432;</span
                 >
                 <button id="mcp-register" class="fix tiny" style="margin-left: auto" hidden>
                   Register with Copilot
                 </button>
               </div>
-              <div id="mcp-scans" class="scans">
-                <span class="muted" style="font-size: 12px"
-                  >Start a BootUI app (dev profile) with <strong>Run</strong> to manage its MCP server and advisor
-                  scans.</span
-                >
-              </div>
-              <div id="mcp-result"></div>
+              <p class="hint" id="mcp-hint">
+                Optional: expose the running app's advisor scans to the Copilot CLI as native MCP tools. The
+                <strong>Scans</strong> tab runs them directly over REST without this.
+              </p>
             </div>
           </div>
         </div>
