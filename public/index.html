@@ -104,6 +104,20 @@
             <button id="btn-build" class="primary lane-action">
               <span class="btn-spin" hidden></span><span class="btn-label">Build</span>
             </button>
+            <div class="lane-controls">
+              <label class="switch" id="build-clean-toggle">
+                <input type="checkbox" id="in-build-clean" />
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-label">Clean</span>
+              </label>
+              <span
+                class="info"
+                id="build-clean-info"
+                tabindex="0"
+                data-tip="Off (default). On: run a clean first, so the build runs `mvn clean install` instead of `mvn install` (Gradle `clean build`)."
+                >&#9432;</span
+              >
+            </div>
           </div>
           <pre id="build-console" class="term" aria-label="Build output"></pre>
         </section>
@@ -113,6 +127,32 @@
             <button id="btn-package" class="primary lane-action">
               <span class="btn-spin" hidden></span><span class="btn-label">Package</span>
             </button>
+            <div class="lane-controls">
+              <label class="switch" id="package-clean-toggle">
+                <input type="checkbox" id="in-package-clean" />
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-label">Clean</span>
+              </label>
+              <span
+                class="info"
+                id="package-clean-info"
+                tabindex="0"
+                data-tip="Off (default). On: run a clean first (`mvn clean package`; Gradle `clean assemble`)."
+                >&#9432;</span
+              >
+              <label class="switch" id="package-install-toggle">
+                <input type="checkbox" id="in-package-install" />
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-label">Install</span>
+              </label>
+              <span
+                class="info"
+                id="package-install-info"
+                tabindex="0"
+                data-tip="Off (default). On: install the artifact to the local repository (`mvn install`; Gradle `publishToMavenLocal`) instead of just packaging."
+                >&#9432;</span
+              >
+            </div>
           </div>
           <pre id="package-console" class="term" aria-label="Package output"></pre>
         </section>

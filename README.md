@@ -18,7 +18,8 @@ wins; when neither is found the console says so and stays disabled until one is 
 ## Features
 
 - **Build** &mdash; Maven `./mvnw -ntp -DskipTests install` or Gradle
-  `./gradlew build -x test` (args overridable).
+  `./gradlew build -x test` (args overridable). A **Clean** toggle (off by default)
+  runs a clean first (`mvn clean install`; Gradle `clean build`).
 - **Test** &mdash; Maven `./mvnw -ntp test` or Gradle `./gradlew cleanTest test`, with
   the JUnit results parsed into a graphical, per-test view (summary chips, per-suite
   grouping, expandable failure stack traces) and a live progress bar. A console toggle
@@ -32,7 +33,10 @@ wins; when neither is found the console says so and stays disabled until one is 
   dependency-accurate selection; before the first compile it falls back to a name-based
   mapping (`Foo` → `FooTest` / `FooTests` / `FooIT`).
 - **Package** &mdash; Maven `./mvnw -ntp package` or Gradle `./gradlew assemble`,
-  streamed live like Build.
+  streamed live like Build. A **Clean** toggle (off by default) runs a clean first
+  (`mvn clean package`; Gradle `clean assemble`), and an **Install** toggle (off by
+  default) installs the artifact to the local repository (`mvn install`; Gradle
+  `publishToMavenLocal`) instead of just packaging.
 - **Run** &mdash; `spring-boot:run` (Maven) / `bootRun` (Gradle) for a Spring Boot
   module (+ Spring profiles), `quarkus:dev` (Maven) / `quarkusDev` (Gradle) for a
   Quarkus module (+ run profile), or, for a non-Spring/non-Quarkus module, the

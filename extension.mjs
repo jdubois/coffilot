@@ -892,6 +892,9 @@ const SETTINGS_KEYS = [
   "randomPort",
   "openBrowser",
   "fullBuild",
+  "buildClean",
+  "packageClean",
+  "packageInstall",
   "autoProfile",
   "autoProfileEvent",
   "autoProfileDuration",
@@ -914,6 +917,13 @@ function defaultSettings() {
     // On by default: the Test button runs the whole suite. Off runs only the
     // tests affected by the current uncommitted changes.
     fullBuild: true,
+    // Build/Package "Clean" toggles (off by default): prepend a clean goal so a
+    // build runs `clean install` instead of `install` (Gradle `clean build`).
+    buildClean: false,
+    packageClean: false,
+    // Package "Install" toggle (off by default): install the artifact to the
+    // local repository (`mvn install`; Gradle `publishToMavenLocal`).
+    packageInstall: false,
     autoProfile: false,
     autoProfileEvent: "cpu",
     autoProfileDuration: 30,
@@ -1837,6 +1847,9 @@ function applySettings(body) {
   if (typeof body.randomPort === "boolean") settings.randomPort = body.randomPort;
   if (typeof body.openBrowser === "boolean") settings.openBrowser = body.openBrowser;
   if (typeof body.fullBuild === "boolean") settings.fullBuild = body.fullBuild;
+  if (typeof body.buildClean === "boolean") settings.buildClean = body.buildClean;
+  if (typeof body.packageClean === "boolean") settings.packageClean = body.packageClean;
+  if (typeof body.packageInstall === "boolean") settings.packageInstall = body.packageInstall;
   if (typeof body.autoProfile === "boolean") settings.autoProfile = body.autoProfile;
   if (["cpu", "alloc", "wall", "lock"].includes(body.autoProfileEvent)) {
     settings.autoProfileEvent = body.autoProfileEvent;
@@ -2685,10 +2698,16 @@ function affectedTestArgs(tests, warm) {
 }
 
 // Default argument vectors per lane, per tool. `warm` only affects Gradle (daemon
-// vs --no-daemon); Maven's warm tier swaps the binary (mvnd) instead.
-function defaultBuildArgs(warm) {
-  if (buildTool === "gradle") return ["build", "-x", "test", "--console=plain", ...gradleWarmFlags(warm)];
-  return ["-ntp", "-DskipTests", "install"];
+// vs --no-daemon); Maven's warm tier swaps the binary (mvnd) instead. `clean`
+// prepends a clean goal (Build/Package "Clean" toggle); `install` (Package only)
+// installs the artifact to the local repository instead of just packaging it.
+function defaultBuildArgs(warm, clean) {
+  if (buildTool === "gradle") {
+    const goals = clean ? ["clean", "build"] : ["build"];
+    return [...goals, "-x", "test", "--console=plain", ...gradleWarmFlags(warm)];
+  }
+  const goals = clean ? ["clean", "install"] : ["install"];
+  return ["-ntp", "-DskipTests", ...goals];
 }
 function defaultTestArgs(warm) {
   // cleanTest forces Gradle to re-run tests even when nothing changed, so the
@@ -2696,12 +2715,20 @@ function defaultTestArgs(warm) {
   if (buildTool === "gradle") return ["cleanTest", "test", "--console=plain", ...gradleWarmFlags(warm)];
   return ["-ntp", "test"];
 }
-function defaultPackageArgs(warm) {
-  if (buildTool === "gradle") return ["assemble", "--console=plain", ...gradleWarmFlags(warm)];
-  return ["-ntp", "package"];
+function defaultPackageArgs(warm, clean, install) {
+  if (buildTool === "gradle") {
+    // `publishToMavenLocal` is the Gradle equivalent of `mvn install` (requires
+    // the maven-publish plugin with a configured publication).
+    const goal = install ? "publishToMavenLocal" : "assemble";
+    const goals = clean ? ["clean", goal] : [goal];
+    return [...goals, "--console=plain", ...gradleWarmFlags(warm)];
+  }
+  const goal = install ? "install" : "package";
+  const goals = clean ? ["clean", goal] : [goal];
+  return ["-ntp", ...goals];
 }
 
-async function build(extraArgs, warm, mavenProfiles) {
+async function build(extraArgs, warm, mavenProfiles, clean) {
   if (!buildTool) {
     pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "build");
     return noToolResult();
@@ -2710,7 +2737,7 @@ async function build(extraArgs, warm, mavenProfiles) {
   try {
     if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
     const r = resolveRunner(warm);
-    const base = extraArgs && extraArgs.length ? extraArgs : defaultBuildArgs(r.warm);
+    const base = extraArgs && extraArgs.length ? extraArgs : defaultBuildArgs(r.warm, clean === true);
     const args = withMavenProfiles(base, mavenProfiles);
     lanes.build.warm = r.warm;
     const code = await spawnTool("build", args, "building", { bin: r.bin, label: r.label });
@@ -2727,7 +2754,7 @@ async function build(extraArgs, warm, mavenProfiles) {
   }
 }
 
-async function packageApp(extraArgs, warm, mavenProfiles) {
+async function packageApp(extraArgs, warm, mavenProfiles, clean, install) {
   if (!buildTool) {
     pushConsole("[coffilot] No Maven or Gradle project detected.", "stderr", "package");
     return noToolResult();
@@ -2736,7 +2763,8 @@ async function packageApp(extraArgs, warm, mavenProfiles) {
   try {
     if (mvnLaneBusy()) return { ok: false, error: "A build, test or package is already running. Stop it first." };
     const r = resolveRunner(warm);
-    const base = extraArgs && extraArgs.length ? extraArgs : defaultPackageArgs(r.warm);
+    const base =
+      extraArgs && extraArgs.length ? extraArgs : defaultPackageArgs(r.warm, clean === true, install === true);
     const args = withMavenProfiles(base, mavenProfiles);
     lanes.package.warm = r.warm;
     const code = await spawnTool("package", args, "packaging", { bin: r.bin, label: r.label });
@@ -3794,9 +3822,12 @@ async function restart(op, params = {}) {
   // over SSE, so the relaunch must not block the HTTP response until it finishes.
   if (op === "test" && params.affected === true) {
     runAffectedTests(params.warm === true, params.mavenProfiles);
+  } else if (op === "build") {
+    build(null, params.warm === true, params.mavenProfiles, params.clean === true);
+  } else if (op === "package") {
+    packageApp(null, params.warm === true, params.mavenProfiles, params.clean === true, params.install === true);
   } else {
-    const startFn = op === "build" ? build : op === "test" ? test : packageApp;
-    startFn(null, params.warm === true, params.mavenProfiles);
+    test(null, params.warm === true, params.mavenProfiles);
   }
   return { ok: true, restarted: true, op };
 }
@@ -5376,7 +5407,7 @@ async function handleRequest(req, res) {
 
   if (req.method === "POST" && url.pathname === "/api/build") {
     const body = await readBody(req);
-    build(null, body.warm === true, body.mavenProfiles); // fire-and-forget; progress streams over SSE
+    build(null, body.warm === true, body.mavenProfiles, body.clean === true); // fire-and-forget; progress streams over SSE
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -5401,7 +5432,7 @@ async function handleRequest(req, res) {
   }
   if (req.method === "POST" && url.pathname === "/api/package") {
     const body = await readBody(req);
-    packageApp(null, body.warm === true, body.mavenProfiles); // fire-and-forget; streams over SSE
+    packageApp(null, body.warm === true, body.mavenProfiles, body.clean === true, body.install === true); // fire-and-forget; streams over SSE
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -5666,9 +5697,20 @@ function makeCanvas() {
               description:
                 "Keep the JVM warm between runs (Maven Daemon mvnd when available, or the Gradle daemon) for faster startup.",
             },
+            clean: {
+              type: "boolean",
+              description:
+                "Run a clean before building, so the build runs `clean install` instead of `install` (Gradle `clean build`). Ignored when `args` is given.",
+            },
           },
         },
-        handler: async (ctx) => build(splitArgs(ctx.input?.args), ctx.input?.warm === true, ctx.input?.mavenProfiles),
+        handler: async (ctx) =>
+          build(
+            splitArgs(ctx.input?.args),
+            ctx.input?.warm === true,
+            ctx.input?.mavenProfiles,
+            ctx.input?.clean === true,
+          ),
       },
       {
         name: "run_tests",
@@ -5734,10 +5776,26 @@ function makeCanvas() {
               description:
                 "Keep the JVM warm between runs (Maven Daemon mvnd when available, or the Gradle daemon) for faster startup.",
             },
+            clean: {
+              type: "boolean",
+              description:
+                "Run a clean before packaging (`mvn clean package`; Gradle `clean assemble`). Ignored when `args` is given.",
+            },
+            install: {
+              type: "boolean",
+              description:
+                "Install the artifact to the local repository (`mvn install`; Gradle `publishToMavenLocal`) instead of just packaging. Ignored when `args` is given.",
+            },
           },
         },
         handler: async (ctx) =>
-          packageApp(splitArgs(ctx.input?.args), ctx.input?.warm === true, ctx.input?.mavenProfiles),
+          packageApp(
+            splitArgs(ctx.input?.args),
+            ctx.input?.warm === true,
+            ctx.input?.mavenProfiles,
+            ctx.input?.clean === true,
+            ctx.input?.install === true,
+          ),
       },
       {
         name: "start_app",
