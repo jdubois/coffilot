@@ -473,18 +473,24 @@ const ASIDE_REASON = {
 // capability (see updateAsideAvailability callers); the BootUI (scans) tab is
 // available only while a BootUI app is actually up, exactly like the other two.
 function updateAsideAvailability(avail) {
+  let anyUnavailable = false;
   document.querySelectorAll(".atab").forEach((btn) => {
     const name = btn.dataset.atab;
     const ok = ASIDE_ALWAYS.has(name) || !!(avail && avail[name]);
+    if (!ok) anyUnavailable = true;
     btn.classList.toggle("unavailable", !ok);
     btn.setAttribute("aria-disabled", ok ? "false" : "true");
     // Available group sorts before the unavailable group; the canonical index
-    // fixes the order within each group regardless of DOM order.
+    // fixes the order within each group regardless of DOM order. The separator
+    // (.atab-sep, order 50) sits between the two ranges.
     const rank = ASIDE_ORDER.indexOf(name);
     btn.style.order = String((ok ? 0 : 100) + (rank === -1 ? ASIDE_ORDER.length : rank));
     if (!btn.dataset.titleAvail) btn.dataset.titleAvail = btn.getAttribute("title") || "";
     btn.title = ok ? btn.dataset.titleAvail : ASIDE_REASON[name] || btn.dataset.titleAvail;
   });
+  // The divider only makes sense when there's actually a disabled group below it.
+  const sep = document.querySelector(".atab-sep");
+  if (sep) sep.hidden = !anyUnavailable;
 }
 // Nothing is reachable until the first metrics snapshot lands, so start with only
 // Settings enabled (renderMetrics refines this on every push).

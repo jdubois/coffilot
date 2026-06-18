@@ -107,11 +107,10 @@ h1 {
 .update-btn:not(:disabled):hover {
   background: color-mix(in srgb, #000 14%, var(--true-color-green, #1a7f37));
   border-color: color-mix(in srgb, #000 14%, var(--true-color-green, #1a7f37));
-  transform: translateY(-1px);
   box-shadow: var(--shadow-md);
 }
 .update-btn:not(:disabled):active {
-  transform: translateY(0) scale(0.96);
+  transform: scale(0.96);
   box-shadow: var(--shadow-sm);
 }
 .update-btn.is-busy,
@@ -227,20 +226,22 @@ button.tiny {
   padding: 0.15rem 0.5rem;
   font-size: 12px;
 }
-/* Hover-lift + press depth for the primary action buttons (header groups, the
-   green Run, the red Stops, the orange Fix). Excludes busy/disabled states so a
-   button that's mid-action doesn't bounce. The :active rules are declared after
-   the :hover rules so a press always wins the tie and reads as a real click. */
+/* Hover raise + press depth for the primary action buttons (header groups, the
+   green Run, the red Stops, the orange Fix). The raise is shadow-only: an earlier
+   `translateY(-1px)` lift shifted the hit-area off the cursor near a button's
+   bottom edge, which made hover oscillate (a visible cursor/shadow flicker).
+   Excludes busy/disabled states so a button that's mid-action doesn't bounce. The
+   :active rules are declared after the :hover rules so a press always wins the tie
+   and reads as a real click. */
 button.primary:not(:disabled):hover,
 button.danger:not(.is-stopping):not(.is-restarting):not(:disabled):hover,
 button.fix:not(:disabled):hover {
-  transform: translateY(-1px);
   box-shadow: var(--shadow-md);
 }
 button.primary:not(:disabled):active,
 button.danger:not(:disabled):active,
 button.fix:not(:disabled):active {
-  transform: translateY(0) scale(0.96);
+  transform: scale(0.96);
   box-shadow: var(--shadow-sm);
 }
 input,
@@ -1674,6 +1675,21 @@ button.is-restarting .btn-spin::before {
   color: var(--text-color-default, #1f2328);
   border-bottom-color: var(--true-color-blue, #0969da);
 }
+/* Divider between the available tool panels and the greyed-out (unavailable)
+   ones that sink to the bottom of the bar. Sorted between the two groups via
+   `order` and only shown when an unavailable group actually exists. */
+.atab-sep {
+  flex: 0 0 auto;
+  order: 50;
+  align-self: stretch;
+  width: 1px;
+  height: auto;
+  margin: 0.1rem 0.15rem;
+  background: var(--border-color-muted, #d8dee4);
+}
+.atab-sep[hidden] {
+  display: none;
+}
 .aside-toggle {
   border: none;
   background: none;
@@ -1871,6 +1887,11 @@ button.is-restarting .btn-spin::before {
 }
 #workspace.aside-rail.aside-open .atab.active.unavailable {
   opacity: 1;
+}
+#workspace.aside-rail .atab-sep {
+  width: auto;
+  height: 1px;
+  margin: 0.2rem 0.3rem;
 }
 #workspace.aside-rail .aside-toggle {
   order: -1;
