@@ -2424,6 +2424,38 @@ function compileErrorCount(op) {
   return seen.size;
 }
 
+// Quarkus dev mode (quarkus:dev / quarkusDev) keeps the process alive after a
+// failed build/augmentation: instead of exiting, it logs the error and "starts a
+// hot replacement endpoint to recover from previous Quarkus startup failure",
+// then waits for you to fix the code and live-reload. So the lane stays "running"
+// and never flips to "failed", which would otherwise hide the Fix button. Decide
+// whether the *most recent* (re)start attempt failed by comparing the last failure
+// marker against the last success marker — a successful start/reload after the
+// failure means it recovered, so the badge/button clear on the next live reload.
+const QUARKUS_DEV_FAIL_RE =
+  /Failed to start quarkus|Failed to build quarkus application|io\.quarkus\.builder\.BuildException|recover from previous Quarkus startup failure|Re-compilation failed/;
+const QUARKUS_DEV_OK_RE =
+  /\bstarted in \d|Listening on:|Installed features|Profile \w+ activated|Live Coding activated/;
+export function quarkusDevConsoleFailed(lines) {
+  let lastFail = -1;
+  let lastOk = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (QUARKUS_DEV_FAIL_RE.test(l)) lastFail = i;
+    else if (QUARKUS_DEV_OK_RE.test(l)) lastOk = i;
+  }
+  return lastFail > lastOk;
+}
+
+// Live wrapper: gate on a Quarkus run/debug lane that is currently "running", then
+// scan that lane's console buffer.
+function quarkusDevFailed(op = "run") {
+  if (app.runMode !== "quarkus") return false;
+  const lane = lanes[op];
+  if (!lane || lane.phase !== "running") return false;
+  return quarkusDevConsoleFailed(lane.console.map((e) => e.line));
+}
+
 function fixInfo(op) {
   const lane = lanes[op];
   if (op === "build" && lane.phase === "failed") {
@@ -2447,15 +2479,18 @@ function fixInfo(op) {
       return { kind: "test-compile", label: "Fix build error with Copilot" };
     }
   }
-  if (op === "run" && lane.phase === "failed") {
-    if (app.runMode === "java") return { kind: "run-java", label: "Fix startup failure with Copilot" };
-    if (app.runMode === "quarkus") return { kind: "run-quarkus", label: "Fix Quarkus startup with Copilot" };
-    return { kind: "run-spring", label: "Fix Spring Boot startup with Copilot" };
-  }
-  if (op === "debug" && lane.phase === "failed") {
-    if (app.runMode === "java") return { kind: "run-java", label: "Fix startup failure with Copilot" };
-    if (app.runMode === "quarkus") return { kind: "run-quarkus", label: "Fix Quarkus startup with Copilot" };
-    return { kind: "run-spring", label: "Fix Spring Boot startup with Copilot" };
+  if (op === "run" || op === "debug") {
+    // Quarkus dev mode keeps the process alive after a build/augmentation failure
+    // (the lane stays "running"), so check for that first — otherwise the lane only
+    // flips to "failed" when the JVM actually exits (Spring Boot / plain Java).
+    if (quarkusDevFailed(op)) {
+      return { kind: "run-quarkus-build", label: "Fix Quarkus build error with Copilot" };
+    }
+    if (lane.phase === "failed") {
+      if (app.runMode === "java") return { kind: "run-java", label: "Fix startup failure with Copilot" };
+      if (app.runMode === "quarkus") return { kind: "run-quarkus", label: "Fix Quarkus startup with Copilot" };
+      return { kind: "run-spring", label: "Fix Spring Boot startup with Copilot" };
+    }
   }
   return null;
 }
@@ -2491,6 +2526,10 @@ function laneStatus(op) {
       const ce = compileErrorCount("run");
       if (ce > 0) s.compileErrors = ce;
     }
+    // Quarkus dev mode stays "running" after a build/augmentation failure, so the
+    // phase==="failed" badge above never fires — flag it separately so the UI can
+    // badge the still-running lane and show the Fix button.
+    if (quarkusDevFailed("run")) s.buildFailed = true;
   }
   if (op === "debug") {
     s.runMode = app.runMode;
@@ -2499,6 +2538,7 @@ function laneStatus(op) {
     s.paused = !!(debug.session && debug.session.paused);
     s.attached = !!(debug.session && debug.session.active);
     s.attaching = debug.attaching;
+    if (quarkusDevFailed("debug")) s.buildFailed = true;
   }
   if (op === "test") s.lastTest = lastTest;
   s.history = lane.history;
@@ -5585,6 +5625,7 @@ const FIX_OP = {
   "run-java": "run",
   "run-spring": "run",
   "run-quarkus": "run",
+  "run-quarkus-build": "run",
   profile: "run",
 };
 
@@ -5652,6 +5693,19 @@ function buildFixPrompt(kind, extra = {}) {
         where,
         "Recent output:",
         codeBlock(tail("run", 90)),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    case "run-quarkus-build":
+      // Quarkus dev mode does not exit on a build/augmentation failure — it logs the
+      // error and keeps a hot-replacement endpoint alive waiting for a fix. The
+      // error lives in the still-running lane's console, so prefer the filtered
+      // error lines and fall back to a longer tail.
+      return [
+        "The Quarkus application failed to build/augment in dev mode (quarkus:dev / quarkusDev). Quarkus did not exit — it logged the failure and is waiting for the code to be fixed so it can hot-reload. This is a build-time failure (a compilation error in the changed sources, a failed Quarkus build step / bytecode enhancement / annotation processing, a missing or misconfigured extension, an incompatible dependency, etc.), not a runtime startup problem. Find the root cause and fix the code so the build/augmentation succeeds.",
+        where,
+        "Build/augmentation errors:",
+        codeBlock(errorLines("run").length ? errorLines("run") : tail("run", 90)),
       ]
         .filter(Boolean)
         .join("\n\n");
@@ -6838,7 +6892,7 @@ function makeCanvas() {
       {
         name: "fix_issue",
         description:
-          "Send a context-rich request into this chat asking to fix the current problem. Kind: compile (build failed), package (package failed), test (failing tests), test-compile (a test run failed to compile before any tests ran), run-java/run-spring/run-quarkus (startup failure), profile (optimize the flame-graph hotspots), or mcp (advisor scan findings).",
+          "Send a context-rich request into this chat asking to fix the current problem. Kind: compile (build failed), package (package failed), test (failing tests), test-compile (a test run failed to compile before any tests ran), run-java/run-spring/run-quarkus (startup failure), run-quarkus-build (Quarkus dev mode hit a build/augmentation failure but kept running), profile (optimize the flame-graph hotspots), or mcp (advisor scan findings).",
         inputSchema: {
           type: "object",
           properties: {
@@ -6852,6 +6906,7 @@ function makeCanvas() {
                 "run-java",
                 "run-spring",
                 "run-quarkus",
+                "run-quarkus-build",
                 "profile",
                 "mcp",
               ],

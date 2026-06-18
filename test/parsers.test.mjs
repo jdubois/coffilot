@@ -23,6 +23,7 @@ const {
   clampMetricsPollMs,
   parseJfrStacks,
   pickAppPidFromJvmList,
+  quarkusDevConsoleFailed,
 } = await import("../extension.mjs");
 
 // ---------------------------------------------------------------------------
@@ -403,4 +404,47 @@ test("pickAppPidFromJvmList skips wrappers, the tool, and self", () => {
 
   // Entries with an unknown main class are skipped.
   assert.equal(pickAppPidFromJvmList("100 Unknown\n101 com.example.App", 1), 101);
+});
+
+// ---------------------------------------------------------------------------
+// Quarkus dev-mode build/augmentation failure detector
+// ---------------------------------------------------------------------------
+
+test("quarkusDevConsoleFailed flags a failed augmentation that kept running", () => {
+  const lines = [
+    "Listening for transport dt_socket at address: 5005",
+    "INFO  [io.quarkus] Quarkus building...",
+    "ERROR [io.qua.dev.DevModeMain] Failed to start quarkus",
+    "Caused by: io.quarkus.builder.BuildException: Build failure",
+    "Attempting to start hot replacement endpoint to recover from previous Quarkus startup failure",
+  ];
+  assert.equal(quarkusDevConsoleFailed(lines), true);
+});
+
+test("quarkusDevConsoleFailed clears once a later start/reload succeeds", () => {
+  const lines = [
+    "ERROR [io.qua.dev.DevModeMain] Failed to start quarkus",
+    "recover from previous Quarkus startup failure",
+    "INFO  [io.quarkus] Quarkus 1.3.2.Final started in 1.234s. Listening on: http://0.0.0.0:8080",
+    "INFO  [io.quarkus] Installed features: [cdi, hibernate-orm]",
+  ];
+  assert.equal(quarkusDevConsoleFailed(lines), false);
+});
+
+test("quarkusDevConsoleFailed is false for a clean dev start", () => {
+  const lines = [
+    "INFO  [io.quarkus] Quarkus started in 0.9s. Listening on: http://0.0.0.0:8080",
+    "INFO  [io.quarkus] Profile dev activated. Live Coding activated.",
+  ];
+  assert.equal(quarkusDevConsoleFailed(lines), false);
+});
+
+test("quarkusDevConsoleFailed re-flags a failed live reload after a good start", () => {
+  const lines = [
+    "INFO  [io.quarkus] Quarkus started in 0.9s. Listening on: http://0.0.0.0:8080",
+    "INFO  [io.quarkus] Profile dev activated. Live Coding activated.",
+    "ERROR Re-compilation failed",
+    "Failed to start quarkus",
+  ];
+  assert.equal(quarkusDevConsoleFailed(lines), true);
 });

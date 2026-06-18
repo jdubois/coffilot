@@ -86,9 +86,10 @@ wins; when neither is found the console says so and stays disabled until one is 
   default) kicks off a recording on its own each time the app becomes reachable.
   Degrades gracefully with an install hint only when neither async-profiler nor a
   JDK `jcmd` is available.
-- **Fix with Copilot** &mdash; on a compile error, failing tests, or a startup
-  crash, a button pushes a context-rich request back into the chat so the agent
-  can diagnose and fix it.
+- **Fix with Copilot** &mdash; on a compile error, failing tests, a startup
+  crash, or a Quarkus dev-mode build/augmentation failure (where the process stays
+  up waiting for a fix), a button pushes a context-rich request back into the chat
+  so the agent can diagnose and fix it.
 - **Responsive layout** &mdash; on a wide canvas the **Live JVM / Loggers / Settings**
   panel is docked on the right; as the canvas narrows it collapses to an icon rail on
   the right edge, and tapping an icon slides that pane out as an overlay over the main

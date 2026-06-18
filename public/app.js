@@ -693,9 +693,16 @@ function renderStatus(s) {
   // Run tab badge: a red warning when a Run fails (the app never started — a compile
   // error or a startup crash, since a clean stop leaves phase "stopped"). Shows the
   // compile-error count when we could parse one, else a plain "!" like the other
-  // tabs. Hidden while the lane is active/restarting.
+  // tabs. Hidden while the lane is active/restarting — except for a Quarkus dev-mode
+  // build failure, where the process keeps running (the lane stays active) but the
+  // build is broken, so we badge it anyway.
   const runCompileErrs = run.compileErrors || 0;
-  if (run.phase === "failed" && !runLaneActive) {
+  if (run.buildFailed) {
+    tabRunBadge.hidden = false;
+    tabRunBadge.textContent = "!";
+    tabRunBadge.className = "badge bad";
+    tabRunBadge.title = "Quarkus build failed \u2014 check the console or click Fix with Copilot.";
+  } else if (run.phase === "failed" && !runLaneActive) {
     tabRunBadge.hidden = false;
     tabRunBadge.textContent = runCompileErrs > 0 ? String(runCompileErrs) : "!";
     tabRunBadge.className = "badge bad";

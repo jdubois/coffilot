@@ -62,7 +62,8 @@ Shipped in the extension today:
   records on each app start. Detected and degraded gracefully when neither engine is
   available.
 - "Fix with Copilot" for compile, package, test, plain-Java, Spring Boot and Quarkus
-  startup failures, for flame-graph hotspots, and for BootUI advisor-scan findings.
+  startup failures (including Quarkus dev-mode build/augmentation failures that keep
+  the process running), for flame-graph hotspots, and for BootUI advisor-scan findings.
 - BootUI MCP server toggle + advisor scans when the running app exposes BootUI.
 - Per-project persisted settings (warm JVM, Spring profiles, devtools, random port,
   auto-open browser, auto-record flame graph at startup) and an always-visible
