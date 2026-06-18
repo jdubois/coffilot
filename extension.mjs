@@ -223,11 +223,35 @@ async function refineWorkspaceFromSession() {
 }
 
 // Silence the JDK native-access warnings (JEP 472) that Jansi (Maven's native
-// console) and FFM-using app dependencies emit at startup. The flag exists
-// since JDK 16, so it's safe for the Java 17+ toolchain and apps this canvas
-// runs. Applied to the build-tool JVM (via MAVEN_OPTS/GRADLE_OPTS) and, for
-// Maven, the launched app JVM.
+// console) and FFM-using app dependencies emit at startup. Applied to the
+// build-tool JVM (via MAVEN_OPTS/GRADLE_OPTS) and, for Maven, the launched app
+// JVM. NOTE: `--enable-native-access` was only introduced in JDK 16 — older
+// launchers reject it as an "Unrecognized option" and the JVM never starts. The
+// JVM these args run on is whichever JDK is active (the one the user picked in
+// the JDK selector, injected via JAVA_HOME), which may be older than the Coffilot
+// checkout's own runtime, so the flag must be gated on that JDK's version (see
+// nativeAccessArgs) or selecting e.g. JDK 11 for a legacy project breaks every
+// build and run.
 const NATIVE_ACCESS_FLAG = "--enable-native-access=ALL-UNNAMED";
+
+// The first JDK major that understands `--enable-native-access`.
+const NATIVE_ACCESS_MIN_MAJOR = 16;
+
+// Whether a JDK of the given major version accepts `--enable-native-access`.
+// Pure + exported so the gating logic is unit-testable. A null/unknown major
+// returns false so the flag is omitted (a missing warning-suppression flag is
+// harmless; an unrecognized launcher option aborts the JVM).
+export function jdkSupportsNativeAccess(major) {
+  return Number.isFinite(major) && major >= NATIVE_ACCESS_MIN_MAJOR;
+}
+
+// The native-access flag as spawn args, gated on the active JDK: `[flag]` when it
+// supports the option, else `[]`. Used everywhere the flag reaches a JVM (the
+// build tool itself and the forked app JVM), so an older selected JDK is never
+// handed an option it can't parse.
+function nativeAccessArgs() {
+  return jdkSupportsNativeAccess(activeJdk().major) ? [NATIVE_ACCESS_FLAG] : [];
+}
 
 // Spring Boot DevTools, when on the classpath, runs the app inside a restart
 // classloader and auto-restarts the JVM whenever target/classes changes. Both
@@ -251,18 +275,23 @@ const JLINE_DUMB_FLAG = "-Dorg.jline.terminal.dumb=true";
 
 // Merge the native-access flag into the build tool's JVM options (MAVEN_OPTS for
 // Maven, GRADLE_OPTS for Gradle) so the build JVM doesn't print restricted-method
-// warnings, while preserving whatever the user already set. For Maven we also add
-// the JLine dumb-terminal flag to suppress its no-TTY warning. `extra` adds/overrides
-// environment variables for a specific spawn (e.g. SPRING_PROFILES_ACTIVE).
+// warnings, while preserving whatever the user already set. The flag is gated on
+// the active JDK (nativeAccessArgs) so an older selected JDK isn't handed an
+// option it can't parse. For Maven we also add the JLine dumb-terminal flag to
+// suppress its no-TTY warning (a -D property, harmless on every JDK). `extra`
+// adds/overrides environment variables for a specific spawn (e.g.
+// SPRING_PROFILES_ACTIVE).
 function toolEnv(extra) {
   const env = { ...process.env, ...(extra || {}) };
   withJdkEnv(env);
+  const na = nativeAccessArgs();
   if (buildTool === "gradle") {
-    const existing = process.env.GRADLE_OPTS ? process.env.GRADLE_OPTS.trim() + " " : "";
-    env.GRADLE_OPTS = existing + NATIVE_ACCESS_FLAG;
+    const existing = process.env.GRADLE_OPTS ? process.env.GRADLE_OPTS.trim() : "";
+    const opts = [existing, ...na].filter(Boolean).join(" ");
+    if (opts) env.GRADLE_OPTS = opts;
   } else {
-    const existing = process.env.MAVEN_OPTS ? process.env.MAVEN_OPTS.trim() + " " : "";
-    env.MAVEN_OPTS = existing + NATIVE_ACCESS_FLAG + " " + JLINE_DUMB_FLAG;
+    const existing = process.env.MAVEN_OPTS ? process.env.MAVEN_OPTS.trim() : "";
+    env.MAVEN_OPTS = [existing, ...na, JLINE_DUMB_FLAG].filter(Boolean).join(" ");
   }
   return env;
 }
@@ -3846,15 +3875,16 @@ async function startApp({ module, profiles, mavenProfiles, mode, dbg = null } = 
     args.push("-Dmaven.test.skip=true", "spring-boot:run");
     if (profiles) args.push(`-Dspring-boot.run.profiles=${profiles}`);
     // Pass the native-access flag to the forked app JVM so its FFM-using
-    // dependencies don't print restricted-method warnings; in Debug mode the JDWP
-    // agent rides along on the same jvmArguments string. When the module carries
+    // dependencies don't print restricted-method warnings; it's gated on the
+    // active JDK (older JDKs reject the option). In Debug mode the JDWP agent
+    // rides along on the same jvmArguments string. When the module carries
     // DevTools we also disable its restart so it can't drop the debug session.
-    let jvmArgs = NATIVE_ACCESS_FLAG;
+    const jvmArgs = [...nativeAccessArgs()];
     if (dbg) {
-      jvmArgs += ` ${jdwpAgentArg(dbg)}`;
-      if (mod && mod.devtools) jvmArgs += ` ${DEVTOOLS_DISABLE_FLAG}`;
+      jvmArgs.push(jdwpAgentArg(dbg));
+      if (mod && mod.devtools) jvmArgs.push(DEVTOOLS_DISABLE_FLAG);
     }
-    args.push(`-Dspring-boot.run.jvmArguments=${jvmArgs}`);
+    if (jvmArgs.length) args.push(`-Dspring-boot.run.jvmArguments=${jvmArgs.join(" ")}`);
     // "Use a random HTTP port": run on a free port the console picks (via
     // server.port) so the app doesn't collide with whatever owns the default.
     if (settings.randomPort) {
@@ -3998,7 +4028,7 @@ async function runPureJava({ module, mavenProfiles, dbg = null }) {
   // 2. Prefer an executable jar (its manifest declares a Main-Class).
   const found = await findLaunchJar(module);
   if (found && found.mainClass) {
-    spawnTool(op, [...javaAgent, NATIVE_ACCESS_FLAG, "-jar", found.jar], "running", {
+    spawnTool(op, [...javaAgent, ...nativeAccessArgs(), "-jar", found.jar], "running", {
       bin: "java",
       label: "java",
       onLine: detectPort,
@@ -4012,7 +4042,7 @@ async function runPureJava({ module, mavenProfiles, dbg = null }) {
     const cp = await runtimeClasspath(module, mavenProfiles, op);
     if (cp) {
       pushConsole(`[coffilot] launching ${mainClass} with java -cp.`, "stdout", op);
-      spawnTool(op, [...javaAgent, NATIVE_ACCESS_FLAG, "-cp", cp, mainClass], "running", {
+      spawnTool(op, [...javaAgent, ...nativeAccessArgs(), "-cp", cp, mainClass], "running", {
         bin: "java",
         label: "java",
         onLine: detectPort,
@@ -4031,7 +4061,7 @@ async function runPureJava({ module, mavenProfiles, dbg = null }) {
       "stdout",
       op,
     );
-    spawnTool(op, [...javaAgent, NATIVE_ACCESS_FLAG, "-jar", found.jar], "running", {
+    spawnTool(op, [...javaAgent, ...nativeAccessArgs(), "-jar", found.jar], "running", {
       bin: "java",
       label: "java",
       onLine: detectPort,
@@ -4211,7 +4241,7 @@ function jdwpAgentArg(dbg) {
  * When `devtools` is set (a Spring module with DevTools on the classpath), it
  * also disables DevTools restart so it can't drop the debug session. */
 function gradleDebugInitScript(dbg, { devtools = false } = {}) {
-  const flags = [NATIVE_ACCESS_FLAG, jdwpAgentArg(dbg)];
+  const flags = [...nativeAccessArgs(), jdwpAgentArg(dbg)];
   if (devtools) flags.push(DEVTOOLS_DISABLE_FLAG);
   const body = [
     "gradle.allprojects {",
