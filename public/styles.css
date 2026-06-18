@@ -212,6 +212,17 @@ button.fix:hover {
   background: color-mix(in srgb, var(--text-color-default, #1f2328) 6%, var(--background-color-muted, #f6f8fa));
   border-color: var(--text-color-muted, #8c959f);
 }
+/* Genuine "Fix/Analyze … with Copilot" CTAs stay prominent (bright orange) so
+   they stand out from the quiet, neutral install/setup .fix buttons. */
+button.fix.fix-copilot {
+  border-color: var(--true-color-orange, #bc4c00);
+  color: var(--color-white, #fff);
+  background: var(--true-color-orange, #bc4c00);
+}
+button.fix.fix-copilot:hover {
+  background: color-mix(in srgb, #000 14%, var(--true-color-orange, #bc4c00));
+  border-color: color-mix(in srgb, #000 14%, var(--true-color-orange, #bc4c00));
+}
 button.tiny {
   padding: 0.15rem 0.5rem;
   font-size: 12px;
