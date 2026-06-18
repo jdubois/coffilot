@@ -66,11 +66,11 @@ wins; when neither is found the console says so and stays disabled until one is 
   project discovery done at launch (build tool, modules, Maven/Spring/Quarkus profiles
   and detected technologies), so changes to the build files show up without reloading
   the extension.
-- **Update to latest version** &mdash; when Coffilot is run from its own git checkout
+- **New version available** &mdash; when Coffilot is run from its own git checkout
   (you cloned it, or forked and cloned it), it checks a minute after launch whether the
-  checkout is behind its remote. If newer commits exist, an **Update to latest version**
+  checkout is behind its remote. If newer commits exist, a **New version available**
   button appears next to **Refresh**; clicking it runs `git pull --ff-only` and then
-  prompts you to reload the extension and re-open the canvas. The button stays hidden
+  prompts you to restart the extension and re-open the canvas. The button stays hidden
   when there's nothing to pull, or when Coffilot was copied into another repository or
   onto disk without its own `.git`.
 - **Live JVM metrics** &mdash; once the app is up, the panel shows heap / non-heap,

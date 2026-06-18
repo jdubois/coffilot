@@ -2429,12 +2429,12 @@ if (btnUpdate) {
       // greyed-out (disabled) button here reads as if the action vanished.
       btnUpdate.disabled = false;
       btnUpdate.hidden = false;
-      if (labelEl) labelEl.textContent = "Reload to finish update";
+      if (labelEl) labelEl.textContent = "Restart to finish update";
       btnUpdate.title = "Coffilot was updated on disk. Reload the Copilot extensions and re-open this canvas.";
     } else {
       const err = (res && (res.error || res.output)) || "unknown error";
       btnUpdate.disabled = false;
-      if (labelEl) labelEl.textContent = prevLabel || "Update to latest version";
+      if (labelEl) labelEl.textContent = prevLabel || "New version available";
       btnUpdate.title = "Update failed: " + err;
     }
   });
