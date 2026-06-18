@@ -195,3 +195,33 @@ test("renderStatus tolerates an idle status snapshot", () => {
     }),
   );
 });
+
+test("a failed build shows the Fix button and replays the repaint pop", () => {
+  const btnFix = win.document.getElementById("btn-fix");
+  // Start from an idle build so the button is hidden, then fail it: the button
+  // must become visible AND carry the one-shot pop class that forces WKWebView
+  // to repaint the header (otherwise it stays invisible until a tab switch).
+  win.renderStatus({
+    build: { phase: "idle" },
+    test: { phase: "idle" },
+    package: { phase: "idle" },
+    run: { phase: "idle" },
+    debug: { phase: "idle" },
+  });
+  assert.equal(btnFix.hidden, true, "button hidden while idle");
+  win.renderStatus({
+    build: {
+      phase: "failed",
+      command: "Maven install",
+      exitCode: 1,
+      fix: { kind: "compile", label: "Fix build error with Copilot" },
+    },
+    test: { phase: "idle" },
+    package: { phase: "idle" },
+    run: { phase: "idle" },
+    debug: { phase: "idle" },
+  });
+  assert.equal(btnFix.hidden, false, "button shown on a failed build");
+  assert.equal(btnFix.dataset.kind, "compile");
+  assert.ok(btnFix.classList.contains("cof-pop-in"), "pop class added to force a repaint");
+});

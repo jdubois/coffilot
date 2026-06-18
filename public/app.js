@@ -802,12 +802,24 @@ function renderLaneHeader(l) {
   }
   // Contextual "Fix with Copilot" button, driven by the backend's fixInfo().
   if (l.fix && l.fix.kind) {
+    const wasHidden = btnFix.hidden;
     btnFix.hidden = false;
     btnFix.disabled = false;
     btnFix.dataset.kind = l.fix.kind;
     btnFix.textContent = l.fix.label || "Fix with Copilot";
+    // When the button first appears (e.g. a build flips to "failed"), replay a
+    // one-shot pop. The animation forces the WKWebView to repaint the header so
+    // the button is actually painted, instead of staying invisible until a tab
+    // switch triggers the next layout pass. Removing + reflowing + re-adding the
+    // class restarts the animation each time it re-appears.
+    if (wasHidden) {
+      btnFix.classList.remove("cof-pop-in");
+      void btnFix.offsetWidth;
+      btnFix.classList.add("cof-pop-in");
+    }
   } else {
     btnFix.hidden = true;
+    btnFix.classList.remove("cof-pop-in");
     btnFix.dataset.kind = "";
   }
 }
