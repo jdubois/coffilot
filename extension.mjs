@@ -5298,6 +5298,23 @@ async function actuatorMetrics(base) {
 // Micrometer output, so we normalize them into the same shape as the BootUI /
 // Actuator tiers.
 
+/**
+ * Normalize SmallRye Health (/q/health) into { status, checks }, where each check
+ * is a MicroProfile Health entry ({ name, status }) — e.g. the datasource, Kafka or
+ * readiness probes a Quarkus app registers. This is the Quarkus tier's answer to
+ * Spring Boot's component health, and is available from /q/health even when the app
+ * ships no Micrometer registry (so the panel shows more than a bare "UP").
+ */
+function normalizeQuarkusHealth(health) {
+  if (!health) return null;
+  const checks = Array.isArray(health.checks)
+    ? health.checks
+        .filter((c) => c && (c.name != null || c.status != null))
+        .map((c) => ({ name: c.name != null ? String(c.name) : "check", status: c.status ?? null }))
+    : [];
+  return { status: health.status ?? null, checks };
+}
+
 /** Normalize Quarkus /q/metrics + /q/health into the same shape as the other tiers. */
 export function quarkusMetrics(metricsText, health) {
   const s = metricsText ? parsePrometheus(metricsText) : null;
@@ -5307,12 +5324,17 @@ export function quarkusMetrics(metricsText, health) {
     overview: {
       applicationName: null,
       springBootVersion: null,
-      javaVersion: s ? promFirstLabel(s, "jvm_info", "version") : null,
+      // Micrometer's legacy Prometheus client exposed the JVM gauge as jvm_info,
+      // while the current client (Quarkus 3.x) renames it to jvm_info_total — read
+      // the version label from whichever one this app emits.
+      javaVersion: s
+        ? (promFirstLabel(s, "jvm_info", "version") ?? promFirstLabel(s, "jvm_info_total", "version"))
+        : null,
       activeProfiles: [],
       startupTimeMillis: null,
     },
     memory: null,
-    health: health ? { status: health.status } : null,
+    health: normalizeQuarkusHealth(health),
     threads: null,
   };
   if (s) {

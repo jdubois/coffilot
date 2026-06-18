@@ -237,6 +237,37 @@ test("quarkusMetrics tolerates a missing scrape", () => {
   assert.equal(out.memory, null);
 });
 
+test("quarkusMetrics reads the Java version from the jvm_info_total gauge", () => {
+  // Quarkus 3.x (Micrometer + Prometheus 1.x client) renames the jvm_info gauge
+  // to jvm_info_total; the version must still surface on the Quarkus tier.
+  const scrape = 'jvm_info_total{runtime="OpenJDK Runtime Environment",vendor="Homebrew",version="26.0.1"} 1.0\n';
+  const out = quarkusMetrics(scrape, { status: "UP" });
+  assert.equal(out.overview.javaVersion, "26.0.1");
+});
+
+test("quarkusMetrics surfaces the SmallRye health checks breakdown", () => {
+  // A Quarkus app with only smallrye-health (no Micrometer) still reports the
+  // per-component checks, so the panel shows more than a bare overall status.
+  const health = {
+    status: "DOWN",
+    checks: [
+      { name: "Database connections health check", status: "UP", data: {} },
+      { name: "Reactive Messaging - liveness check", status: "DOWN" },
+    ],
+  };
+  const out = quarkusMetrics(null, health);
+  assert.equal(out.health.status, "DOWN");
+  assert.deepEqual(out.health.checks, [
+    { name: "Database connections health check", status: "UP" },
+    { name: "Reactive Messaging - liveness check", status: "DOWN" },
+  ]);
+});
+
+test("quarkusMetrics defaults the health checks to an empty list", () => {
+  const out = quarkusMetrics(null, { status: "UP" });
+  assert.deepEqual(out.health, { status: "UP", checks: [] });
+});
+
 // ---------------------------------------------------------------------------
 // Secret masking
 // ---------------------------------------------------------------------------

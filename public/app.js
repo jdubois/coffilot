@@ -482,7 +482,8 @@ function updateAsideAvailability(avail) {
     btn.setAttribute("aria-disabled", ok ? "false" : "true");
     // Available group sorts before the unavailable group; the canonical index
     // fixes the order within each group regardless of DOM order. The separator
-    // (.atab-sep, order 50) sits between the two ranges.
+    // (.atab-sep, order 50) sits between the two ranges. Settings is first in
+    // ASIDE_ORDER, so it stays pinned to the top of the bar.
     const rank = ASIDE_ORDER.indexOf(name);
     btn.style.order = String((ok ? 0 : 100) + (rank === -1 ? ASIDE_ORDER.length : rank));
     if (!btn.dataset.titleAvail) btn.dataset.titleAvail = btn.getAttribute("title") || "";
@@ -1157,6 +1158,15 @@ function renderMetrics(m) {
   if (o.activeProfiles && o.activeProfiles.length) html += row("Profiles", esc(o.activeProfiles.join(", ")));
   if (o.startupTimeMillis != null) html += row("Uptime", (o.startupTimeMillis / 1000).toFixed(2) + " s");
   if (m.health) html += row("Health", esc(m.health.status) || "\u2014");
+  if (m.health && Array.isArray(m.health.checks) && m.health.checks.length) {
+    for (const c of m.health.checks) {
+      const statusCls = c.status === "UP" ? "ok" : c.status === "DOWN" ? "down" : "unknown";
+      html += row(
+        `<span class="hc-name">${esc(c.name || "check")}</span>`,
+        `<span class="hc-status ${statusCls}">${esc(c.status) || "\u2014"}</span>`,
+      );
+    }
+  }
   if (m.threads) html += row("Threads", `${m.threads.totalThreads} (${m.threads.daemonThreads} daemon)`);
   if (heap.usedBytes != null || heap.maxBytes != null) {
     html += `<h2 style="margin-top:0.75rem">Heap</h2>`;
@@ -1181,8 +1191,9 @@ function renderMetrics(m) {
     renderMcp(m.mcp);
     renderScans(true);
   } else if (tier === "quarkus") {
-    metricsHint.innerHTML =
-      "Metrics read from Quarkus Micrometer (<code>/q/metrics</code>) and SmallRye Health (<code>/q/health</code>).";
+    metricsHint.innerHTML = m.memory
+      ? "Metrics read from Quarkus Micrometer (<code>/q/metrics</code>) and SmallRye Health (<code>/q/health</code>)."
+      : "Health read from Quarkus SmallRye Health (<code>/q/health</code>). Add <code>quarkus-micrometer-registry-prometheus</code> to surface heap, threads and uptime here.";
     renderMcp(null);
     renderScans(false);
   } else {
