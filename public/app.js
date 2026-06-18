@@ -92,6 +92,7 @@ const devtoolsToggle = document.getElementById("devtools-toggle");
 const devtoolsInput = document.getElementById("in-devtools");
 const setRandomport = document.getElementById("set-randomport");
 const randomportInput = document.getElementById("in-randomport");
+const setMcp = document.getElementById("mcp");
 const maskSecretsInput = document.getElementById("in-masksecrets");
 const metricsPollInput = document.getElementById("in-metricspoll");
 const openBrowserInput = document.getElementById("in-openbrowser");
@@ -1097,9 +1098,11 @@ function showMcpRegister(show) {
 }
 
 // The MCP server lives inside the running app, so the toggle is only
-// actionable while a BootUI app (dev profile) exposes its endpoint. The
-// row stays visible in Settings either way; when unavailable we grey out
-// the switch and explain why instead of hiding it.
+// actionable while a BootUI app (dev profile) exposes its endpoint. For
+// Spring Boot modules the row stays visible in Settings even when the
+// endpoint is unavailable (greyed out with an explanation rather than
+// hidden); the whole panel is hidden for non-Spring modules in
+// updateDevSetup(), since BootUI is a Spring-only tier.
 function setMcpUnavailable() {
   mcpScansLoaded = false;
   mcpToggle.checked = false;
@@ -1611,6 +1614,9 @@ function updateDevSetup() {
   setSpring.hidden = !framework;
   setDevtools.hidden = !spring;
   setRandomport.hidden = !framework;
+  // BootUI (and its MCP advisor scans) is a Spring-only tier, so only surface
+  // the MCP server panel for Spring Boot modules.
+  setMcp.hidden = !spring;
 
   // Relabel the run-profile combo and swap its suggestions for the framework.
   if (lblProfiles) lblProfiles.textContent = quarkus ? "Quarkus profile" : "Spring Boot profiles";
