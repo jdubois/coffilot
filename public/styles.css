@@ -212,6 +212,17 @@ button.fix:hover {
   background: color-mix(in srgb, var(--text-color-default, #1f2328) 6%, var(--background-color-muted, #f6f8fa));
   border-color: var(--text-color-muted, #8c959f);
 }
+/* Genuine "Fix/Analyze … with Copilot" CTAs stay prominent (bright orange) so
+   they stand out from the quiet, neutral install/setup .fix buttons. */
+button.fix.fix-copilot {
+  border-color: var(--true-color-orange, #bc4c00);
+  color: var(--color-white, #fff);
+  background: var(--true-color-orange, #bc4c00);
+}
+button.fix.fix-copilot:hover {
+  background: color-mix(in srgb, #000 14%, var(--true-color-orange, #bc4c00));
+  border-color: color-mix(in srgb, #000 14%, var(--true-color-orange, #bc4c00));
+}
 button.tiny {
   padding: 0.15rem 0.5rem;
   font-size: 12px;
@@ -1005,6 +1016,12 @@ aside h2 {
 /* Tabs */
 .tabs {
   display: flex;
+  /* Bottom-anchor the tabs so the active tab's `margin-bottom: -1px` overhang
+     (which hides the strip's bottom border to connect the tab to its pane) just
+     overhangs instead of restretching the whole flex line. Under the default
+     `stretch`, toggling that negative margin recomputed the line height and
+     nudged every tab a subpixel — the "dancing bar" on each tab switch. */
+  align-items: flex-end;
   gap: 0.25rem;
   padding: 0.4rem 1rem 0;
   border-bottom: 1px solid var(--border-color-default, #d0d7de);
@@ -1024,7 +1041,8 @@ aside h2 {
   transition:
     color var(--dur-fast) var(--ease-out),
     background-color var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out);
+    border-color var(--dur-fast) var(--ease-out),
+    margin-bottom var(--dur-fast) var(--ease-out);
 }
 .tab svg {
   width: 15px;
