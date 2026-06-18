@@ -4235,57 +4235,85 @@ function detectPort(line) {
 
 let portDiscoveryTimer = null;
 
+/**
+ * Run a command and capture its stdout without blocking the event loop. Resolves
+ * to the stdout string (even on a non-zero exit, so callers can parse partial
+ * output) or null if the binary is missing / times out. Used by the periodic
+ * port-discovery probe, where a synchronous spawn would stall the loopback server.
+ */
+function execCapture(cmd, args, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      resolve(null);
+      return;
+    }
+    let out = "";
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(val);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+      finish(null);
+    }, timeoutMs);
+    child.stdout.on("data", (c) => {
+      out += c.toString();
+    });
+    child.on("error", () => finish(null));
+    child.on("close", () => finish(out));
+  });
+}
+
 /** The run-lane child PID plus all of its descendants (BFS over ps' ppid map). */
-function descendantPids(rootPid) {
+async function descendantPids(rootPid) {
   const pids = new Set();
   if (!rootPid || isWindows) return pids;
   pids.add(rootPid);
-  try {
-    const res = spawnSync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8", timeout: 4000 });
-    if (res.status !== 0 || !res.stdout) return pids;
-    const childrenOf = new Map(); // ppid -> [pid]
-    for (const raw of res.stdout.split("\n")) {
-      const m = raw.trim().match(/^(\d+)\s+(\d+)$/);
-      if (!m) continue;
-      const pid = Number(m[1]);
-      const ppid = Number(m[2]);
-      if (!childrenOf.has(ppid)) childrenOf.set(ppid, []);
-      childrenOf.get(ppid).push(pid);
-    }
-    const queue = [rootPid];
-    while (queue.length) {
-      for (const kid of childrenOf.get(queue.shift()) || []) {
-        if (!pids.has(kid)) {
-          pids.add(kid);
-          queue.push(kid);
-        }
+  const out = await execCapture("ps", ["-eo", "pid=,ppid="]);
+  if (!out) return pids;
+  const childrenOf = new Map(); // ppid -> [pid]
+  for (const raw of out.split("\n")) {
+    const m = raw.trim().match(/^(\d+)\s+(\d+)$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const ppid = Number(m[2]);
+    if (!childrenOf.has(ppid)) childrenOf.set(ppid, []);
+    childrenOf.get(ppid).push(pid);
+  }
+  const queue = [rootPid];
+  while (queue.length) {
+    for (const kid of childrenOf.get(queue.shift()) || []) {
+      if (!pids.has(kid)) {
+        pids.add(kid);
+        queue.push(kid);
       }
     }
-  } catch {
-    /* ps missing or failed — fall back to just the root PID */
   }
   return pids;
 }
 
 /** TCP ports the given PIDs are LISTENing on (via lsof), de-duplicated. */
-function listeningPortsForPids(pids) {
+async function listeningPortsForPids(pids) {
   if (isWindows || !pids || pids.size === 0) return [];
   const ports = new Set();
-  try {
-    const res = spawnSync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p", [...pids].join(","), "-Fn"], {
-      encoding: "utf8",
-      timeout: 4000,
-    });
-    if (!res.stdout) return [];
-    // `-Fn` emits one field per line; name fields start with "n", e.g.
-    // "n127.0.0.1:8080", "n*:8080" or "n[::1]:8080".
-    for (const line of res.stdout.split("\n")) {
-      if (line[0] !== "n") continue;
-      const m = line.match(/:(\d+)$/);
-      if (m) ports.add(Number(m[1]));
-    }
-  } catch {
-    /* lsof missing or failed */
+  const out = await execCapture("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p", [...pids].join(","), "-Fn"]);
+  if (!out) return [];
+  // `-Fn` emits one field per line; name fields start with "n", e.g.
+  // "n127.0.0.1:8080", "n*:8080" or "n[::1]:8080".
+  for (const line of out.split("\n")) {
+    if (line[0] !== "n") continue;
+    const m = line.match(/:(\d+)$/);
+    if (m) ports.add(Number(m[1]));
   }
   return [...ports];
 }
@@ -4298,23 +4326,30 @@ function listeningPortsForPids(pids) {
 function startPortDiscovery(op) {
   stopPortDiscovery();
   if (isWindows) return;
+  let probing = false;
   const probe = async () => {
     if (app.appPort) {
       stopPortDiscovery();
       return;
     }
-    const child = lanes[op] && lanes[op].child;
-    if (!child || !child.pid) return; // lane not spawned yet — retry next tick
-    const candidates = listeningPortsForPids(descendantPids(child.pid)).filter(
-      (p) => p !== LIVE_RELOAD_PORT && p !== debug.jdwpPort,
-    );
-    for (const port of candidates) {
-      // Confirm the port actually answers HTTP before adopting it, so we don't
-      // latch onto a non-HTTP listener (e.g. a stray management socket).
-      if (await appAnswersHttp(`http://127.0.0.1:${port}`)) {
-        adoptAppPort(port, op, "process listener");
-        return;
+    if (probing) return; // a slow ps/lsof/HTTP round-trip is still in flight
+    probing = true;
+    try {
+      const child = lanes[op] && lanes[op].child;
+      if (!child || !child.pid) return; // lane not spawned yet — retry next tick
+      const candidates = (await listeningPortsForPids(await descendantPids(child.pid))).filter(
+        (p) => p !== LIVE_RELOAD_PORT && p !== debug.jdwpPort,
+      );
+      for (const port of candidates) {
+        // Confirm the port actually answers HTTP before adopting it, so we don't
+        // latch onto a non-HTTP listener (e.g. a stray management socket).
+        if (await appAnswersHttp(`http://127.0.0.1:${port}`)) {
+          adoptAppPort(port, op, "process listener");
+          return;
+        }
       }
+    } finally {
+      probing = false;
     }
   };
   portDiscoveryTimer = setInterval(() => Promise.resolve(probe()).catch(() => {}), 2500);
