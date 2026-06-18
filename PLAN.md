@@ -52,8 +52,9 @@ Shipped in the extension today:
   with a source badge.
 - Live log viewer on the Run console (minimum-severity filter + text search, with
   severity-colored lines and inherited levels for stack traces) and runtime log-level
-  control via Spring Boot Actuator `/loggers` (a Loggers side tab + the `set_log_level`
-  action), so loggers can be changed live without a restart.
+  control via Spring Boot Actuator `/loggers` or the Quarkus `quarkus-logging-manager`
+  extension (a Loggers side tab + the `set_log_level` action), so loggers can be
+  changed live without a restart.
 - On-demand CPU / allocation / wall-clock / lock-contention flame graph of the
   running app via async-profiler (`asprof`) when present, or the JDK-bundled JDK
   Flight Recorder (`jcmd JFR.*`) as a cross-platform fallback (so flame graphs work

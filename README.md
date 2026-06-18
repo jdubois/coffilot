@@ -79,7 +79,8 @@ wins; when neither is found the console says so and stays disabled until one is 
 - **Live logs &amp; log levels** &mdash; the Run console doubles as a log viewer with a
   minimum-severity filter and text search (stack-trace lines inherit their parent
   level, and lines are colored by severity). A **Loggers** side tab lists the running
-  app's loggers from Spring Boot Actuator <code>/loggers</code> and lets you change any
+  app's loggers from Spring Boot Actuator <code>/loggers</code> or the Quarkus
+  <code>quarkus-logging-manager</code> extension and lets you change any
   level live &mdash; no restart &mdash; so you can flip a package to <code>DEBUG</code>,
   reproduce, and dial it back.
 - **Flame graph (async-profiler or JFR)** &mdash; when [async-profiler](https://github.com/async-profiler/async-profiler)
@@ -145,7 +146,7 @@ The console adapts to whatever the project provides, detected from the build fil
 | **Spring Boot**               | Spring Boot Maven plugin / Gradle plugin          | Run via `spring-boot:run` (Maven) or `bootRun` (Gradle) + editable Spring profiles. (No Spring Boot ⇒ the generic runner uses the Gradle `application` plugin, an executable `java -jar`, or the configured main class via `java -cp`.)                                   |
 | **Quarkus**                   | Quarkus Maven plugin / `io.quarkus` Gradle plugin | Run via `quarkus:dev` (Maven) or `quarkusDev` (Gradle) — dev mode with built-in live reload — + editable Quarkus profile                                                                                                                                                  |
 | **Actuator** (runtime)        | `/actuator/*` or `/management/*` answers          | Live metrics normalized from Actuator — JSON `/metrics` endpoint or the Prometheus scrape (heap, threads, health, uptime) — plus runtime log-level control when `/loggers` is exposed                                                                                     |
-| **Quarkus metrics** (runtime) | `/q/metrics` / `/q/health` answer                 | Live metrics normalized from Quarkus Micrometer (Prometheus) + SmallRye Health                                                                                                                                                                                            |
+| **Quarkus metrics** (runtime) | `/q/metrics` / `/q/health` answer                 | Live metrics normalized from Quarkus Micrometer (Prometheus) + SmallRye Health — plus runtime log-level control when the `quarkus-logging-manager` extension (`/q/logging-manager`) is present                                                                             |
 | **BootUI** (runtime)          | `/bootui/api/*` answers                           | Rich BootUI metrics **and** the REST advisor-scan panel (BootUI tab)                                                                                                                                                                                                      |
 | **Quarkus Agent MCP**         | Quarkus module + JBang or Java 21+ on `PATH`      | A dedicated **Quarkus** tab with a **Register with Copilot** button + one-click capability prompts wiring the external [Quarkus Agent MCP](https://github.com/quarkusio/quarkus-agent-mcp) server (skills, docs search, Dev UI proxy, structured exceptions) into the CLI |
 
@@ -254,7 +255,8 @@ Coffilot is a Node process (the extension) that:
   for Spring/app Gradle, or Quarkus's built-in `-Ddebug` for Quarkus) and attaches a
   self-contained JDWP client (`jdwp.mjs`, loopback only) that the UI and agent
   actions drive;
-- proxies Spring Boot Actuator `/loggers` so the canvas can read and change logger
+- proxies Spring Boot Actuator `/loggers` and the Quarkus logging-manager
+  extension (`/q/logging-manager`) so the canvas can read and change logger
   levels on the running app without a restart;
 - runs BootUI's advisor scans straight from its REST API (`/bootui/api/panels` to
   discover them, `POST /bootui/api/{id}/scan` to run one), surfaced in the **BootUI**

@@ -472,7 +472,8 @@ const ASIDE_ORDER = ["settings", "metrics", "loggers", "scans", "quarkus"];
 const ASIDE_REASON = {
   metrics:
     "Live JVM metrics need a running app that exposes metrics — Spring Boot Actuator/BootUI or Quarkus Micrometer. Click to learn more.",
-  loggers: "Live log levels need a running Spring Boot app with the Actuator /loggers endpoint. Click to learn more.",
+  loggers:
+    "Live log levels need a running Spring Boot app (Actuator /loggers) or a Quarkus app with the logging-manager extension. Click to learn more.",
   scans: "The BootUI panel needs a running BootUI app — Run a module with the BootUI starter. Click to learn more.",
   quarkus:
     "The Quarkus panel needs a Quarkus module — open a Quarkus project to register its Agent MCP server with Copilot. Click to learn more.",
@@ -1125,7 +1126,7 @@ function renderMetrics(m) {
   const tier = nowUp ? m.metricsTier || "process" : null;
   updateAsideAvailability({
     metrics: nowUp && tier !== "process",
-    loggers: nowUp && (tier === "bootui" || tier === "actuator"),
+    loggers: nowUp && (tier === "bootui" || tier === "actuator" || tier === "quarkus"),
     scans: nowUp && tier === "bootui",
   });
   if (nowUp !== appRunning) {
@@ -1618,9 +1619,10 @@ quarkusMcpRegisterBtn.onclick = async () => {
 };
 
 // ---- Runtime log levels (Loggers aside tab) ----------------------------
-// Lists the running app's loggers from Spring Boot Actuator /loggers and lets
-// you change a level live (no restart). Self-describes by capability: degrades to
-// a hint when the app is down or exposes no /loggers endpoint.
+// Lists the running app's loggers from Spring Boot Actuator /loggers or the Quarkus
+// logging-manager extension and lets you change a level live (no restart).
+// Self-describes by capability: degrades to a hint when the app is down or exposes
+// no logger endpoint.
 const loggersListEl = document.getElementById("loggers-list");
 const loggersControls = document.getElementById("loggers-controls");
 const loggersSearch = document.getElementById("loggers-search");
@@ -1673,16 +1675,18 @@ function renderLoggers(data, force) {
     loggersSrc.hidden = true;
     loggersControls.hidden = true;
     loggersListEl.innerHTML =
-      '<p class="muted">No Spring Boot Actuator <code>/loggers</code> endpoint is exposed on the running app, so log ' +
-      "levels can\u2019t be changed here. Add <code>spring-boot-starter-actuator</code> and expose it " +
-      "(<code>management.endpoints.web.exposure.include=loggers</code>).</p>";
+      '<p class="muted">No runtime logger endpoint is exposed on the running app, so log levels ' +
+      "can\u2019t be changed here. For Spring Boot, add <code>spring-boot-starter-actuator</code> and expose it " +
+      "(<code>management.endpoints.web.exposure.include=loggers</code>). For Quarkus, add the " +
+      "<code>quarkus-logging-manager</code> extension.</p>";
     loggersData = null;
     return;
   }
   loggersData = data;
   loggersSrc.hidden = false;
-  loggersSrc.className = "src actuator";
-  loggersSrc.textContent = "Actuator";
+  const quarkus = data.source === "quarkus";
+  loggersSrc.className = quarkus ? "src quarkus" : "src actuator";
+  loggersSrc.textContent = quarkus ? "Quarkus" : "Actuator";
   loggersControls.hidden = false;
   // Don't rebuild the list out from under the user while they're using it
   // (an open select or focused search box) unless explicitly forced.

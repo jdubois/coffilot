@@ -1942,7 +1942,8 @@ const app = {
   appUp: false,
   appReachedUp: false, // app served a metrics endpoint at least once this run
   actuatorPrefix: null, // discovered Actuator base path this run (/actuator or /management)
-  loggersPrefix: null, // discovered Actuator base path that serves /loggers this run
+  loggersSource: null, // which runtime-logger backend answered: "actuator" | "quarkus"
+  loggersPrefix: null, // base path that serves the loggers endpoint this run
   module: null, // module selected for the current run (for live reload)
   mavenProfiles: null, // Maven profiles used for the current run (for live reload)
 };
@@ -3876,6 +3877,7 @@ async function startApp({ module, profiles, mavenProfiles, mode, dbg = null } = 
   app.appUp = false;
   app.appReachedUp = false;
   app.actuatorPrefix = null;
+  app.loggersSource = null;
   app.loggersPrefix = null;
   csrfToken = null;
   lastMetrics = { appUp: false };
@@ -6556,15 +6558,39 @@ async function runScanRest(key) {
 }
 
 // ---------------------------------------------------------------------------
-// Runtime log levels — Spring Boot Actuator /loggers (read + live change)
+// Runtime log levels — Spring Boot Actuator /loggers + Quarkus logging-manager
 // ---------------------------------------------------------------------------
-// The /loggers endpoint lists every logger with its configured/effective level
-// and accepts a POST to change a level without restarting the app — the inner-loop
-// equivalent of an IDE's runtime log-level control. It lives under the same base
-// path as the other Actuator endpoints (/actuator or /management), so we reuse the
-// prefix discovered by the metrics tier when we have it.
+// A runtime-logger endpoint lists every logger with its configured/effective level
+// and accepts a write to change a level without restarting the app — the inner-loop
+// equivalent of an IDE's runtime log-level control. Two backends are supported and
+// normalized to the same shape: Spring Boot Actuator's /loggers (under /actuator or
+// /management, reusing the prefix the metrics tier discovered) and the Quarkiverse
+// quarkus-logging-manager extension's /q/logging-manager (a JSON array, a separate
+// /levels endpoint, and a form-encoded write). app.loggersSource records which one
+// answered so the write path can target it.
 
 const DEFAULT_LOG_LEVELS = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
+
+// quarkus-logging-manager mounts under the Quarkus non-application root (/q), the
+// same place the metrics tier finds /q/health and /q/metrics. Its /levels endpoint
+// reports the broader JBoss LogManager set, so accept those names on the write path.
+const QUARKUS_LOGGING_PATH = "/q/logging-manager";
+const QUARKUS_LOG_LEVELS = [
+  "OFF",
+  "SEVERE",
+  "ERROR",
+  "FATAL",
+  "WARNING",
+  "WARN",
+  "INFO",
+  "DEBUG",
+  "TRACE",
+  "CONFIG",
+  "FINE",
+  "FINER",
+  "FINEST",
+  "ALL",
+];
 
 /**
  * Generic CSRF-aware POST against the running app: seed an XSRF-TOKEN from a prior
@@ -6604,20 +6630,36 @@ async function appPostCsrf(base, seedPath, postPath, body) {
 }
 
 /**
- * Read the running app's loggers from Actuator. Returns the available levels and a
- * normalized logger list (ROOT first, then alphabetical), or { available:false } when
- * the app is down or exposes no /loggers endpoint.
+ * Read the running app's loggers from whichever backend matches how it was launched —
+ * the Quarkus logging-manager extension for a Quarkus run, else Spring Boot Actuator
+ * /loggers. Returns the available levels and a normalized logger list (ROOT first, then
+ * alphabetical) plus a `source` tag, or { available:false } when the app is down or the
+ * backend isn't exposed.
  */
 async function loggersStatus() {
   const base = appBase();
   if (!base) return { available: false };
-  // Prefer the prefix the metrics tier already confirmed, then the usual candidates.
+  // The framework is already known from how the app was launched (app.runMode), so go
+  // straight to the matching backend instead of probing both: Quarkus serves
+  // logging-manager under /q, everything else (Spring Boot or the generic runner) uses
+  // Actuator /loggers.
+  const status = app.runMode === "quarkus" ? await quarkusLoggersStatus(base) : await actuatorLoggersStatus(base);
+  return status || { available: false };
+}
+
+/**
+ * Read loggers from Spring Boot Actuator /loggers, discovering the base path (/actuator
+ * or /management, preferring the prefix the metrics tier already confirmed). Returns the
+ * normalized status, or null when no /loggers endpoint answers.
+ */
+async function actuatorLoggersStatus(base) {
   const prefixes = app.actuatorPrefix
     ? [app.actuatorPrefix, ...ACTUATOR_PREFIXES.filter((p) => p !== app.actuatorPrefix)]
     : ACTUATOR_PREFIXES;
   for (const prefix of prefixes) {
     const json = await fetchJson(base, `${prefix}/loggers`);
     if (!json || !json.loggers) continue;
+    app.loggersSource = "actuator";
     app.loggersPrefix = prefix;
     const levels = Array.isArray(json.levels) && json.levels.length ? json.levels : DEFAULT_LOG_LEVELS;
     const loggers = Object.entries(json.loggers).map(([name, v]) => ({
@@ -6626,9 +6668,60 @@ async function loggersStatus() {
       effectiveLevel: (v && v.effectiveLevel) || null,
     }));
     loggers.sort((a, b) => (a.name === "ROOT" ? -1 : b.name === "ROOT" ? 1 : a.name.localeCompare(b.name)));
-    return { available: true, prefix, levels, loggers };
+    return { available: true, source: "actuator", prefix, levels, loggers };
   }
-  return { available: false };
+  return null;
+}
+
+/**
+ * Read loggers from the Quarkus logging-manager extension. GET /q/logging-manager
+ * returns a JSON array of { name, configuredLevel, effectiveLevel } and /levels lists
+ * the accepted levels. Returns the normalized status, or null when the extension isn't present.
+ */
+async function quarkusLoggersStatus(base) {
+  const list = await fetchJson(base, QUARKUS_LOGGING_PATH);
+  if (!Array.isArray(list)) return null;
+  const levelsRaw = await fetchJson(base, `${QUARKUS_LOGGING_PATH}/levels`);
+  const status = normalizeQuarkusLoggers(list, levelsRaw);
+  if (!status) return null;
+  app.loggersSource = "quarkus";
+  app.loggersPrefix = QUARKUS_LOGGING_PATH;
+  return { ...status, prefix: QUARKUS_LOGGING_PATH };
+}
+
+/**
+ * Normalize a Quarkus logging-manager listing into the shared loggers shape (ROOT first,
+ * then alphabetical). The root logger's JBoss name is the empty string, normalized to ROOT
+ * here. Falls back to the full JBoss level set when /levels is unavailable. Returns null
+ * when the input isn't a logger array (i.e. the extension isn't present).
+ */
+export function normalizeQuarkusLoggers(list, levelsRaw) {
+  if (!Array.isArray(list)) return null;
+  const levels = Array.isArray(levelsRaw) && levelsRaw.length ? levelsRaw : QUARKUS_LOG_LEVELS;
+  const loggers = list
+    .filter((l) => l && typeof l.name === "string")
+    .map((l) => ({
+      name: l.name === "" ? "ROOT" : l.name,
+      configuredLevel: l.configuredLevel || null,
+      effectiveLevel: l.effectiveLevel || null,
+    }));
+  loggers.sort((a, b) => (a.name === "ROOT" ? -1 : b.name === "ROOT" ? 1 : a.name.localeCompare(b.name)));
+  return { available: true, source: "quarkus", levels, loggers };
+}
+
+/**
+ * Change one logger's level on the Quarkus logging-manager extension: a form-encoded
+ * POST to /q/logging-manager (ROOT maps back to JBoss's empty-string root name, an empty
+ * level resets the logger to its inherited level). Returns the raw response.
+ */
+function quarkusSetLevel(base, name, level) {
+  const loggerName = name === "ROOT" ? "" : name;
+  const body = new URLSearchParams({ loggerName, loggerLevel: level || "" });
+  return fetch(base + QUARKUS_LOGGING_PATH, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    body: body.toString(),
+  });
 }
 
 /**
@@ -6641,25 +6734,33 @@ async function setLoggerLevel(name, level) {
   if (!base) return { ok: false, error: "App is not running." };
   if (!name) return { ok: false, error: "No logger specified." };
   const lvl = level ? String(level).toUpperCase() : null;
-  if (lvl && !DEFAULT_LOG_LEVELS.includes(lvl)) return { ok: false, error: `Unknown level "${level}".` };
   // The agent's set_log_level action can run before any GET has cached the
-  // Actuator base path, so discover it now (this also rejects apps with no
-  // /loggers endpoint up front rather than blindly POSTing to /actuator).
-  if (!app.loggersPrefix) await loggersStatus();
-  if (!app.loggersPrefix) {
-    return { ok: false, error: "The app's /loggers endpoint isn't exposed (or is read-only)." };
+  // logger backend, so discover it now (this also rejects apps that expose
+  // neither backend up front rather than blindly POSTing).
+  if (!app.loggersSource) await loggersStatus();
+  if (!app.loggersSource) {
+    return {
+      ok: false,
+      error: "No runtime logger endpoint is exposed (Spring Boot Actuator /loggers or Quarkus logging-manager).",
+    };
   }
+  const quarkus = app.loggersSource === "quarkus";
+  const validLevels = quarkus ? QUARKUS_LOG_LEVELS : DEFAULT_LOG_LEVELS;
+  if (lvl && !validLevels.includes(lvl)) return { ok: false, error: `Unknown level "${level}".` };
   const prefix = app.loggersPrefix;
   try {
-    const res = await appPostCsrf(base, `${prefix}/loggers`, `${prefix}/loggers/${encodeURIComponent(name)}`, {
-      configuredLevel: lvl,
-    });
+    const res = quarkus
+      ? await quarkusSetLevel(base, name, lvl)
+      : await appPostCsrf(base, `${prefix}/loggers`, `${prefix}/loggers/${encodeURIComponent(name)}`, {
+          configuredLevel: lvl,
+        });
     await res.text().catch(() => null);
     if (!res.ok) {
+      const backend = quarkus ? "Logging Manager" : "Actuator";
       const why =
         res.status === 404
-          ? "The app's /loggers endpoint isn't exposed (or is read-only)."
-          : `Actuator returned ${res.status}.`;
+          ? "The app's logger endpoint isn't exposed (or is read-only)."
+          : `${backend} returned ${res.status}.`;
       return { ok: false, error: why, status: await loggersStatus() };
     }
     return { ok: true, name, level: lvl, status: await loggersStatus() };
@@ -7736,7 +7837,7 @@ function makeCanvas() {
       {
         name: "set_log_level",
         description:
-          "Change a logger's level at runtime on the running app via Spring Boot Actuator /loggers (no restart). Requires the app up with the loggers endpoint exposed. e.g. logger=com.example.service level=DEBUG. Omit level to reset the logger to its inherited default.",
+          "Change a logger's level at runtime on the running app (no restart) via Spring Boot Actuator /loggers or the Quarkus logging-manager extension. Requires the app up with one of those logger endpoints exposed. e.g. logger=com.example.service level=DEBUG. Omit level to reset the logger to its inherited default.",
         inputSchema: {
           type: "object",
           properties: {
