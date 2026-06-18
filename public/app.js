@@ -36,6 +36,9 @@ const tabRunBadge = document.getElementById("tab-run-badge");
 const tabPackageBadge = document.getElementById("tab-package-badge");
 const fullbuildToggle = document.getElementById("fullbuild-toggle");
 const fullbuildInput = document.getElementById("in-fullbuild");
+const buildCleanInput = document.getElementById("in-build-clean");
+const packageCleanInput = document.getElementById("in-package-clean");
+const packageInstallInput = document.getElementById("in-package-install");
 const continuousToggle = document.getElementById("continuous-toggle");
 const continuousInput = document.getElementById("in-continuous");
 const testSelectionEl = document.getElementById("test-selection");
@@ -1648,6 +1651,9 @@ function applySettingsState(s) {
   randomportInput.checked = s.randomPort === true;
   openBrowserInput.checked = s.openBrowser === true;
   fullBuildSetting = s.fullBuild === true;
+  buildCleanInput.checked = s.buildClean === true;
+  packageCleanInput.checked = s.packageClean === true;
+  packageInstallInput.checked = s.packageInstall === true;
   reflectTestToggles();
   if (autoProfileInput) autoProfileInput.checked = s.autoProfile === true;
   if (flameEvent && typeof s.autoProfileEvent === "string" && document.activeElement !== flameEvent) {
@@ -2047,7 +2053,13 @@ function laneAction(op) {
     triggerLane("test", "/api/test", { affected, warm: warm(), mavenProfiles: mvnProfiles() });
     return;
   }
-  triggerLane(op, "/api/" + op, { warm: warm(), mavenProfiles: mvnProfiles() });
+  const body = { warm: warm(), mavenProfiles: mvnProfiles() };
+  if (op === "build") body.clean = buildCleanInput.checked === true;
+  if (op === "package") {
+    body.clean = packageCleanInput.checked === true;
+    body.install = packageInstallInput.checked === true;
+  }
+  triggerLane(op, "/api/" + op, body);
 }
 
 document.getElementById("btn-build").onclick = () => laneAction("build");
@@ -2145,6 +2157,9 @@ function saveSettings() {
     randomPort: randomportInput.checked,
     openBrowser: openBrowserInput.checked,
     fullBuild: fullbuildInput.checked,
+    buildClean: buildCleanInput.checked,
+    packageClean: packageCleanInput.checked,
+    packageInstall: packageInstallInput.checked,
     autoProfile: autoProfileInput ? autoProfileInput.checked : false,
     autoProfileEvent: flameEvent ? flameEvent.value : "cpu",
     autoProfileDuration: flameDuration ? Number(flameDuration.value) : 30,
@@ -2157,6 +2172,9 @@ randomportInput.addEventListener("change", saveSettings);
 openBrowserInput.addEventListener("change", saveSettings);
 springInput.addEventListener("change", saveSettings);
 if (jdkSelect) jdkSelect.addEventListener("change", saveSettings);
+buildCleanInput.addEventListener("change", saveSettings);
+packageCleanInput.addEventListener("change", saveSettings);
+packageInstallInput.addEventListener("change", saveSettings);
 if (autoProfileInput) autoProfileInput.addEventListener("change", saveSettings);
 if (flameEvent) flameEvent.addEventListener("change", saveSettings);
 if (flameDuration) flameDuration.addEventListener("change", saveSettings);
