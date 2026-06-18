@@ -1129,6 +1129,10 @@ const QUARKUS_MCP_CAPS = [
   },
 ];
 
+function sendQuarkusMcpFix(kind) {
+  return post("/api/fix", { kind });
+}
+
 function renderQuarkusMcp() {
   const q = caps.quarkusAgentMcp || {};
   if (!caps.quarkus) {
@@ -1154,12 +1158,18 @@ function renderQuarkusMcp() {
     quarkusMcpState.title =
       "Install JBang (jbang.dev) or Java 21+ so the Quarkus Agent MCP server can be launched, then re-open this canvas.";
   }
-  quarkusMcpScansEl.innerHTML = QUARKUS_MCP_CAPS.map(
-    (c) => `<button class="tiny" data-qmcp="${esc(c.kind)}" title="${esc(c.title)}">${esc(c.label)}</button>`,
-  ).join("");
-  quarkusMcpScansEl
-    .querySelectorAll("button[data-qmcp]")
-    .forEach((b) => (b.onclick = () => post("/api/fix", { kind: b.dataset.qmcp })));
+  // Build the capability buttons via the DOM (textContent / setAttribute) so the
+  // labels and titles are never interpolated into an HTML string.
+  quarkusMcpScansEl.replaceChildren(
+    ...QUARKUS_MCP_CAPS.map((c) => {
+      const btn = document.createElement("button");
+      btn.className = "tiny";
+      btn.textContent = c.label;
+      btn.title = c.title;
+      btn.onclick = () => sendQuarkusMcpFix(c.kind);
+      return btn;
+    }),
+  );
 }
 
 quarkusMcpRegisterBtn.onclick = async () => {
