@@ -157,6 +157,10 @@ function applyWorkspace(primary) {
 // recover without a reload. Returns the new env snapshot.
 async function recheckBuildTool() {
   applyWorkspace(await getSessionPrimaryDir());
+  // Drop the memoized `java -version` probes so the re-scan picks up freshly
+  // installed (or in-place upgraded) JDKs — the header refresh / "Check again"
+  // controls re-discover the JDK list, not just the build tool.
+  javaVersionCache.clear();
   session.log(`[coffilot] re-checked build tool: ${TOOL_LABEL || "none"} at ${workspacePath}`, { level: "info" });
   return envSnapshot();
 }

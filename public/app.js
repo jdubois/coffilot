@@ -1888,9 +1888,9 @@ function applyJdtls(j) {
 }
 
 // Populate the JDK selector from the discovered JDKs, reflect the active one, and
-// surface an install hint (suggest another `sdk install java`, or installing
-// SDKMAN when it's absent). The selected value is `settings.jdkHome` ("" = Auto),
-// applied later by applySettingsState.
+// (when SDKMAN is present with a single JDK) suggest installing another. The SDKMAN
+// recommendation itself lives in the JDK info tooltip. The selected value is
+// `settings.jdkHome` ("" = Auto), applied later by applySettingsState.
 function applyJdks(env) {
   if (!jdkSelect) return;
   activeJdkInfo = (env && env.activeJdk) || null;
@@ -1922,19 +1922,23 @@ function applyJdks(env) {
   if (want && [...jdkSelect.options].some((o) => o.value === want)) jdkSelect.value = want;
 
   if (jdkInfo) {
+    // We recommend SDKMAN for installing and switching between JDKs; surfaced in
+    // the tooltip rather than as a banner so it's always one hover away.
+    const sdkmanTip = " We recommend SDKMAN (sdkman.io) to install and switch between JDKs.";
     if (activeJdkInfo) {
       const home = activeJdkInfo.home ? ` (${activeJdkInfo.home})` : "";
       jdkInfo.dataset.tip =
         `Active JDK: ${activeJdkInfo.version || "unknown"}${home}. ` +
-        "Used for Build / Test / Package / Run / Debug. Change applies to the next launch.";
+        "Used for Build / Test / Package / Run / Debug. Change applies to the next launch." +
+        sdkmanTip;
     } else {
-      jdkInfo.dataset.tip = "Choose the JDK used for Build / Test / Package / Run / Debug.";
+      jdkInfo.dataset.tip = "Choose the JDK used for Build / Test / Package / Run / Debug." + sdkmanTip;
     }
   }
 
   // Install banner: only when SDKMAN is present but a single JDK is installed
-  // (suggest installing another), or when SDKMAN is absent (suggest installing it
-  // for easy JDK switching). Hidden otherwise.
+  // (suggest installing another to switch between). Hidden otherwise — the
+  // recommendation to install SDKMAN itself lives in the JDK info tooltip.
   if (jdkBanner) {
     const onlyOne = jdks.length <= 1;
     if (install.sdkman && onlyOne) {
@@ -1942,16 +1946,6 @@ function applyJdks(env) {
       jdkCmd.textContent = install.cmd || "sdk install java";
       jdkCmd.hidden = false;
       jdkDocs.href = install.url || "https://sdkman.io/jdks";
-      jdkBanner.hidden = false;
-    } else if (!install.sdkman) {
-      jdkMsg.innerHTML = "Install <strong>SDKMAN</strong> to manage and switch between multiple JDKs (recommended):";
-      if (install.cmd) {
-        jdkCmd.textContent = install.cmd;
-        jdkCmd.hidden = false;
-      } else {
-        jdkCmd.hidden = true;
-      }
-      jdkDocs.href = install.url || "https://sdkman.io/install";
       jdkBanner.hidden = false;
     } else {
       jdkBanner.hidden = true;
