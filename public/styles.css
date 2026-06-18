@@ -1528,6 +1528,21 @@ button.is-restarting .btn-spin::before {
   color: var(--text-color-default, #1f2328);
   border-bottom-color: var(--true-color-blue, #0969da);
 }
+/* Divider between the available tool panels and the greyed-out (unavailable)
+   ones that sink to the bottom of the bar. Sorted between the two groups via
+   `order` and only shown when an unavailable group actually exists. */
+.atab-sep {
+  flex: 0 0 auto;
+  order: 2;
+  align-self: stretch;
+  width: 1px;
+  height: auto;
+  margin: 0.1rem 0.15rem;
+  background: var(--border-color-muted, #d8dee4);
+}
+.atab-sep[hidden] {
+  display: none;
+}
 .aside-toggle {
   border: none;
   background: none;
@@ -1724,6 +1739,11 @@ button.is-restarting .btn-spin::before {
 }
 #workspace.aside-rail.aside-open .atab.active.unavailable {
   opacity: 1;
+}
+#workspace.aside-rail .atab-sep {
+  width: auto;
+  height: 1px;
+  margin: 0.2rem 0.3rem;
 }
 #workspace.aside-rail .aside-toggle {
   order: -1;

@@ -453,16 +453,22 @@ const ASIDE_REASON = {
   scans: "Advisor scans need a running BootUI app. Click to learn more.",
 };
 function updateAsideAvailability(avail) {
+  let anyUnavailable = false;
   document.querySelectorAll(".atab").forEach((btn) => {
     const name = btn.dataset.atab;
     const ok = ASIDE_ALWAYS.has(name) || !!(avail && avail[name]);
+    if (!ok) anyUnavailable = true;
     btn.classList.toggle("unavailable", !ok);
     btn.setAttribute("aria-disabled", ok ? "false" : "true");
-    // Available tools keep their DOM order at the top; unavailable ones sink down.
-    btn.style.order = ok ? "1" : "2";
+    // Available tools keep their DOM order at the top; unavailable ones sink to
+    // the bottom, below the separator (order 2).
+    btn.style.order = ok ? "1" : "3";
     if (!btn.dataset.titleAvail) btn.dataset.titleAvail = btn.getAttribute("title") || "";
     btn.title = ok ? btn.dataset.titleAvail : ASIDE_REASON[name] || btn.dataset.titleAvail;
   });
+  // The divider only makes sense when there's actually a disabled group below it.
+  const sep = document.querySelector(".atab-sep");
+  if (sep) sep.hidden = !anyUnavailable;
 }
 // Nothing is reachable until the first metrics snapshot lands, so start with only
 // Settings enabled (renderMetrics refines this on every push).
