@@ -123,6 +123,16 @@ let TOOL_LABEL = buildTool === "gradle" ? "Gradle" : buildTool === "maven" ? "Ma
 let wrapperName = wrapperFileNameFor(buildTool);
 let wrapperPath = path.join(workspacePath, wrapperName);
 
+// Resolves once the initial background project-root refinement has finished (see
+// refineWorkspaceFromSession, kicked off after the server starts listening). The
+// /api/state and /api/env handlers await it so the first snapshot the iframe
+// renders already reflects the authoritative build tool. Otherwise, for a
+// user/global install the canvas opens with buildTool still null — the
+// Build/Test/Package/Run buttons render disabled — and an eager first click is
+// dropped, only taking effect on the second click once the env event lands.
+// Starts resolved so awaiting it is a no-op until the real run is assigned.
+let workspaceReady = Promise.resolve();
+
 /** The wrapper file name for a build tool, accounting for the platform. */
 function wrapperFileNameFor(tool) {
   return tool === "gradle" ? (isWindows ? "gradlew.bat" : "gradlew") : isWindows ? "mvnw.cmd" : "mvnw";
@@ -1084,6 +1094,14 @@ function freePort() {
   });
 }
 
+// Cap how long the project-root probe (the permission-paths RPC) may block the
+// first /api/state and /api/env responses, which await the initial detection so
+// the iframe never renders the build buttons disabled before the tool is known.
+// The RPC normally answers in a few milliseconds; this guard keeps a
+// non-responsive host from holding the loading overlay up (the client also has
+// its own 4s overlay backstop).
+const PRIMARY_DIR_TIMEOUT_MS = 2500;
+
 // Read the session's primary working directory (the project the user opened) via
 // the permission-paths API. This is the only reliable signal for a user/global
 // install, where the host runs the extension with cwd=<COPILOT_HOME> and __dirname
@@ -1091,7 +1109,12 @@ function freePort() {
 // are tolerated and we fall back to path heuristics.
 async function getSessionPrimaryDir() {
   try {
-    const res = await session.rpc?.permissions?.paths?.list?.();
+    const call = session.rpc?.permissions?.paths?.list?.();
+    if (!call) return null;
+    const res = await Promise.race([
+      call,
+      new Promise((resolve) => setTimeout(() => resolve(null), PRIMARY_DIR_TIMEOUT_MS)),
+    ]);
     if (res && typeof res.primary === "string" && res.primary) return res.primary;
   } catch (e) {
     session.log(`[coffilot] could not read session working directory: ${e.message}`, { level: "warn" });
@@ -2412,23 +2435,28 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
       void attachDebugger(debug.jdwpPort).catch(() => {});
     }
 
+    // An onLine handler may return a truthy value to "consume" a line — keep it
+    // out of the user-facing console while still acting on it. Coffilot uses this
+    // for the Gradle live-progress markers (see onGradleTestLine), which are
+    // injected build output the developer should never see. Handlers that return
+    // nothing (detectPort, onTestLine) leave the line visible as before.
     const wire = (stream, name) => {
       let buf = "";
+      const emit = (line) => {
+        const consumed = onLine ? onLine(line) : false;
+        if (!consumed) pushConsole(line, name, op);
+      };
       stream.on("data", (chunk) => {
         buf += chunk.toString();
         let nl;
         while ((nl = buf.indexOf("\n")) >= 0) {
           const line = buf.slice(0, nl).replace(/\r$/, "");
           buf = buf.slice(nl + 1);
-          pushConsole(line, name, op);
-          if (onLine) onLine(line);
+          emit(line);
         }
       });
       stream.on("end", () => {
-        if (buf.length) {
-          pushConsole(buf.replace(/\r$/, ""), name, op);
-          if (onLine) onLine(buf);
-        }
+        if (buf.length) emit(buf.replace(/\r$/, ""));
       });
     };
     wire(child.stdout, "stdout");
@@ -2580,6 +2608,114 @@ function onTestLine(line) {
     if (testProgress.current === name) testProgress.current = null;
     broadcastTestProgress();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Live test progress for Gradle
+//
+// Gradle's default console output isn't per-test, so — unlike Maven's Surefire
+// console — there's nothing to parse for live progress. We close that gap by
+// injecting a throwaway init script (see gradleTestInitScript) that registers a
+// test listener on every Test task. It prints one machine-parseable marker line
+// when a test class starts and another when it finishes, carrying the class's
+// authoritative counts. onGradleTestLine consumes those markers (hiding them
+// from the console) and updates the same `testProgress` model Maven feeds, so
+// the Tests tab streams per-class progress identically for both build tools.
+// ---------------------------------------------------------------------------
+
+const GRADLE_TEST_MARK = "@@COFFILOT-TEST@@";
+
+/** Parse one console line for a Gradle live-progress marker and broadcast
+ * updates. Returns true when the line was a marker (so spawnTool keeps it out of
+ * the user-facing console), false otherwise. */
+function onGradleTestLine(line) {
+  const i = line.indexOf(GRADLE_TEST_MARK);
+  if (i < 0) return false;
+  if (!testProgress) return true;
+  const parts = line.slice(i + GRADLE_TEST_MARK.length).split("\t");
+  const kind = parts[0];
+  if (kind === "RUN") {
+    const name = parts[1];
+    if (!name) return true;
+    let suite = testProgress.byName.get(name);
+    if (!suite) {
+      suite = { name, status: "running", tests: 0, failures: 0, errors: 0, skipped: 0, timeSec: 0 };
+      testProgress.byName.set(name, suite);
+      testProgress.suites.push(suite);
+    } else {
+      suite.status = "running";
+    }
+    testProgress.current = name;
+    broadcastTestProgress();
+    return true;
+  }
+  if (kind === "END") {
+    const name = parts[1];
+    if (!name) return true;
+    const tests = Number(parts[2]) || 0;
+    // Gradle's TestResult only distinguishes failed vs skipped (no separate
+    // "errors" bucket like Surefire), so everything non-skipped that didn't pass
+    // counts as a failure.
+    const failures = Number(parts[3]) || 0;
+    const skipped = Number(parts[4]) || 0;
+    const timeSec = (Number(parts[5]) || 0) / 1000;
+    let suite = testProgress.byName.get(name);
+    if (!suite) {
+      suite = { name };
+      testProgress.byName.set(name, suite);
+      testProgress.suites.push(suite);
+    }
+    suite.tests = tests;
+    suite.failures = failures;
+    suite.errors = 0;
+    suite.skipped = skipped;
+    suite.timeSec = timeSec;
+    suite.status = failures > 0 ? "fail" : tests > 0 && skipped >= tests ? "skipped" : "pass";
+    if (testProgress.current === name) testProgress.current = null;
+    broadcastTestProgress();
+    return true;
+  }
+  return true; // unknown marker variant — swallow it so it never reaches the console
+}
+
+// Path of the generated Gradle test-progress init script, cleaned up after each run.
+let testInitScript = null;
+
+/** Write a throwaway Gradle init script that makes every Test task announce, on
+ * stdout, when a test class starts and finishes (with its counts). The markers
+ * are parsed by onGradleTestLine and hidden from the console. */
+function gradleTestInitScript() {
+  const body = [
+    "// Coffilot: emit per-class test progress markers (parsed + hidden by the canvas).",
+    "gradle.allprojects {",
+    "  tasks.withType(Test).configureEach {",
+    "    beforeSuite { desc ->",
+    `      if (desc.className != null) println("${GRADLE_TEST_MARK}RUN\\t" + desc.className)`,
+    "    }",
+    "    afterSuite { desc, result ->",
+    "      if (desc.className != null) {",
+    `        println("${GRADLE_TEST_MARK}END\\t" + desc.className + "\\t" + result.testCount + "\\t" +`,
+    '          result.failedTestCount + "\\t" + result.skippedTestCount + "\\t" + (result.endTime - result.startTime))',
+    "      }",
+    "    }",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+  const file = path.join(os.tmpdir(), `coffilot-test-progress-${process.pid}.gradle`);
+  writeFileSync(file, body);
+  testInitScript = file;
+  return file;
+}
+
+function cleanupTestInitScript() {
+  if (!testInitScript) return;
+  try {
+    if (existsSync(testInitScript)) unlinkSync(testInitScript);
+  } catch {
+    /* best-effort */
+  }
+  testInitScript = null;
 }
 
 // Append Maven profile activation (-P). No-op for Gradle, which has no profiles.
@@ -3083,7 +3219,18 @@ async function test(extraArgs, warm, mavenProfiles, opts = {}) {
     }
     const r = resolveRunner(warm);
     const base = extraArgs && extraArgs.length ? extraArgs : defaultTestArgs(r.warm);
-    const args = withMavenProfiles(base, mavenProfiles);
+    let args = withMavenProfiles(base, mavenProfiles);
+    // Gradle's default output isn't per-test, so we inject a throwaway init script
+    // that makes each Test task announce per-class progress (parsed by
+    // onGradleTestLine). Maven gets the same live view straight from Surefire's
+    // console, so it needs neither the script nor a custom parser.
+    let onLine;
+    if (buildTool === "gradle") {
+      args = [...args, "--init-script", gradleTestInitScript()];
+      onLine = onGradleTestLine;
+    } else {
+      onLine = onTestLine;
+    }
     lanes.test.warm = r.warm;
     lastTestReport = null;
     broadcast("tests", null);
@@ -3101,10 +3248,6 @@ async function test(extraArgs, warm, mavenProfiles, opts = {}) {
     }
     resetTestProgress(estimate);
     testRunStartedAt = Date.now();
-    // Live per-class progress is parsed from Surefire's console output (Maven only);
-    // Gradle's default output isn't per-test, so its graphical view fills in from
-    // the JUnit XML report once the run finishes.
-    const onLine = buildTool === "maven" ? onTestLine : undefined;
     const code = await spawnTool("test", args, "testing", { bin: r.bin, label: r.label, onLine });
     if (testProgress) {
       testProgress.running = false;
@@ -3138,6 +3281,7 @@ async function test(extraArgs, warm, mavenProfiles, opts = {}) {
       tail: tail("test"),
     };
   } finally {
+    cleanupTestInitScript();
     if (gated) resumeContinuous();
   }
 }
@@ -5717,6 +5861,239 @@ async function setLoggerLevel(name, level) {
 }
 
 // ---------------------------------------------------------------------------
+// Self-update — keep a cloned (or forked-and-cloned) Coffilot checkout current
+// ---------------------------------------------------------------------------
+//
+// One minute after launch we check whether the extension's own git checkout is
+// behind its remote and, if so, surface an "Update to latest version" button in
+// the canvas header that runs `git pull`. This only applies when Coffilot was
+// obtained as its own clone — i.e. its files sit at the repository root. When it
+// was copied into another project (e.g. <project>/.github/extensions/coffilot,
+// where the repo root is the *project*, not Coffilot) or copied onto disk
+// without a `.git`, there's nothing safe to pull, so the feature stays dormant
+// and the button never appears.
+
+const EXTENSION_DIR = __dirname;
+
+let updateState = {
+  supported: false, // the extension is a Coffilot git checkout we can update
+  available: false, // a newer commit exists on the tracked remote (behind > 0)
+  checking: false, // a status check is in flight
+  updating: false, // a `git pull` is in flight
+  behind: 0,
+  ahead: 0,
+  branch: null,
+  remoteRef: null, // the remote-tracking ref we compare against, e.g. "origin/main"
+  currentSha: null,
+  remoteSha: null,
+  checkedAt: null, // epoch ms of the last successful check
+  error: null,
+};
+
+function updatePublic() {
+  return { ...updateState };
+}
+
+// Run a git subcommand against a checkout, capturing output. Non-interactive
+// (never block on credential prompts) and time-bounded so a hung network fetch
+// can't wedge the check. Resolves rather than rejects so callers stay simple.
+function runGit(args, { cwd = EXTENSION_DIR, timeout = 25000 } = {}) {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let child;
+    const env = {
+      ...process.env,
+      GIT_TERMINAL_PROMPT: "0", // fail instead of prompting for credentials
+      GIT_OPTIONAL_LOCKS: "0",
+      GCM_INTERACTIVE: "never",
+    };
+    try {
+      child = spawn("git", args, { cwd, env });
+    } catch (e) {
+      resolve({ ok: false, code: null, stdout: "", stderr: String(e?.message || e) });
+      return;
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }, timeout);
+    timer.unref?.();
+    child.stdout?.on("data", (c) => (stdout += c));
+    child.stderr?.on("data", (c) => (stderr += c));
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      resolve({ ok: false, code: null, stdout: stdout.trim(), stderr: (stderr || String(e?.message || e)).trim() });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ ok: code === 0, code, stdout: stdout.trim(), stderr: stderr.trim() });
+    });
+  });
+}
+
+// True when EXTENSION_DIR is the root of its own git checkout (a Coffilot clone),
+// rather than a folder nested inside some other repository. Both paths are
+// realpath-normalized so a symlinked install (clone elsewhere, symlinked into the
+// Copilot extensions dir) still matches.
+async function isCoffilotCheckout() {
+  const top = await runGit(["rev-parse", "--show-toplevel"], { timeout: 8000 });
+  if (!top.ok || !top.stdout) return false;
+  try {
+    return path.resolve(realpathSync(top.stdout)) === path.resolve(realpathSync(EXTENSION_DIR));
+  } catch {
+    return false;
+  }
+}
+
+// Resolve the remote-tracking ref to compare/pull against: the branch's
+// configured upstream (`@{u}`) when set, otherwise `origin/<branch>` when that
+// remote branch exists. Returns null on a detached HEAD or when no matching
+// remote branch is found (e.g. a local-only branch), which leaves the feature
+// dormant — matching what a bare `git pull` could do.
+async function resolveTrackingRef(branch) {
+  const up = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], { timeout: 8000 });
+  if (up.ok && up.stdout && up.stdout !== "@{u}") return up.stdout;
+  if (branch && branch !== "HEAD") {
+    const candidate = `origin/${branch}`;
+    const verify = await runGit(["rev-parse", "--verify", "--quiet", candidate], { timeout: 8000 });
+    if (verify.ok && verify.stdout) return candidate;
+  }
+  return null;
+}
+
+// Inspect the extension's checkout and refresh `updateState`. When `doFetch` is
+// true we first `git fetch` the remote so the comparison sees commits pushed
+// after the clone/last fetch. Broadcasts the new state so an open canvas updates
+// live. Safe to call repeatedly; concurrent calls are coalesced.
+async function checkForUpdate({ doFetch = true } = {}) {
+  if (updateState.checking) return updatePublic();
+  updateState.checking = true;
+  broadcast("update", updatePublic());
+  try {
+    if (!(await isCoffilotCheckout())) {
+      updateState = { ...updateState, supported: false, available: false, checking: false, error: null };
+      return updatePublic();
+    }
+
+    const branchRes = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], { timeout: 8000 });
+    const branch = branchRes.ok ? branchRes.stdout : null;
+
+    const remoteRef = await resolveTrackingRef(branch);
+    if (!remoteRef) {
+      updateState = {
+        ...updateState,
+        supported: true,
+        available: false,
+        behind: 0,
+        ahead: 0,
+        branch,
+        remoteRef: null,
+        checking: false,
+        checkedAt: Date.now(),
+        error: null,
+      };
+      return updatePublic();
+    }
+
+    const remote = remoteRef.includes("/") ? remoteRef.slice(0, remoteRef.indexOf("/")) : "origin";
+    let fetchError = null;
+    if (doFetch) {
+      const fetched = await runGit(["fetch", "--quiet", remote], { timeout: 25000 });
+      if (!fetched.ok) fetchError = fetched.stderr || "git fetch failed";
+    }
+
+    const counts = await runGit(["rev-list", "--left-right", "--count", `HEAD...${remoteRef}`], { timeout: 8000 });
+    let ahead = 0;
+    let behind = 0;
+    if (counts.ok && counts.stdout) {
+      const parts = counts.stdout.split(/\s+/);
+      ahead = parseInt(parts[0], 10) || 0;
+      behind = parseInt(parts[1], 10) || 0;
+    }
+    const cur = await runGit(["rev-parse", "--short", "HEAD"], { timeout: 8000 });
+    const rem = await runGit(["rev-parse", "--short", remoteRef], { timeout: 8000 });
+
+    updateState = {
+      ...updateState,
+      supported: true,
+      available: behind > 0,
+      behind,
+      ahead,
+      branch,
+      remoteRef,
+      currentSha: cur.ok ? cur.stdout : null,
+      remoteSha: rem.ok ? rem.stdout : null,
+      checking: false,
+      checkedAt: Date.now(),
+      error: fetchError,
+    };
+    session.log(
+      `[coffilot] update check: ${behind} commit(s) behind ${remoteRef}${fetchError ? ` (fetch: ${fetchError})` : ""}`,
+      { level: "info" },
+    );
+    return updatePublic();
+  } catch (e) {
+    updateState = { ...updateState, checking: false, error: e?.message || String(e) };
+    return updatePublic();
+  } finally {
+    updateState.checking = false;
+    broadcast("update", updatePublic());
+  }
+}
+
+// Pull the latest commit into the extension's checkout. Fast-forward only so a
+// fork that has diverged (local commits the remote doesn't have) fails cleanly
+// with a message instead of creating a merge commit in the user's working copy.
+// On success the on-disk files are newer than the still-running process, so the
+// caller surfaces a "reload the extension" hint. Re-checks status afterward.
+async function performUpdate() {
+  if (updateState.updating) return { ok: false, error: "An update is already in progress.", state: updatePublic() };
+  if (!(await isCoffilotCheckout())) {
+    return {
+      ok: false,
+      error: "Coffilot isn't running from its own git checkout, so it can't self-update.",
+      state: updatePublic(),
+    };
+  }
+  updateState.updating = true;
+  broadcast("update", updatePublic());
+  try {
+    // Pull explicitly from the ref we compared against (e.g. `origin main`) so the
+    // update works even when the branch has no configured upstream but we matched
+    // it via the `origin/<branch>` fallback; fall back to a bare pull otherwise.
+    const ref = updateState.remoteRef;
+    const slash = ref ? ref.indexOf("/") : -1;
+    const pullArgs =
+      ref && slash > 0 ? ["pull", "--ff-only", ref.slice(0, slash), ref.slice(slash + 1)] : ["pull", "--ff-only"];
+    const pull = await runGit(pullArgs, { timeout: 60000 });
+    const output = [pull.stdout, pull.stderr].filter(Boolean).join("\n").trim();
+    session.log(`[coffilot] git ${pullArgs.join(" ")} -> ${pull.ok ? "ok" : "failed"}\n${output}`, {
+      level: pull.ok ? "info" : "warn",
+    });
+    updateState.updating = false;
+    // Refresh behind/ahead from the new HEAD without another network round-trip.
+    await checkForUpdate({ doFetch: false });
+    if (!pull.ok) {
+      return {
+        ok: false,
+        error: output || "git pull failed.",
+        output,
+        state: updatePublic(),
+      };
+    }
+    return { ok: true, output: output || "Already up to date.", state: updatePublic() };
+  } catch (e) {
+    updateState.updating = false;
+    broadcast("update", updatePublic());
+    return { ok: false, error: e?.message || String(e), state: updatePublic() };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Loopback HTTP server (iframe assets + SSE + control + metrics proxy)
 // ---------------------------------------------------------------------------
 
@@ -5812,6 +6189,7 @@ async function handleRequest(req, res) {
       res.write(`event: tests\ndata: ${JSON.stringify(lastTestReport)}\n\n`);
       res.write(`event: debug\ndata: ${JSON.stringify(debugSnapshot())}\n\n`);
       res.write(`event: profile\ndata: ${JSON.stringify(profilePublic())}\n\n`);
+      res.write(`event: update\ndata: ${JSON.stringify(updatePublic())}\n\n`);
     } catch {
       drop();
     }
@@ -5819,6 +6197,10 @@ async function handleRequest(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/state") {
+    // Wait for the initial project-root detection so the first snapshot the iframe
+    // renders already has the right build tool — otherwise the lane buttons would
+    // briefly render disabled and an eager first click would be lost.
+    await workspaceReady;
     sendJson(res, 200, {
       status: statusSnapshot(),
       metrics: lastMetrics,
@@ -5835,11 +6217,13 @@ async function handleRequest(req, res) {
       debug: debugSnapshot(),
       profile: profilePublic(),
       env: envSnapshot(),
+      update: updatePublic(),
     });
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/env") {
+    await workspaceReady;
     sendJson(res, 200, envSnapshot());
     return;
   }
@@ -6061,6 +6445,19 @@ async function handleRequest(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/update/status") {
+    sendJson(res, 200, updatePublic());
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/update/check") {
+    sendJson(res, 200, await checkForUpdate({ doFetch: true }));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/update") {
+    sendJson(res, 200, await performUpdate());
+    return;
+  }
+
   res.writeHead(404);
   res.end("Not found");
 }
@@ -6099,9 +6496,19 @@ await serverReady;
 // Now that the canvas is registered and its loopback server is listening, refine
 // the project root from the session's primary working directory in the
 // background. Kept off the synchronous startup path on purpose so opening a
-// session surfaces the canvas immediately; the UI self-heals via the broadcast
-// env (and its focus refresh / "Check again").
-void refineWorkspaceFromSession();
+// session surfaces the canvas immediately; the loading overlay stays up until
+// the first /api/state lands, which awaits workspaceReady so the build tool is
+// known before the buttons render. The UI also self-heals via the broadcast env
+// (and its focus refresh / "Check again").
+workspaceReady = refineWorkspaceFromSession().catch(() => {});
+
+// One minute after launch, check whether this Coffilot checkout is behind its
+// remote and, if so, light up the header's "Update to latest version" button.
+// Delayed so it never competes with startup work, fetches the network off the
+// hot path, and .unref()'d so the pending timer alone won't keep the process up.
+setTimeout(() => {
+  void checkForUpdate({ doFetch: true });
+}, 60000).unref();
 
 // ---------------------------------------------------------------------------
 // Canvas declaration

@@ -64,6 +64,7 @@ const mvnProfilesCombo = document.getElementById("mvn-profiles-combo");
 const noToolBanner = document.getElementById("no-tool-banner");
 const btnRecheck = document.getElementById("btn-recheck");
 const btnRefresh = document.getElementById("btn-refresh");
+const btnUpdate = document.getElementById("btn-update");
 const warmBanner = document.getElementById("warm-banner");
 const warmMsg = document.getElementById("warm-msg");
 const warmCmd = document.getElementById("warm-cmd");
@@ -2276,6 +2277,11 @@ es.addEventListener("env", (e) => {
   // the refreshed env so the build tool, modules, and banners update live.
   applyEnv(JSON.parse(e.data));
 });
+es.addEventListener("update", (e) => {
+  // Self-update availability is checked ~1 min after launch and after a pull;
+  // reflect it live so the "Update to latest version" button appears/hides.
+  applyUpdateState(JSON.parse(e.data));
+});
 es.addEventListener("reset", (e) => {
   // Clear only the console for the op that's (re)starting; the others keep
   // their last output.
@@ -2313,6 +2319,7 @@ fetch(`/api/state?${qs}`)
     applyEnv(s.env);
     renderDebug(debugSnap, s.status);
     if (s.profile) renderProfileState(s.profile);
+    if (s.update) applyUpdateState(s.update);
     if (s.status && s.status.test) lastRunnerLabel = s.status.test.runnerLabel;
     renderTests(s.tests, { runnerLabel: lastRunnerLabel });
     for (const l of s.console || []) appendLine(l.line, l.stream, l.op);
@@ -2374,6 +2381,62 @@ if (btnRefresh) {
     }
     btnRefresh.classList.remove("is-busy");
     btnRefresh.disabled = false;
+  });
+}
+
+// "Update to latest version": shown only when the extension is its own Coffilot
+// git checkout that's behind its remote. Reflects the backend's update state —
+// available, in-progress, or freshly updated (which needs a reload to take hold).
+let updateApplied = false;
+function applyUpdateState(u) {
+  if (!btnUpdate) return;
+  u = u || {};
+  // Once a pull has succeeded this session, keep the "reload" prompt visible:
+  // the new code only runs after the user reloads the extension, so don't revert
+  // to a plain hidden/available state from a later background check.
+  if (updateApplied) {
+    btnUpdate.hidden = false;
+    return;
+  }
+  if (btnUpdate.classList.contains("is-busy")) return; // mid-pull; leave the button as-is
+  const show = !!u.available;
+  btnUpdate.hidden = !show;
+  if (show) {
+    const n = u.behind || 0;
+    const where = u.remoteRef ? ` on ${u.remoteRef}` : "";
+    btnUpdate.title =
+      n > 0
+        ? `${n} new commit${n === 1 ? "" : "s"} available${where} — click to run "git pull"`
+        : 'A newer version of Coffilot is available — click to run "git pull"';
+  }
+}
+
+if (btnUpdate) {
+  btnUpdate.addEventListener("click", async () => {
+    if (updateApplied) return; // already pulled; waiting for a reload
+    if (btnUpdate.classList.contains("is-busy")) return;
+    btnUpdate.classList.add("is-busy");
+    btnUpdate.disabled = true;
+    const labelEl = btnUpdate.querySelector(".update-btn-label");
+    const prevLabel = labelEl ? labelEl.textContent : "";
+    if (labelEl) labelEl.textContent = "Updating…";
+    const res = await postJson("/api/update");
+    btnUpdate.classList.remove("is-busy");
+    if (res && res.ok) {
+      updateApplied = true;
+      // Keep the button visible and enabled as a persistent "reload to finish"
+      // reminder: the pulled code only runs once the extension is reloaded, so a
+      // greyed-out (disabled) button here reads as if the action vanished.
+      btnUpdate.disabled = false;
+      btnUpdate.hidden = false;
+      if (labelEl) labelEl.textContent = "Restart to finish update";
+      btnUpdate.title = "Coffilot was updated on disk. Reload the Copilot extensions and re-open this canvas.";
+    } else {
+      const err = (res && (res.error || res.output)) || "unknown error";
+      btnUpdate.disabled = false;
+      if (labelEl) labelEl.textContent = prevLabel || "New version available";
+      btnUpdate.title = "Update failed: " + err;
+    }
   });
 }
 

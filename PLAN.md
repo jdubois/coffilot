@@ -87,9 +87,6 @@ Shipped in the extension today:
   recognised line appears, falls back to probing the running app's process tree
   for a LISTENing HTTP port (`ps` + `lsof`, POSIX only). If neither finds a port —
   e.g. a fully custom banner on Windows — metrics simply stay unavailable.
-- **No live per-test progress for Gradle.** Maven's Surefire console output drives the
-  class-by-class progress bar; Gradle's graphical test view fills in from the final
-  JUnit XML report instead.
 - **The debug evaluator is a field-path resolver, not a Java expression compiler.** It
   resolves a local (or `this`) and walks dotted instance-field paths (e.g.
   `order.customer.name`); it does not call methods or evaluate arbitrary expressions.
