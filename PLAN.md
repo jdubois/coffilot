@@ -85,9 +85,6 @@ Shipped in the extension today:
 - **Port detection is log-regex based** (Tomcat / Netty / Undertow, plus Quarkus'
   "Listening on" banner). A custom startup banner can hide the port, in which case
   metrics simply stay unavailable.
-- **No live per-test progress for Gradle.** Maven's Surefire console output drives the
-  class-by-class progress bar; Gradle's graphical test view fills in from the final
-  JUnit XML report instead.
 - **The debug evaluator is a field-path resolver, not a Java expression compiler.** It
   resolves a local (or `this`) and walks dotted instance-field paths (e.g.
   `order.customer.name`); it does not call methods or evaluate arbitrary expressions.

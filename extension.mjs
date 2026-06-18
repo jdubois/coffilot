@@ -2412,23 +2412,28 @@ function spawnTool(op, args, phase, { onLine, bin, label, env } = {}) {
       void attachDebugger(debug.jdwpPort).catch(() => {});
     }
 
+    // An onLine handler may return a truthy value to "consume" a line — keep it
+    // out of the user-facing console while still acting on it. Coffilot uses this
+    // for the Gradle live-progress markers (see onGradleTestLine), which are
+    // injected build output the developer should never see. Handlers that return
+    // nothing (detectPort, onTestLine) leave the line visible as before.
     const wire = (stream, name) => {
       let buf = "";
+      const emit = (line) => {
+        const consumed = onLine ? onLine(line) : false;
+        if (!consumed) pushConsole(line, name, op);
+      };
       stream.on("data", (chunk) => {
         buf += chunk.toString();
         let nl;
         while ((nl = buf.indexOf("\n")) >= 0) {
           const line = buf.slice(0, nl).replace(/\r$/, "");
           buf = buf.slice(nl + 1);
-          pushConsole(line, name, op);
-          if (onLine) onLine(line);
+          emit(line);
         }
       });
       stream.on("end", () => {
-        if (buf.length) {
-          pushConsole(buf.replace(/\r$/, ""), name, op);
-          if (onLine) onLine(buf);
-        }
+        if (buf.length) emit(buf.replace(/\r$/, ""));
       });
     };
     wire(child.stdout, "stdout");
@@ -2579,6 +2584,114 @@ function onTestLine(line) {
     if (testProgress.current === name) testProgress.current = null;
     broadcastTestProgress();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Live test progress for Gradle
+//
+// Gradle's default console output isn't per-test, so — unlike Maven's Surefire
+// console — there's nothing to parse for live progress. We close that gap by
+// injecting a throwaway init script (see gradleTestInitScript) that registers a
+// test listener on every Test task. It prints one machine-parseable marker line
+// when a test class starts and another when it finishes, carrying the class's
+// authoritative counts. onGradleTestLine consumes those markers (hiding them
+// from the console) and updates the same `testProgress` model Maven feeds, so
+// the Tests tab streams per-class progress identically for both build tools.
+// ---------------------------------------------------------------------------
+
+const GRADLE_TEST_MARK = "@@COFFILOT-TEST@@";
+
+/** Parse one console line for a Gradle live-progress marker and broadcast
+ * updates. Returns true when the line was a marker (so spawnTool keeps it out of
+ * the user-facing console), false otherwise. */
+function onGradleTestLine(line) {
+  const i = line.indexOf(GRADLE_TEST_MARK);
+  if (i < 0) return false;
+  if (!testProgress) return true;
+  const parts = line.slice(i + GRADLE_TEST_MARK.length).split("\t");
+  const kind = parts[0];
+  if (kind === "RUN") {
+    const name = parts[1];
+    if (!name) return true;
+    let suite = testProgress.byName.get(name);
+    if (!suite) {
+      suite = { name, status: "running", tests: 0, failures: 0, errors: 0, skipped: 0, timeSec: 0 };
+      testProgress.byName.set(name, suite);
+      testProgress.suites.push(suite);
+    } else {
+      suite.status = "running";
+    }
+    testProgress.current = name;
+    broadcastTestProgress();
+    return true;
+  }
+  if (kind === "END") {
+    const name = parts[1];
+    if (!name) return true;
+    const tests = Number(parts[2]) || 0;
+    // Gradle's TestResult only distinguishes failed vs skipped (no separate
+    // "errors" bucket like Surefire), so everything non-skipped that didn't pass
+    // counts as a failure.
+    const failures = Number(parts[3]) || 0;
+    const skipped = Number(parts[4]) || 0;
+    const timeSec = (Number(parts[5]) || 0) / 1000;
+    let suite = testProgress.byName.get(name);
+    if (!suite) {
+      suite = { name };
+      testProgress.byName.set(name, suite);
+      testProgress.suites.push(suite);
+    }
+    suite.tests = tests;
+    suite.failures = failures;
+    suite.errors = 0;
+    suite.skipped = skipped;
+    suite.timeSec = timeSec;
+    suite.status = failures > 0 ? "fail" : tests > 0 && skipped >= tests ? "skipped" : "pass";
+    if (testProgress.current === name) testProgress.current = null;
+    broadcastTestProgress();
+    return true;
+  }
+  return true; // unknown marker variant — swallow it so it never reaches the console
+}
+
+// Path of the generated Gradle test-progress init script, cleaned up after each run.
+let testInitScript = null;
+
+/** Write a throwaway Gradle init script that makes every Test task announce, on
+ * stdout, when a test class starts and finishes (with its counts). The markers
+ * are parsed by onGradleTestLine and hidden from the console. */
+function gradleTestInitScript() {
+  const body = [
+    "// Coffilot: emit per-class test progress markers (parsed + hidden by the canvas).",
+    "gradle.allprojects {",
+    "  tasks.withType(Test).configureEach {",
+    "    beforeSuite { desc ->",
+    `      if (desc.className != null) println("${GRADLE_TEST_MARK}RUN\\t" + desc.className)`,
+    "    }",
+    "    afterSuite { desc, result ->",
+    "      if (desc.className != null) {",
+    `        println("${GRADLE_TEST_MARK}END\\t" + desc.className + "\\t" + result.testCount + "\\t" +`,
+    '          result.failedTestCount + "\\t" + result.skippedTestCount + "\\t" + (result.endTime - result.startTime))',
+    "      }",
+    "    }",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+  const file = path.join(os.tmpdir(), `coffilot-test-progress-${process.pid}.gradle`);
+  writeFileSync(file, body);
+  testInitScript = file;
+  return file;
+}
+
+function cleanupTestInitScript() {
+  if (!testInitScript) return;
+  try {
+    if (existsSync(testInitScript)) unlinkSync(testInitScript);
+  } catch {
+    /* best-effort */
+  }
+  testInitScript = null;
 }
 
 // Append Maven profile activation (-P). No-op for Gradle, which has no profiles.
@@ -3082,7 +3195,18 @@ async function test(extraArgs, warm, mavenProfiles, opts = {}) {
     }
     const r = resolveRunner(warm);
     const base = extraArgs && extraArgs.length ? extraArgs : defaultTestArgs(r.warm);
-    const args = withMavenProfiles(base, mavenProfiles);
+    let args = withMavenProfiles(base, mavenProfiles);
+    // Gradle's default output isn't per-test, so we inject a throwaway init script
+    // that makes each Test task announce per-class progress (parsed by
+    // onGradleTestLine). Maven gets the same live view straight from Surefire's
+    // console, so it needs neither the script nor a custom parser.
+    let onLine;
+    if (buildTool === "gradle") {
+      args = [...args, "--init-script", gradleTestInitScript()];
+      onLine = onGradleTestLine;
+    } else {
+      onLine = onTestLine;
+    }
     lanes.test.warm = r.warm;
     lastTestReport = null;
     broadcast("tests", null);
@@ -3100,10 +3224,6 @@ async function test(extraArgs, warm, mavenProfiles, opts = {}) {
     }
     resetTestProgress(estimate);
     testRunStartedAt = Date.now();
-    // Live per-class progress is parsed from Surefire's console output (Maven only);
-    // Gradle's default output isn't per-test, so its graphical view fills in from
-    // the JUnit XML report once the run finishes.
-    const onLine = buildTool === "maven" ? onTestLine : undefined;
     const code = await spawnTool("test", args, "testing", { bin: r.bin, label: r.label, onLine });
     if (testProgress) {
       testProgress.running = false;
@@ -3137,6 +3257,7 @@ async function test(extraArgs, warm, mavenProfiles, opts = {}) {
       tail: tail("test"),
     };
   } finally {
+    cleanupTestInitScript();
     if (gated) resumeContinuous();
   }
 }
