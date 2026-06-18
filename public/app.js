@@ -2420,27 +2420,22 @@ if (btnUpdate) {
     const labelEl = btnUpdate.querySelector(".update-btn-label");
     const prevLabel = labelEl ? labelEl.textContent : "";
     if (labelEl) labelEl.textContent = "Updating…";
-    appendLine("[canvas] updating Coffilot — running git pull…", "stdout");
     const res = await postJson("/api/update");
     btnUpdate.classList.remove("is-busy");
     if (res && res.ok) {
-      if (res.output) {
-        for (const l of String(res.output).split("\n")) if (l.trim()) appendLine(l, "stdout");
-      }
-      appendLine(
-        "[canvas] Coffilot updated. Reload extensions and re-open this canvas to run the new version.",
-        "stdout",
-      );
       updateApplied = true;
-      btnUpdate.disabled = true;
+      // Keep the button visible and enabled as a persistent "reload to finish"
+      // reminder: the pulled code only runs once the extension is reloaded, so a
+      // greyed-out (disabled) button here reads as if the action vanished.
+      btnUpdate.disabled = false;
+      btnUpdate.hidden = false;
       if (labelEl) labelEl.textContent = "Reload to finish update";
       btnUpdate.title = "Coffilot was updated on disk. Reload the Copilot extensions and re-open this canvas.";
-      btnUpdate.hidden = false;
     } else {
       const err = (res && (res.error || res.output)) || "unknown error";
-      appendLine("[canvas] update failed: " + err, "stderr");
       btnUpdate.disabled = false;
       if (labelEl) labelEl.textContent = prevLabel || "Update to latest version";
+      btnUpdate.title = "Update failed: " + err;
     }
   });
 }
