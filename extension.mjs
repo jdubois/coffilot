@@ -1515,6 +1515,28 @@ function pomMainClass(xml) {
   return null;
 }
 
+// Matches the BootUI Spring Boot starter dependency (any of its group/artifact
+// spellings). Shared by the per-pom capability flag and the dev-profile probe.
+const BOOTUI_DEP_RE = /bootui-spring-boot-starter|julien-dubois\.bootui|jdubois\.bootui/;
+
+// Maven profile id(s) whose <profile> block declares the BootUI starter. The
+// install-bootui fix scopes BootUI to a dev-only Maven profile, so when the
+// dependency lives only there, running the app must activate that profile (-P)
+// or the starter never reaches the classpath (and the BootUI metrics tier — the
+// Live JVM / Loggers panes — never comes up).
+function mavenBootuiProfiles(xml) {
+  const ids = [];
+  // Greedy outer match spans the whole top-level <profiles> section even when a
+  // profile nests a plugin-config <profiles> block (mirrors listMavenProfiles).
+  const block = (xml.match(/<profiles>([\s\S]*)<\/profiles>/) || [, ""])[1];
+  for (const p of block.matchAll(/<profile>([\s\S]*?)<\/profile>/g)) {
+    if (!BOOTUI_DEP_RE.test(p[1])) continue;
+    const id = (p[1].match(/<id>\s*([^<]+?)\s*<\/id>/) || [])[1];
+    if (id) ids.push(id);
+  }
+  return ids;
+}
+
 // Per-pom capability flags, derived purely from the pom text (cheap + offline).
 export function pomCaps(xml, name) {
   const quarkus = /quarkus-maven-plugin|io\.quarkus/.test(xml);
@@ -1529,7 +1551,8 @@ export function pomCaps(xml, name) {
     devtools: xml.includes("spring-boot-devtools"),
     quarkusMetrics: /quarkus-micrometer/.test(xml),
     loggingManager: /quarkus-logging-manager/.test(xml),
-    bootui: /bootui-spring-boot-starter|julien-dubois\.bootui|jdubois\.bootui/.test(xml),
+    bootui: BOOTUI_DEP_RE.test(xml),
+    bootuiProfiles: mavenBootuiProfiles(xml),
     mainClass: pomMainClass(xml),
   };
 }
@@ -3272,6 +3295,22 @@ function withMavenProfiles(args, mavenProfiles) {
   return p ? [...args, "-P", p] : args;
 }
 
+// Merge the user-selected Maven profiles with the dev-only profile(s) that carry
+// the module's BootUI starter, so running a BootUI app activates its starter (and
+// with it the BootUI metrics tier) without the user having to remember -Pdev.
+// Returns a comma-separated, de-duplicated profile list (empty string for none).
+function withBootuiProfile(mavenProfiles, mod) {
+  const ids = new Set();
+  for (const p of String(mavenProfiles || "").split(",")) {
+    const t = p.trim();
+    if (t) ids.add(t);
+  }
+  if (mod && mod.bootui && Array.isArray(mod.bootuiProfiles)) {
+    for (const id of mod.bootuiProfiles) ids.add(id);
+  }
+  return [...ids].join(",");
+}
+
 // ---------------------------------------------------------------------------
 // Affected-test selection
 //
@@ -4098,7 +4137,17 @@ async function startApp({ module, profiles, mavenProfiles, mode, dbg = null } = 
 
     const args = ["-ntp"];
     if (module) args.push("-pl", module);
-    if (mavenProfiles && mavenProfiles.trim()) args.push("-P", mavenProfiles.trim());
+    // Activate any user-selected Maven profiles plus the dev-only profile that
+    // carries BootUI, so a profile-scoped BootUI starter reaches the classpath and
+    // its metrics tier (Live JVM / Loggers) comes up while running.
+    const runProfiles = withBootuiProfile(mavenProfiles, mod);
+    if (runProfiles) {
+      args.push("-P", runProfiles);
+      if (runProfiles !== (mavenProfiles || "").trim() && mod && mod.bootuiProfiles && mod.bootuiProfiles.length) {
+        pushConsole(`[coffilot] activating Maven profile(s) ${runProfiles} to enable BootUI.`, "stdout", op);
+      }
+    }
+    app.mavenProfiles = runProfiles || null;
     args.push("-Dmaven.test.skip=true", "spring-boot:run");
     if (profiles) args.push(`-Dspring-boot.run.profiles=${profiles}`);
     // Pass the native-access flag to the forked app JVM so its FFM-using
@@ -4129,7 +4178,7 @@ async function startApp({ module, profiles, mavenProfiles, mode, dbg = null } = 
     // and recompile on save to drive that loop automatically (off while debugging).
     if (!dbg && settings.devtools && mod && mod.devtools) {
       const lr = resolveRunner(true);
-      startLiveReload({ module: module || "", mavenProfiles, bin: lr.bin, label: lr.label });
+      startLiveReload({ module: module || "", mavenProfiles: runProfiles, bin: lr.bin, label: lr.label });
     }
     return { ok: true, started: true, mode: "spring", command: `${baseRunner().label} ${args.join(" ")}` };
   }

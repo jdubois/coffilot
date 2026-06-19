@@ -193,6 +193,46 @@ test("the Spring tab offers to add Actuator only when the module lacks it", () =
   assert.equal(status.hidden, true, "no Actuator status for a non-Spring module");
 });
 
+test("BootUI configured suppresses the Actuator offer and confirms BootUI", () => {
+  const addActuator = win.document.getElementById("btn-add-actuator");
+  const actuatorStatus = win.document.getElementById("actuator-status");
+  const actuatorBootui = win.document.getElementById("actuator-bootui-status");
+  const actuatorHint = win.document.getElementById("actuator-hint");
+  const bootuiConfigured = win.document.getElementById("bootui-configured");
+  const bootuiDesc = win.document.getElementById("bootui-desc");
+  const addBootui = win.document.getElementById("btn-add-bootui");
+
+  // BootUI configured (it bundles Actuator) even with actuator:false on the module:
+  // the Spring tab drops the Actuator hint + add button and confirms BootUI, and the
+  // scans tab confirms BootUI instead of pitching the starter.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: false, bootui: true }],
+    capabilities: { springBoot: true, bootui: true, maven: true },
+  });
+  assert.equal(addActuator.hidden, true, "no Add Actuator when BootUI is configured");
+  assert.equal(actuatorHint.hidden, true, "Actuator hint hidden when BootUI is configured");
+  assert.equal(actuatorStatus.hidden, true, "no 'Actuator on classpath' line when BootUI is configured");
+  assert.equal(actuatorBootui.hidden, false, "Spring tab confirms BootUI includes Actuator");
+  assert.match(actuatorBootui.textContent, /BootUI is configured/i);
+  assert.equal(addBootui.hidden, true, "no Add BootUI once the module already has BootUI");
+  assert.equal(bootuiConfigured.hidden, false, "scans tab confirms BootUI is configured");
+  assert.match(bootuiConfigured.textContent, /BootUI is configured/i);
+  assert.equal(bootuiDesc.hidden, true, "the add-the-starter description is hidden once BootUI is configured");
+
+  // Actuator present but no BootUI: Actuator status shown, BootUI confirmation hidden,
+  // Add BootUI offered (richer metrics), no Add Actuator.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: true, bootui: false }],
+    capabilities: { springBoot: true, actuator: true, maven: true },
+  });
+  assert.equal(actuatorStatus.hidden, false, "Actuator status shown when Actuator present without BootUI");
+  assert.equal(actuatorBootui.hidden, true, "no BootUI confirmation when BootUI absent");
+  assert.equal(addActuator.hidden, true, "no Add Actuator when Actuator is already present");
+  assert.equal(addBootui.hidden, false, "still offers Add BootUI for richer metrics");
+  assert.equal(bootuiConfigured.hidden, true, "scans tab does not claim BootUI configured when it isn't");
+  assert.equal(bootuiDesc.hidden, false, "the add-the-starter description shows when BootUI is absent");
+});
+
 test("the Live JVM tab explains why it's inactive and offers the dependency fix", () => {
   const metrics = () => win.document.getElementById("metrics").innerHTML;
 

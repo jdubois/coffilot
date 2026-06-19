@@ -552,8 +552,13 @@
               <div class="set-row" id="actuator-status" hidden>
                 <span class="muted">Spring Boot Actuator is on the classpath.</span>
               </div>
+              <!-- BootUI bundles Actuator, so when BootUI is configured we confirm that
+               instead of offering (or explaining) Actuator. -->
+              <div class="set-row" id="actuator-bootui-status" hidden>
+                <span class="muted">BootUI is configured — it includes Spring Boot Actuator.</span>
+              </div>
               <!-- Add Actuator: shown only for a Spring Boot module that doesn't depend
-               on Actuator yet. -->
+               on Actuator yet (and isn't already covered by BootUI). -->
               <div class="set-row set-proposals">
                 <button id="btn-add-actuator" class="fix fix-copilot tiny" hidden>Add Actuator with Copilot</button>
               </div>
@@ -606,6 +611,9 @@
 
           <div id="atab-scans" class="apane">
             <h2>BootUI Spring Boot Starter<span id="scans-src" class="src bootui" hidden>live</span></h2>
+            <p class="hint" id="bootui-configured" hidden>
+              BootUI is configured for this module — its advisor scans and richer live metrics are available.
+            </p>
             <p class="hint" id="bootui-desc">
               An embedded, local-only developer console for Spring Boot. Add the starter to a Spring Boot module to
               unlock richer live metrics and its advisor scans (architecture, security, Hibernate, …), then push

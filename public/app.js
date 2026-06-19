@@ -77,6 +77,10 @@ const btnAddBootui = document.getElementById("btn-add-bootui");
 const btnAddDevtools = document.getElementById("btn-add-devtools");
 const btnAddActuator = document.getElementById("btn-add-actuator");
 const actuatorStatus = document.getElementById("actuator-status");
+const actuatorHint = document.getElementById("actuator-hint");
+const actuatorBootuiStatus = document.getElementById("actuator-bootui-status");
+const bootuiDesc = document.getElementById("bootui-desc");
+const bootuiConfigured = document.getElementById("bootui-configured");
 const setJdtls = document.getElementById("set-jdtls");
 const jdtlsDot = document.getElementById("jdtls-dot");
 const jdtlsStateEl = document.getElementById("jdtls-state");
@@ -2419,13 +2423,23 @@ function updateDevSetup() {
   btnAddBootui.title = caps.gradle
     ? "Ask Copilot to add the BootUI starter to this module's developmentOnly configuration to unlock its console, richer metrics and advisor scans."
     : "Ask Copilot to add the BootUI starter to this module's dev profile to unlock its console, richer metrics and advisor scans.";
+  // BootUI panel (scans tab): once the module depends on BootUI, confirm it instead
+  // of pitching the "add the starter" description.
+  if (bootuiConfigured) bootuiConfigured.hidden = !hasBootui;
+  if (bootuiDesc) bootuiDesc.hidden = hasBootui;
 
   // Actuator section (Spring Boot tab): offer to add Actuator for a Spring Boot
   // module that doesn't depend on it yet (it backs both the Live JVM metrics and
-  // the Loggers tab); otherwise confirm it's already on the classpath.
+  // the Loggers tab); otherwise confirm it's already on the classpath. BootUI
+  // bundles Actuator, so when BootUI is configured we suppress the Actuator hint /
+  // add button entirely and confirm BootUI covers it instead.
   const hasActuator = spring && !!mod.actuator;
-  const showAddActuator = spring && !mod.actuator;
-  if (actuatorStatus) actuatorStatus.hidden = !hasActuator;
+  const showActuatorBootui = spring && hasBootui;
+  const showActuatorStatus = hasActuator && !hasBootui;
+  const showAddActuator = spring && !mod.actuator && !hasBootui;
+  if (actuatorHint) actuatorHint.hidden = showActuatorBootui;
+  if (actuatorStatus) actuatorStatus.hidden = !showActuatorStatus;
+  if (actuatorBootuiStatus) actuatorBootuiStatus.hidden = !showActuatorBootui;
   btnAddActuator.hidden = !showAddActuator;
   if (showAddActuator) {
     btnAddActuator.disabled = false;

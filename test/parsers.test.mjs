@@ -313,6 +313,29 @@ test("pomCaps / gradleCaps detect the Quarkus logging-manager extension", () => 
   );
 });
 
+test("pomCaps reports the Maven profile id(s) carrying the BootUI starter", () => {
+  // BootUI scoped to a dev-only profile (the install-bootui layout): bootui is
+  // detected, and its carrying profile id is reported so the runner can -P it.
+  const devProfile =
+    "<project><profiles><profile><id>dev</id><dependencies><dependency>" +
+    "<groupId>com.julien-dubois.bootui</groupId><artifactId>bootui-spring-boot-starter</artifactId>" +
+    "</dependency></dependencies></profile></profiles></project>";
+  const caps = pomCaps(devProfile, "app");
+  assert.equal(caps.bootui, true, "BootUI detected when scoped to a profile");
+  assert.deepEqual(caps.bootuiProfiles, ["dev"], "the dev profile carrying BootUI is reported");
+
+  // BootUI as a top-level dependency: detected, but no profile to activate.
+  const topLevel =
+    "<project><dependencies><dependency><groupId>com.julien-dubois.bootui</groupId>" +
+    "<artifactId>bootui-spring-boot-starter</artifactId></dependency></dependencies></project>";
+  const caps2 = pomCaps(topLevel, "app");
+  assert.equal(caps2.bootui, true, "top-level BootUI detected");
+  assert.deepEqual(caps2.bootuiProfiles, [], "no profile to activate for a top-level dependency");
+
+  // No BootUI at all: empty profile list.
+  assert.deepEqual(pomCaps("<project/>", "app").bootuiProfiles, [], "no BootUI profiles when absent");
+});
+
 test("normalizeQuarkusLoggers maps the listing to the shared shape (ROOT first)", () => {
   const out = normalizeQuarkusLoggers(
     [
