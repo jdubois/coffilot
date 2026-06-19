@@ -12,13 +12,6 @@ its build and run lifecycle from Copilot. Each owns one colour in a shared **cir
 
 ## How they work together
 
-```mermaid
-flowchart LR
-  A["🟤 Dr JSkill<br/>generates a Spring Boot app"] --> B["🟢 BootUI starter<br/>adds an in-app console at /bootui/"]
-  B --> C["🔵 Coffilot<br/>drives build / run / test / debug<br/>from the Copilot side panel"]
-  C -. "reads /bootui/api/* for rich<br/>metrics + advisor scans" .-> B
-```
-
 1. **Start with [Dr JSkill](https://www.julien-dubois.com/dr-jskill/).** It generates a Spring Boot
    application, giving you a clean, opinionated starting point.
 2. **Add the [BootUI](https://www.julien-dubois.com/boot-ui/) starter.** A single Spring Boot
