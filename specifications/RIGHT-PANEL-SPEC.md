@@ -1,17 +1,15 @@
 # Right‑panel (aside rail) specification
 
-> **Status:** _draft — this captures the rules **as currently implemented** so we can
-> review and correct them._ Edit freely; the “Open questions / desired changes” section
-> at the bottom is the place to record what should be different.
-
 The **right panel** is the aside rail of the Coffilot canvas: a vertical list of tabs
 (`.atab`, each with a `data-atab` key) and their panes (`.apane`). This document
 specifies which tabs exist, how they are ordered, when each is active vs. inactive, and
 exactly what each pane shows in either state.
 
-Source of truth in code: `public/index.html` (markup), `public/app.js` (behaviour),
+This is implemented in the code: `public/index.html` (markup), `public/app.js` (behaviour),
 `public/styles.css` (styling), with capability/metrics data coming from
 `extension.mjs`.
+
+This implementation MUST follow this specification.
 
 ---
 
@@ -22,26 +20,40 @@ Internal `data-atab` keys vs. the labels users see:
 | Order | `data-atab` | User‑facing label | Pane purpose                                                     |
 | ----: | ----------- | ----------------- | ---------------------------------------------------------------- |
 |     1 | `settings`  | **Settings**      | Project/run settings                                             |
-|     2 | `metrics`   | **Live JVM**      | Live heap / threads / uptime                                     |
+|     2 | `jvm`       | **Live JVM**      | Live heap / threads / uptime                                     |
 |     3 | `loggers`   | **Logs**          | Live log‑level control                                           |
 |     4 | `spring`    | **Spring**        | Spring Boot version advisor + Actuator / BootUI / DevTools setup |
 |     5 | `quarkus`   | **Quarkus**       | Quarkus MCP register + metrics/logging setup                     |
-|     6 | `scans`     | **BootUI**        | BootUI advisor scans                                             |
-|     7 | `deps`      | **Dependencies**  | OSIV check + outdated‑library upgrades                           |
+|     6 | `bootui`    | **BootUI**        | BootUI advisor scans                                             |
+|     7 | `deps`      | **Dependencies**  | Outdated libraries upgrades                                      |
 
-Canonical order is `ASIDE_ORDER = ["settings", "metrics", "loggers", "spring",
-"quarkus", "scans", "deps"]` (`public/app.js`).
+Canonical order is `ASIDE_ORDER = ["settings", "jvm", "loggers", "spring",
+"quarkus", "bootui", "deps"]` (`public/app.js`).
 
 ---
 
-## 2. Ordering & active/inactive grouping
+## 2. First opening and persistence
+
+On first opening of the canvas, the Settings tab is opened.
+
+Then, persist:
+
+- Which tab is opened, or if they are all closed
+- The status of each toggle
+
+When opening the canvas, if any of this data is already persisted -> use this to restore the panel in the way
+it was persisted.
+
+---
+
+## 3. Ordering & active/inactive grouping
 
 **Rule:** the canonical order above is _always_ preserved **within** each group, but the
 rail is split into two groups:
 
 1. **Active (available) tabs** float to the top, in canonical order.
-2. A separator (`.atab-sep`) divides the groups.
-3. **Inactive (unavailable) tabs** sink to the bottom, in canonical order.
+2. A separator (`.atab-sep`) divides the groups, it is at the bottom of the Active (available) tabs.
+3. **Inactive (unavailable) tabs** float at the bottom, in canonical order.
 
 Implementation: `computeAsideOrder(name, ok) = (ok ? 0 : 100) + rank`, where `rank` is
 the canonical index. Available → `0 + rank`; unavailable → `100 + rank`.
@@ -54,41 +66,36 @@ layout and when the user has `prefers-reduced-motion`.
 
 ---
 
-## 3. Availability (active vs. inactive) per tab
+## 4. Availability (active vs. inactive) per tab
 
 Two independent gates drive availability, merged per‑key in `updateAsideAvailability`:
 
 - **Project capabilities** (static, from `pomCaps` / `gradleCaps`): does the project use
   Spring Boot? Quarkus? etc. Drives `spring` and `quarkus`.
-- **Runtime metrics tier** (dynamic, from the running app — see §4): drives `metrics`,
-  `loggers`, `scans`.
+- **Runtime metrics tier** (dynamic, from the running app — see §5): drives `jvm`,
+  `loggers`, `bootui`.
 
-| Tab                   | Active when                                                                            | Gate source    |
-| --------------------- | -------------------------------------------------------------------------------------- | -------------- |
-| `settings`            | Always                                                                                 | `ASIDE_ALWAYS` |
-| `metrics` (Live JVM)  | App running **and** metrics tier ≠ `process` (i.e. tier ∈ {bootui, actuator, quarkus}) | runtime        |
-| `loggers` (Logs)      | App running **and** metrics tier ∈ {bootui, actuator, quarkus}                         | runtime        |
-| `scans` (BootUI)      | App running **and** metrics tier = `bootui`                                            | runtime        |
-| `spring`              | `caps.springBoot` is true                                                              | project caps   |
-| `quarkus`             | `caps.quarkus` is true                                                                 | project caps   |
-| `deps` (Dependencies) | Always                                                                                 | `ASIDE_ALWAYS` |
-
-> **Note (possible inconsistency):** `metrics` and `loggers` currently share the same
-> gate (tier ∈ {bootui, actuator, quarkus}). For a Quarkus app this marks **Logs**
-> active on the basis of the metrics tier even when the `logging-manager` extension is
-> absent; the pane content then explains the gap. Flag for review.
+| Tab        | Active when                                                    | Gate source    |
+| ---------- | -------------------------------------------------------------- | -------------- |
+| `settings` | Always                                                         | `ASIDE_ALWAYS` |
+| `jvm`      | App running **and** metrics tier ∈ {bootui, actuator, quarkus} | runtime        |
+| `loggers`  | App running **and** metrics tier ∈ {bootui, actuator, quarkus} | runtime        |
+| `spring`   | `caps.springBoot` is true                                      | project caps   |
+| `quarkus`  | `caps.quarkus` is true                                         | project caps   |
+| `bootui`   | App running **and** metrics tier = `bootui`                    | runtime        |
+| `deps`     | Always                                                         | `ASIDE_ALWAYS` |
 
 Each inactive tab also has a greyed‑tab tooltip from `ASIDE_REASON`.
 
 ---
 
-## 4. Metrics tiers (runtime detection)
+## 5. Metrics tiers (runtime detection)
 
 `refreshMetrics` (`extension.mjs`) probes the running app in precedence order and sets
 `metricsTier`:
 
-1. **`bootui`** — `/bootui/api/overview` answers. Richest tier (console + richer metrics
-   - advisor scans). _Implies Actuator._
+1. **`bootui`** — `/bootui/api/overview` answers. Richest tier (console, richer metrics
+   and advisor scans). _Implies Actuator._
 2. **`actuator`** — Spring Boot Actuator reachable at `/actuator` or `/management`.
 3. **`quarkus`** — Quarkus `/q/health` (+ optional `/q/metrics`) answers.
 4. **`process`** — nothing answered (or app down). Live JVM/Logs/BootUI all inactive.
@@ -97,7 +104,7 @@ When the app is down: `appUp = false`, `metricsTier = process`.
 
 ---
 
-## 5. Governing principle — **BootUI ⟹ Actuator**
+## 6. Governing principle — **BootUI ⟹ Actuator**
 
 BootUI bundles Spring Boot Actuator. Therefore, **everywhere**, when BootUI is
 configured:
@@ -107,18 +114,15 @@ configured:
   for it).
 - The BootUI tier covers all the metrics/loggers needs Actuator would.
 
-This is the rule that keeps biting; treat it as invariant unless we deliberately change
-it.
-
 ---
 
-## 6. Per‑tab content rules
+## 7. Per‑tab content rules
 
-### 6.1 Settings (`settings`) — always active
+### 7.1 Settings (`settings`) — always active
 
 Project + run configuration. No active/inactive story.
 
-### 6.2 Live JVM (`metrics`)
+### 7.2 Live JVM (`jvm`)
 
 **Active:** live heap / non‑heap / threads / uptime from the current tier.
 
@@ -143,7 +147,7 @@ restart to use this tab” (running but no endpoint)._
 Fix buttons use the orange **`fix fix-copilot`** style; once clicked they disable and
 read “Asked Copilot ✓” (tracked in `metricsAskedKinds`).
 
-### 6.3 Logs (`loggers`)
+### 7.3 Logs (`loggers`)
 
 **Active:** live logger list + level controls; source badge reads “Actuator” or
 “Quarkus”.
@@ -163,7 +167,7 @@ same structure as Live JVM, with logger‑specific wording:
   - Plain Java → “Live log‑level control works only for Spring Boot apps (Actuator
     `/loggers`) or Quarkus apps (the `quarkus-logging-manager` extension).”
 
-### 6.4 Spring (`spring`)
+### 7.4 Spring (`spring`)
 
 Active when the project is Spring Boot (independent of whether the app is running).
 Inactive → `renderSpringAdvisor` shows the “not a Spring Boot project” reason. When
@@ -193,13 +197,13 @@ Section visibility summary:
 | Actuator only     | “Actuator is set up” | pitch + **Add BootUI**           |
 | Neither           | **Add Actuator**     | pitch + **Add BootUI**           |
 
-### 6.5 Quarkus (`quarkus`)
+### 7.5 Quarkus (`quarkus`)
 
 Active when `caps.quarkus`. Inactive → `#quarkus-empty` shows the “not a Quarkus app”
 reason. When active: Quarkus MCP register panel + (in the Live JVM/Logs inactive bodies)
 the Micrometer / logging‑manager CTAs described above.
 
-### 6.6 BootUI / advisor scans (`scans`)
+### 7.6 BootUI / advisor scans (`bootui`)
 
 Active only at metrics tier `bootui` (app running). Pane shows scan controls
 (`Scan all` + per‑panel scans).
@@ -215,24 +219,26 @@ Active only at metrics tier `bootui` (app running). Pane shows scan controls
   - Not Spring Boot → “Advisor scans need a BootUI‑enabled Spring Boot app.”
   - Greyed placeholder scan buttons render so the pane isn’t empty.
 
-### 6.7 Dependencies (`deps`) — always active
+### 7.7 Dependencies (`deps`) — always active
 
-OSIV check + outdated‑library list with “Direct dependencies only” filter and per‑finding
+Outdated library list with “Direct dependencies only” filter and per‑finding
 **Fix with Copilot**. (Specified in `PLAN.md`; behaviour rules to be folded in here as it
-lands.)
+lands.). This needs to work both with Maven and Gradle.
 
 ---
 
-## 7. Runtime profile activation (BootUI dev profile)
+## 8. Runtime profile activation (BootUI dev profile)
 
 For Maven Spring Boot projects, BootUI is often only on the classpath under a `dev`
 profile. `pomCaps` reports `bootuiProfiles`; the Maven Spring runner merges them into the
 `-P` list (`withBootuiProfile`) so the BootUI tier actually comes up at runtime and Live
 JVM / Logs / BootUI go active.
 
+For Gradle Spring Boot projects, there is a similar mechanism.
+
 ---
 
-## 8. Shared button conventions
+## 9. Shared button conventions
 
 - Every Copilot fix/CTA button reads **“… with Copilot”** and uses the orange
   **`fix fix-copilot`** style (Add Actuator, Add BootUI, Add logging‑manager, Add Quarkus
@@ -241,13 +247,4 @@ JVM / Logs / BootUI go active.
 
 ---
 
-## 9. Open questions / desired changes
-
-_List here what should differ from the “as‑implemented” rules above. For each item, note
-the tab, the scenario, the current behaviour, and the desired behaviour._
-
-- [ ] _(example)_ Logs tab should NOT be active for a Quarkus app lacking
-      `logging-manager` (see §3 note) — desired: gate `loggers` on the actual logger
-      backend, not just the metrics tier.
-- [ ]
-- [ ]
+## 10. Open questions / desired changes
