@@ -538,7 +538,7 @@
               <p class="muted">Detecting the Spring Boot version…</p>
             </div>
             <div class="set-row set-proposals">
-              <button id="btn-upgrade-spring" class="fix tiny" hidden>Upgrade with Copilot</button>
+              <button id="btn-upgrade-spring" class="fix fix-copilot tiny" hidden>Upgrade with Copilot</button>
             </div>
 
             <div id="spring-actuator-section">
@@ -552,15 +552,28 @@
               <div class="set-row" id="actuator-status" hidden>
                 <span class="muted">Spring Boot Actuator is on the classpath.</span>
               </div>
-              <!-- BootUI bundles Actuator, so when BootUI is configured we confirm that
-               instead of offering (or explaining) Actuator. -->
-              <div class="set-row" id="actuator-bootui-status" hidden>
-                <span class="muted">BootUI is configured — it includes Spring Boot Actuator.</span>
-              </div>
               <!-- Add Actuator: shown only for a Spring Boot module that doesn't depend
                on Actuator yet (and isn't already covered by BootUI). -->
               <div class="set-row set-proposals">
                 <button id="btn-add-actuator" class="fix fix-copilot tiny" hidden>Add Actuator with Copilot</button>
+              </div>
+            </div>
+
+            <!-- BootUI section: the richer tier layered on top of Actuator. Confirms
+             BootUI once configured, otherwise offers to add it (shown below the
+             Actuator part so a Spring app without either gets both CTAs). When BootUI
+             is configured the Actuator part above is hidden, since BootUI includes it. -->
+            <div id="spring-bootui-section">
+              <h2 class="spring-h2">BootUI</h2>
+              <p class="hint" id="bootui-spring-hint">
+                BootUI is an embedded, local-only developer console — it layers richer live JVM metrics and advisor
+                scans (architecture, security, Hibernate, …) on top of Actuator.
+              </p>
+              <div class="set-row" id="bootui-spring-status" hidden>
+                <span class="muted">BootUI is configured — it includes Spring Boot Actuator.</span>
+              </div>
+              <div class="set-row set-proposals">
+                <button id="btn-add-bootui-spring" class="fix fix-copilot tiny" hidden>Add BootUI with Copilot</button>
               </div>
             </div>
 

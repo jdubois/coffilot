@@ -170,7 +170,7 @@ test("the Spring tab offers to add Actuator only when the module lacks it", () =
   assert.equal(status.hidden, true, "no 'on the classpath' status without Actuator");
   assert.match(btn.textContent, /with Copilot$/, "Add Actuator label ends with 'with Copilot'");
   assert.ok(btn.classList.contains("fix-copilot"), "Add Actuator uses the orange fix-copilot CTA color");
-  for (const id of ["btn-add-actuator", "btn-add-devtools", "btn-add-bootui"]) {
+  for (const id of ["btn-add-actuator", "btn-add-devtools", "btn-add-bootui", "btn-add-bootui-spring"]) {
     const el = win.document.getElementById(id);
     assert.match(el.textContent.trim(), /with Copilot$/, `${id} label ends with 'with Copilot'`);
     assert.ok(el.classList.contains("fix-copilot"), `${id} uses the orange fix-copilot CTA color`);
@@ -193,42 +193,57 @@ test("the Spring tab offers to add Actuator only when the module lacks it", () =
   assert.equal(status.hidden, true, "no Actuator status for a non-Spring module");
 });
 
-test("BootUI configured suppresses the Actuator offer and confirms BootUI", () => {
+test("BootUI configured suppresses the Actuator part and confirms BootUI", () => {
+  const actuatorSection = win.document.getElementById("spring-actuator-section");
+  const bootuiSection = win.document.getElementById("spring-bootui-section");
   const addActuator = win.document.getElementById("btn-add-actuator");
   const actuatorStatus = win.document.getElementById("actuator-status");
-  const actuatorBootui = win.document.getElementById("actuator-bootui-status");
-  const actuatorHint = win.document.getElementById("actuator-hint");
+  const bootuiSpringStatus = win.document.getElementById("bootui-spring-status");
+  const bootuiSpringHint = win.document.getElementById("bootui-spring-hint");
+  const addBootuiSpring = win.document.getElementById("btn-add-bootui-spring");
   const bootuiConfigured = win.document.getElementById("bootui-configured");
   const bootuiDesc = win.document.getElementById("bootui-desc");
   const addBootui = win.document.getElementById("btn-add-bootui");
 
   // BootUI configured (it bundles Actuator) even with actuator:false on the module:
-  // the Spring tab drops the Actuator hint + add button and confirms BootUI, and the
-  // scans tab confirms BootUI instead of pitching the starter.
+  // the Actuator part is hidden entirely, the BootUI part confirms it, and the scans
+  // tab confirms it instead of pitching the starter.
   win.applyEnv({
     modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: false, bootui: true }],
     capabilities: { springBoot: true, bootui: true, maven: true },
   });
+  assert.equal(actuatorSection.hidden, true, "Actuator section hidden when BootUI is configured");
   assert.equal(addActuator.hidden, true, "no Add Actuator when BootUI is configured");
-  assert.equal(actuatorHint.hidden, true, "Actuator hint hidden when BootUI is configured");
-  assert.equal(actuatorStatus.hidden, true, "no 'Actuator on classpath' line when BootUI is configured");
-  assert.equal(actuatorBootui.hidden, false, "Spring tab confirms BootUI includes Actuator");
-  assert.match(actuatorBootui.textContent, /BootUI is configured/i);
-  assert.equal(addBootui.hidden, true, "no Add BootUI once the module already has BootUI");
+  assert.equal(bootuiSection.hidden, false, "BootUI section shown for a Spring project");
+  assert.equal(bootuiSpringStatus.hidden, false, "Spring tab confirms BootUI is configured");
+  assert.match(bootuiSpringStatus.textContent, /BootUI is configured/i);
+  assert.equal(bootuiSpringHint.hidden, true, "the BootUI pitch hides once it's configured");
+  assert.equal(addBootuiSpring.hidden, true, "no Add BootUI (Spring tab) once configured");
+  assert.equal(addBootui.hidden, true, "no Add BootUI (scans tab) once configured");
   assert.equal(bootuiConfigured.hidden, false, "scans tab confirms BootUI is configured");
   assert.match(bootuiConfigured.textContent, /BootUI is configured/i);
   assert.equal(bootuiDesc.hidden, true, "the add-the-starter description is hidden once BootUI is configured");
 
-  // Actuator present but no BootUI: Actuator status shown, BootUI confirmation hidden,
-  // Add BootUI offered (richer metrics), no Add Actuator.
+  // Neither Actuator nor BootUI: both parts show, each with its Add … with Copilot CTA.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: false, bootui: false }],
+    capabilities: { springBoot: true, maven: true },
+  });
+  assert.equal(actuatorSection.hidden, false, "Actuator section shown when Actuator is absent");
+  assert.equal(addActuator.hidden, false, "offers Add Actuator");
+  assert.equal(bootuiSection.hidden, false, "BootUI section shown below the Actuator part");
+  assert.equal(addBootuiSpring.hidden, false, "offers Add BootUI below the Actuator part");
+  assert.equal(bootuiSpringStatus.hidden, true, "no BootUI confirmation when BootUI is absent");
+
+  // Actuator present but no BootUI: Actuator status shown, BootUI still offered.
   win.applyEnv({
     modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: true, bootui: false }],
     capabilities: { springBoot: true, actuator: true, maven: true },
   });
+  assert.equal(actuatorSection.hidden, false, "Actuator section shown when present without BootUI");
   assert.equal(actuatorStatus.hidden, false, "Actuator status shown when Actuator present without BootUI");
-  assert.equal(actuatorBootui.hidden, true, "no BootUI confirmation when BootUI absent");
   assert.equal(addActuator.hidden, true, "no Add Actuator when Actuator is already present");
-  assert.equal(addBootui.hidden, false, "still offers Add BootUI for richer metrics");
+  assert.equal(addBootuiSpring.hidden, false, "still offers Add BootUI for richer metrics");
   assert.equal(bootuiConfigured.hidden, true, "scans tab does not claim BootUI configured when it isn't");
   assert.equal(bootuiDesc.hidden, false, "the add-the-starter description shows when BootUI is absent");
 });
@@ -630,6 +645,7 @@ test("renderSpringAdvisor reflects version status and gates the upgrade button",
   });
   assert.equal(btn.hidden, false, "upgrade shown for an EOL line");
   assert.ok(box.querySelector(".spring-status.bad"), "EOL renders a 'bad' status chip");
+  assert.ok(btn.classList.contains("fix-copilot"), "the upgrade button uses the orange Copilot CTA color");
 
   // Latest line: no upgrade offered, an "ok" chip.
   win.renderSpringAdvisor({

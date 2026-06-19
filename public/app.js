@@ -77,10 +77,11 @@ const btnAddBootui = document.getElementById("btn-add-bootui");
 const btnAddDevtools = document.getElementById("btn-add-devtools");
 const btnAddActuator = document.getElementById("btn-add-actuator");
 const actuatorStatus = document.getElementById("actuator-status");
-const actuatorHint = document.getElementById("actuator-hint");
-const actuatorBootuiStatus = document.getElementById("actuator-bootui-status");
 const bootuiDesc = document.getElementById("bootui-desc");
 const bootuiConfigured = document.getElementById("bootui-configured");
+const btnAddBootuiSpring = document.getElementById("btn-add-bootui-spring");
+const bootuiSpringHint = document.getElementById("bootui-spring-hint");
+const bootuiSpringStatus = document.getElementById("bootui-spring-status");
 const setJdtls = document.getElementById("set-jdtls");
 const jdtlsDot = document.getElementById("jdtls-dot");
 const jdtlsStateEl = document.getElementById("jdtls-state");
@@ -99,6 +100,7 @@ const devtoolsInput = document.getElementById("in-devtools");
 const devtoolsActions = document.getElementById("devtools-actions");
 const springVersionEl = document.getElementById("spring-version");
 const springActuatorSection = document.getElementById("spring-actuator-section");
+const springBootuiSection = document.getElementById("spring-bootui-section");
 const springDevtoolsSection = document.getElementById("spring-devtools-section");
 const btnUpgradeSpring = document.getElementById("btn-upgrade-spring");
 const btnReload = document.getElementById("btn-reload");
@@ -2422,40 +2424,21 @@ function updateDevSetup() {
   profileItems = quarkus ? quarkusItems : springItems;
 
   // The Spring Boot tab is greyed (inactive) when the project has no Spring Boot
-  // module at all; its Actuator/DevTools sections are meaningless then, so hide
-  // them and let renderSpringAdvisor show the "not a Spring Boot project" reason.
+  // module at all; its Actuator/BootUI/DevTools sections are meaningless then, so
+  // hide them and let renderSpringAdvisor show the "not a Spring Boot project" reason.
+  // BootUI bundles Actuator, so when BootUI is configured the Actuator part is hidden
+  // and the BootUI part below confirms the richer tier instead.
+  const hasBootui = !!(mod && mod.bootui);
+  const hasActuator = spring && !!mod.actuator;
   const springProject = !!(caps && caps.springBoot);
-  if (springActuatorSection) springActuatorSection.hidden = !springProject;
+  if (springActuatorSection) springActuatorSection.hidden = !springProject || hasBootui;
+  if (springBootuiSection) springBootuiSection.hidden = !springProject;
   if (springDevtoolsSection) springDevtoolsSection.hidden = !springProject;
 
-  // Activate-BootUI CTA: only available — shown and enabled — for a Spring Boot
-  // module that doesn't depend on BootUI yet. Hidden for non-Spring apps and once
-  // the module already has BootUI (since it's then active).
-  const hasBootui = !!(mod && mod.bootui);
-  const canAddBootui = spring && !hasBootui;
-  btnAddBootui.hidden = !canAddBootui;
-  btnAddBootui.disabled = !canAddBootui;
-  btnAddBootui.textContent = "Add BootUI with Copilot";
-  btnAddBootui.title = caps.gradle
-    ? "Ask Copilot to add the BootUI starter to this module's developmentOnly configuration to unlock its console, richer metrics and advisor scans."
-    : "Ask Copilot to add the BootUI starter to this module's dev profile to unlock its console, richer metrics and advisor scans.";
-  // BootUI panel (scans tab): once the module depends on BootUI, confirm it instead
-  // of pitching the "add the starter" description.
-  if (bootuiConfigured) bootuiConfigured.hidden = !hasBootui;
-  if (bootuiDesc) bootuiDesc.hidden = hasBootui;
-
-  // Actuator section (Spring Boot tab): offer to add Actuator for a Spring Boot
-  // module that doesn't depend on it yet (it backs both the Live JVM metrics and
-  // the Loggers tab); otherwise confirm it's already on the classpath. BootUI
-  // bundles Actuator, so when BootUI is configured we suppress the Actuator hint /
-  // add button entirely and confirm BootUI covers it instead.
-  const hasActuator = spring && !!mod.actuator;
-  const showActuatorBootui = spring && hasBootui;
-  const showActuatorStatus = hasActuator && !hasBootui;
-  const showAddActuator = spring && !mod.actuator && !hasBootui;
-  if (actuatorHint) actuatorHint.hidden = showActuatorBootui;
-  if (actuatorStatus) actuatorStatus.hidden = !showActuatorStatus;
-  if (actuatorBootuiStatus) actuatorBootuiStatus.hidden = !showActuatorBootui;
+  // Actuator section (shown only while BootUI is absent): confirm Actuator is on the
+  // classpath, or offer to add it (it backs the Live JVM metrics and Loggers tabs).
+  const showAddActuator = spring && !hasActuator && !hasBootui;
+  if (actuatorStatus) actuatorStatus.hidden = !(hasActuator && !hasBootui);
   btnAddActuator.hidden = !showAddActuator;
   if (showAddActuator) {
     btnAddActuator.disabled = false;
@@ -2463,6 +2446,31 @@ function updateDevSetup() {
     btnAddActuator.title =
       "Ask Copilot to add the Spring Boot Actuator starter and expose its endpoints so the Live JVM and Loggers tabs work.";
   }
+
+  // BootUI section (Spring Boot tab): confirm BootUI once configured, otherwise offer
+  // to add it — shown below the Actuator part so a Spring app without either gets both
+  // CTAs. The "richer metrics + advisor scans" pitch hides once it's set up.
+  const canAddBootui = spring && !hasBootui;
+  const bootuiTitle = caps.gradle
+    ? "Ask Copilot to add the BootUI starter to this module's developmentOnly configuration to unlock its console, richer metrics and advisor scans."
+    : "Ask Copilot to add the BootUI starter to this module's dev profile to unlock its console, richer metrics and advisor scans.";
+  if (bootuiSpringHint) bootuiSpringHint.hidden = hasBootui;
+  if (bootuiSpringStatus) bootuiSpringStatus.hidden = !hasBootui;
+  if (btnAddBootuiSpring) {
+    btnAddBootuiSpring.hidden = !canAddBootui;
+    btnAddBootuiSpring.disabled = !canAddBootui;
+    btnAddBootuiSpring.textContent = "Add BootUI with Copilot";
+    btnAddBootuiSpring.title = bootuiTitle;
+  }
+
+  // BootUI panel (scans tab): the same Add-BootUI CTA in its advisor-scans context,
+  // and a "configured" confirmation that replaces the "add the starter" description.
+  btnAddBootui.hidden = !canAddBootui;
+  btnAddBootui.disabled = !canAddBootui;
+  btnAddBootui.textContent = "Add BootUI with Copilot";
+  btnAddBootui.title = bootuiTitle;
+  if (bootuiConfigured) bootuiConfigured.hidden = !hasBootui;
+  if (bootuiDesc) bootuiDesc.hidden = hasBootui;
 
   // DevTools section (Spring Boot tab): show the live-reload toggle + manual
   // actions once DevTools is on the classpath, otherwise offer to add it.
@@ -3117,11 +3125,18 @@ btnOpenBrowser.onclick = () => post("/api/open-app", {});
 moduleSelect.addEventListener("change", () => {
   updateDevSetup();
 });
-btnAddBootui.onclick = async () => {
-  btnAddBootui.disabled = true;
-  btnAddBootui.textContent = "Asked Copilot \u2713";
+// Both BootUI CTAs (Spring tab + scans tab) trigger the same install-bootui fix, so
+// asking from either flips both to the asked state.
+async function askInstallBootui() {
+  for (const b of [btnAddBootui, btnAddBootuiSpring]) {
+    if (!b) continue;
+    b.disabled = true;
+    b.textContent = "Asked Copilot \u2713";
+  }
   await post("/api/fix", { kind: "install-bootui", module: moduleSelect.value });
-};
+}
+btnAddBootui.onclick = askInstallBootui;
+if (btnAddBootuiSpring) btnAddBootuiSpring.onclick = askInstallBootui;
 btnAddDevtools.onclick = async () => {
   btnAddDevtools.disabled = true;
   btnAddDevtools.textContent = "Asked Copilot \u2713";
