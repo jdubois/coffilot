@@ -25,6 +25,8 @@ features:
 footer: Apache-2.0 Licensed | Coffilot
 ---
 
+<ScreenshotCarousel />
+
 ## Start here
 
 | Goal                                            | Documentation                     |
