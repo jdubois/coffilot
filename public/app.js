@@ -1891,11 +1891,13 @@ function renderDeps(report) {
   depsState = report;
   depsResultEl.innerHTML = updatesSectionHtml(report);
 
-  // The "Direct only" toggle is meaningful only once a scan found transitive
-  // updates to hide.
-  const hasTransitive = !!(report.ran && report.counts && report.counts.transitive > 0);
-  if (depsDirectInput) depsDirectInput.disabled = !hasTransitive;
-  if (depsDirectToggle) depsDirectToggle.classList.toggle("disabled", !hasTransitive);
+  // "Direct only" is a view preference, not a scan parameter: keep it interactive
+  // whenever the project supports update scanning so it can be set before a scan
+  // and applies live to the list afterwards. Only disable it when this build tool
+  // can't scan for updates at all (nothing to filter).
+  const canFilter = report.updatesSupported !== false;
+  if (depsDirectInput) depsDirectInput.disabled = !canFilter;
+  if (depsDirectToggle) depsDirectToggle.classList.toggle("disabled", !canFilter);
 
   const outdated = report.counts ? report.counts.total : 0;
   if (depsSrc) {
@@ -1989,7 +1991,7 @@ async function fixDep(i, btn) {
 if (depsScanBtn) depsScanBtn.onclick = runDepsScan;
 if (depsDirectInput)
   depsDirectInput.onchange = () => {
-    renderDeps(depsState);
+    if (depsState) renderDeps(depsState);
     saveSettings();
   };
 

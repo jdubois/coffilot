@@ -233,9 +233,15 @@ Active only at metrics tier `bootui` (app running). Pane shows scan controls
 
 ### 7.7 Updates (`deps`) — always active
 
-Outdated library list (heading **“Dependencies updates”**) with “Direct dependencies
-only” filter and per‑finding **Fix with Copilot**. (Specified in `PLAN.md`; behaviour
+Outdated library list (heading **“Dependencies updates”**) with a **“Direct only”**
+filter and per‑finding **Fix with Copilot**. (Specified in `PLAN.md`; behaviour
 rules to be folded in here as it lands.). This needs to work both with Maven and Gradle.
+
+The **“Direct only”** toggle is a view preference, not a scan parameter: it stays
+interactive whenever the build tool supports update scanning (`updatesSupported`), so it
+can be set before a scan and applies live to the rendered list afterwards (transitive
+findings are hidden client‑side). It is disabled only when the project can't scan for
+updates at all. Its state persists via settings (`depsDirectOnly`).
 
 ---
 

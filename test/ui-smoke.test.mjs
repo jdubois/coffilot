@@ -588,6 +588,42 @@ test("the Dependencies direct-only filter hides transitive updates (\u00a77.7)",
   assert.doesNotMatch(result(), /slf4j-api/, "transitive update hidden when direct-only is on");
 });
 
+test("the Dependencies direct-only toggle stays interactive even with no transitive updates (\u00a77.7)", () => {
+  const direct = win.document.getElementById("deps-direct");
+  // An all-direct scan (counts.transitive === 0) must NOT disable the toggle: it's a
+  // view preference, usable whenever the build tool supports update scanning.
+  win.renderDeps({
+    ran: true,
+    buildTool: "maven",
+    updatesSupported: true,
+    updates: [
+      {
+        group: "com.google.guava",
+        artifact: "guava",
+        current: "19.0",
+        latest: "33.6.0-jre",
+        scope: "compile",
+        direct: true,
+        via: null,
+        prerelease: false,
+        jump: "major",
+      },
+    ],
+    counts: { total: 1, direct: 1, transitive: 0 },
+  });
+  assert.equal(direct.disabled, false, "direct-only toggle stays enabled when there are no transitive updates");
+
+  // Only a project whose build tool can't scan for updates disables it.
+  win.renderDeps({
+    ran: true,
+    buildTool: "ant",
+    updatesSupported: false,
+    updates: [],
+    counts: { total: 0, direct: 0, transitive: 0 },
+  });
+  assert.equal(direct.disabled, true, "direct-only toggle is disabled when update scanning is unsupported");
+});
+
 test("applySettingsState restores the view/preference toggles", () => {
   assert.equal(typeof win.applySettingsState, "function", "applySettingsState should be a global");
   const depsDirect = win.document.getElementById("deps-direct");
