@@ -75,6 +75,8 @@ const warmCopied = document.getElementById("warm-copied");
 const warmDocs = document.getElementById("warm-docs");
 const btnAddBootui = document.getElementById("btn-add-bootui");
 const btnAddDevtools = document.getElementById("btn-add-devtools");
+const btnAddActuator = document.getElementById("btn-add-actuator");
+const actuatorStatus = document.getElementById("actuator-status");
 const setJdtls = document.getElementById("set-jdtls");
 const jdtlsDot = document.getElementById("jdtls-dot");
 const jdtlsStateEl = document.getElementById("jdtls-state");
@@ -1892,7 +1894,9 @@ function renderLoggers(data, force) {
     loggersSrc.hidden = true;
     loggersControls.hidden = true;
     loggersListEl.innerHTML =
-      '<p class="muted">App not running. Click <strong>Run</strong> to control its log levels.</p>';
+      '<p class="muted">Application isn\u2019t running or doesn\u2019t expose a runtime-logger endpoint.</p>' +
+      '<p class="hint">Live log levels need a running Spring Boot app (Actuator <code>/loggers</code>) or a Quarkus ' +
+      "app with the logging-manager extension. Click <strong>Run</strong> to start it.</p>";
     loggersData = null;
     loggersFixAsked = false;
     loggersUnavailKey = null;
@@ -1932,9 +1936,9 @@ function renderLoggersUnavailable(runMode) {
   if (runMode === "spring") {
     html =
       '<p class="muted">No Spring Boot Actuator <code>/loggers</code> endpoint is exposed on the running app, ' +
-      "so log levels can\u2019t be changed here. Add <code>spring-boot-starter-actuator</code> and expose it " +
-      "(<code>management.endpoints.web.exposure.include=loggers</code>).</p>";
-    fix = "install-actuator-loggers";
+      "so log levels can\u2019t be changed here.</p>" +
+      '<p class="hint">Add Spring Boot Actuator from the <strong>Spring</strong> tab, then expose it ' +
+      "(<code>management.endpoints.web.exposure.include=loggers</code>) and run the app again.</p>";
   } else if (runMode === "quarkus") {
     html =
       '<p class="muted">No Quarkus logging-manager endpoint is exposed on the running app, so log levels ' +
@@ -2322,6 +2326,18 @@ function updateDevSetup() {
   btnAddBootui.textContent = caps.gradle ? "Add BootUI (developmentOnly)" : "Add BootUI to dev profile";
   btnAddBootui.title =
     "Add the BootUI starter to this module's dev profile to unlock its console, richer metrics and advisor scans.";
+
+  // Actuator section (Spring Boot tab): offer to add Actuator for a Spring Boot
+  // module that doesn't depend on it yet (it backs both the Live JVM metrics and
+  // the Loggers tab); otherwise confirm it's already on the classpath.
+  const hasActuator = spring && !!mod.actuator;
+  const showAddActuator = spring && !mod.actuator;
+  if (actuatorStatus) actuatorStatus.hidden = !hasActuator;
+  btnAddActuator.hidden = !showAddActuator;
+  if (showAddActuator) {
+    btnAddActuator.disabled = false;
+    btnAddActuator.textContent = "Add Actuator";
+  }
 
   // DevTools section (Spring Boot tab): show the live-reload toggle + manual
   // actions once DevTools is on the classpath, otherwise offer to add it.
@@ -2982,6 +2998,11 @@ btnAddDevtools.onclick = async () => {
   btnAddDevtools.disabled = true;
   btnAddDevtools.textContent = "Asked Copilot \u2713";
   await post("/api/fix", { kind: "install-devtools", module: moduleSelect.value });
+};
+btnAddActuator.onclick = async () => {
+  btnAddActuator.disabled = true;
+  btnAddActuator.textContent = "Asked Copilot \u2713";
+  await post("/api/fix", { kind: "install-actuator", module: moduleSelect.value });
 };
 btnUpgradeSpring.onclick = async () => {
   btnUpgradeSpring.disabled = true;

@@ -6486,35 +6486,36 @@ function buildFixPrompt(kind, extra = {}) {
         .filter(Boolean)
         .join("\n\n");
     }
-    case "install-actuator-loggers": {
+    case "install-actuator": {
       const moduleName = extra.module || "";
       const resDir = moduleName ? `${moduleName}/src/main/resources` : "src/main/resources";
+      const expose = "management.endpoints.web.exposure.include=health,info,metrics,prometheus,loggers";
       if (buildTool === "gradle") {
         const { rel, kts } = gradleModuleBuildFile(moduleName);
         const dep = kts
           ? `implementation("org.springframework.boot:spring-boot-starter-actuator")`
           : `implementation 'org.springframework.boot:spring-boot-starter-actuator'`;
         return [
-          "This is a Spring Boot application whose runtime log-level endpoint isn't reachable, so the canvas can't read or change loggers live. Add Spring Boot Actuator and expose its `/loggers` endpoint.",
+          "This is a Spring Boot application that doesn't use Spring Boot Actuator, so the canvas can't read live JVM metrics or change log levels at runtime. Add the Actuator starter and expose its HTTP endpoints.",
           `1. Edit \`${rel}\` and add the Actuator starter inside \`dependencies { }\`:`,
           codeBlock(`dependencies {\n  ${dep}\n}`, kts ? "kotlin" : "groovy"),
           "   Omit the version so it inherits from the Spring Boot plugin's dependency management. Don't duplicate the line if it's already present.",
-          `2. In \`${resDir}/application.properties\` (create it if it doesn't exist), expose the loggers endpoint over HTTP:`,
-          codeBlock("management.endpoints.web.exposure.include=health,loggers", "properties"),
-          "   If an `exposure.include` line already exists, add `loggers` to it rather than replacing it. The `/loggers` endpoint serves both reads and live level changes — no extra config needed.",
-          "After editing, tell me to run the app again (e.g. `./gradlew bootRun`); the Loggers tab then lists every logger and lets you change levels live.",
+          `2. In \`${resDir}/application.properties\` (create it if it doesn't exist), expose the endpoints the canvas reads:`,
+          codeBlock(expose, "properties"),
+          "   If an `exposure.include` line already exists, merge these endpoint ids into it rather than replacing it. (`/metrics` and `/prometheus` back the Live JVM tab; `/loggers` reads and changes levels live.)",
+          "After editing, tell me to run the app again (e.g. `./gradlew bootRun`); the Live JVM tab then shows heap/threads/health and the Loggers tab lists every logger.",
         ]
           .filter(Boolean)
           .join("\n\n");
       }
       const pomRel = moduleName ? `${moduleName}/pom.xml` : "pom.xml";
       return [
-        "This is a Spring Boot application whose runtime log-level endpoint isn't reachable, so the canvas can't read or change loggers live. Add Spring Boot Actuator and expose its `/loggers` endpoint.",
+        "This is a Spring Boot application that doesn't use Spring Boot Actuator, so the canvas can't read live JVM metrics or change log levels at runtime. Add the Actuator starter and expose its HTTP endpoints.",
         `1. Edit \`${pomRel}\` and add a dependency on \`org.springframework.boot:spring-boot-starter-actuator\` inside the \`<dependencies>\` block (omit the \`<version>\` so it inherits from the Spring Boot parent/BOM). Don't duplicate it if it's already present.`,
-        `2. In \`${resDir}/application.properties\` (create it if it doesn't exist), expose the loggers endpoint over HTTP:`,
-        codeBlock("management.endpoints.web.exposure.include=health,loggers", "properties"),
-        "   If an `exposure.include` line already exists, add `loggers` to it rather than replacing it. The `/loggers` endpoint serves both reads and live level changes — no extra config needed.",
-        "After editing, tell me to run the app again (e.g. `./mvnw spring-boot:run`); the Loggers tab then lists every logger and lets you change levels live.",
+        `2. In \`${resDir}/application.properties\` (create it if it doesn't exist), expose the endpoints the canvas reads:`,
+        codeBlock(expose, "properties"),
+        "   If an `exposure.include` line already exists, merge these endpoint ids into it rather than replacing it. (`/metrics` and `/prometheus` back the Live JVM tab; `/loggers` reads and changes levels live.)",
+        "After editing, tell me to run the app again (e.g. `./mvnw spring-boot:run`); the Live JVM tab then shows heap/threads/health and the Loggers tab lists every logger.",
       ]
         .filter(Boolean)
         .join("\n\n");

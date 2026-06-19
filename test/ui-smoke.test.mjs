@@ -120,25 +120,60 @@ test("renderMcp tolerates an unavailable MCP server", () => {
   assert.doesNotThrow(() => win.renderMcp({ available: false }));
 });
 
-test("renderLoggers tailors the no-endpoint hint and fix button per framework", () => {
+test("renderLoggers tailors the no-endpoint message per framework", () => {
   const list = () => win.document.getElementById("loggers-list").innerHTML;
 
-  // Spring Boot: Actuator hint + a Fix button wired to install-actuator-loggers.
+  // App down: a Live-JVM-style "not running" message, no fix button.
+  assert.doesNotThrow(() => win.renderLoggers({ available: false, appDown: true }));
+  assert.ok(/isn.t running/i.test(list()), "expected an app-not-running message like Live JVM");
+  assert.equal(win.document.getElementById("loggers-fix"), null, "no fix button when the app is down");
+
+  // Spring Boot, app up, no /loggers: points at the Spring tab, no inline fix button
+  // (Actuator setup now lives in the Spring tab).
   assert.doesNotThrow(() => win.renderLoggers({ available: false, runMode: "spring" }));
   assert.ok(list().includes("Actuator"), "expected the Spring Boot Actuator hint");
-  assert.ok(!list().includes("quarkus-logging-manager"), "no Quarkus copy for a Spring app");
-  assert.ok(win.document.getElementById("loggers-fix"), "expected a Fix with Copilot button");
+  assert.ok(/Spring<\/strong> tab/.test(list()), "points the user at the Spring tab");
+  assert.equal(win.document.getElementById("loggers-fix"), null, "no inline fix button for a Spring app");
 
   // Quarkus: logging-manager hint + a Fix button, no Actuator copy.
   assert.doesNotThrow(() => win.renderLoggers({ available: false, runMode: "quarkus" }));
   assert.ok(list().includes("quarkus-logging-manager"), "expected the Quarkus logging-manager hint");
   assert.ok(!/Actuator/.test(list()), "no Spring Boot copy for a Quarkus app");
-  assert.ok(win.document.getElementById("loggers-fix"), "expected a Fix with Copilot button");
+  assert.ok(win.document.getElementById("loggers-fix"), "expected a Fix with Copilot button for Quarkus");
 
   // Plain Java (or unknown): generic message, no fix button.
   assert.doesNotThrow(() => win.renderLoggers({ available: false, runMode: "java" }));
   assert.ok(list().includes("only"), "expected the generic 'only Spring Boot or Quarkus' message");
   assert.equal(win.document.getElementById("loggers-fix"), null, "no fix button for a non-framework app");
+});
+
+test("the Spring tab offers to add Actuator only when the module lacks it", () => {
+  const btn = win.document.getElementById("btn-add-actuator");
+  const status = win.document.getElementById("actuator-status");
+
+  // Spring Boot module without Actuator: the add button shows, status hidden.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: false, devtools: true }],
+    capabilities: { springBoot: true, maven: true },
+  });
+  assert.equal(btn.hidden, false, "Add Actuator shown when the module lacks Actuator");
+  assert.equal(status.hidden, true, "no 'on the classpath' status without Actuator");
+
+  // Spring Boot module with Actuator: button hidden, status shown.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: true, devtools: true }],
+    capabilities: { springBoot: true, maven: true },
+  });
+  assert.equal(btn.hidden, true, "Add Actuator hidden once Actuator is present");
+  assert.equal(status.hidden, false, "status confirms Actuator is on the classpath");
+
+  // Non-Spring module: neither the button nor the status shows.
+  win.applyEnv({
+    modules: [{ name: "lib", artifactId: "lib", runnable: true, springBoot: false, actuator: false }],
+    capabilities: {},
+  });
+  assert.equal(btn.hidden, true, "Add Actuator hidden for a non-Spring module");
+  assert.equal(status.hidden, true, "no Actuator status for a non-Spring module");
 });
 
 test("the Settings tab is pinned to the top of the aside bar", () => {

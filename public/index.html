@@ -541,6 +541,22 @@
               <button id="btn-upgrade-spring" class="fix tiny" hidden>Upgrade with Copilot</button>
             </div>
 
+            <h2 class="spring-h2">Actuator</h2>
+            <p class="hint" id="actuator-hint">
+              Spring Boot Actuator exposes runtime endpoints — the canvas reads live JVM metrics in the Live JVM tab and
+              changes log levels without a restart in the Loggers tab.
+            </p>
+            <!-- Confirmation that Actuator is on the classpath (mirrors the DevTools
+               toggle row: a status line once the dependency is present). -->
+            <div class="set-row" id="actuator-status" hidden>
+              <span class="muted">Spring Boot Actuator is on the classpath.</span>
+            </div>
+            <!-- Add Actuator: shown only for a Spring Boot module that doesn't depend
+               on Actuator yet. -->
+            <div class="set-row set-proposals">
+              <button id="btn-add-actuator" class="fix tiny" hidden>Add Actuator</button>
+            </div>
+
             <h2 class="spring-h2">DevTools</h2>
             <p class="hint" id="devtools-hint">
               Spring Boot DevTools recompiles on save and restarts the app in place — the canvas plays the IDE's
