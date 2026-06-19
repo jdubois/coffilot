@@ -14,14 +14,31 @@
 //   COFFILOT_E2E=1 node --test test/e2e-projects.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { spawn } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 process.env.COFFILOT_TEST = "1";
 
-const { collectSurefireReport, testArgsFor, buildArgsFor, packageArgsFor } = await import("../extension.mjs");
+const {
+  collectSurefireReport,
+  testArgsFor,
+  buildArgsFor,
+  packageArgsFor,
+  parseDependencyTree,
+  parseDependencyUpdates,
+  parseGradleDependencyTree,
+  parseGradleDependencyUpdates,
+  gradleDepConfigFilter,
+  mergeDependencyUpdates,
+  mavenDepTreeArgs,
+  mavenDepUpdatesArgs,
+  gradleDepTreeArgs,
+  gradleDepUpdatesArgs,
+  gradleDependencyUpdatesInitBody,
+} = await import("../extension.mjs");
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const projectsDir = path.join(repoRoot, "integration-tests");
@@ -207,6 +224,79 @@ for (const l of LIFECYCLE) {
       const pkg = await runWrapper(dir, l.tool, packageArgsFor(l.tool, false, true, false));
       assert.equal(pkg.code, 0, `${l.project} package lane failed (exit ${pkg.code}):\n${pkg.out.slice(-4000)}`);
       assert.ok(hasJar(dir, l.tool), `${l.project}: Package lane produced no jar in ${artifactDir(l.tool)}/`);
+    },
+  );
+}
+
+// Upgrades-tab outdated-library scan, end to end: for one Maven and one Gradle
+// project, run the very command vectors the scan runs (mavenDep*Args /
+// gradleDep*Args + the injected init script), then feed the real output through
+// Coffilot's own parsers + merge — the same pipeline runDependencyScan uses. Each
+// project declares a deliberately ancient guava 19.0 (see its build file), so the
+// scan must always surface guava as an outdated, direct dependency. We assert the
+// shape (current/direct/jump) rather than the exact latest version, which drifts.
+const DEP_SCANS = [
+  { project: "hello-world", tool: "maven" },
+  { project: "gradle-hello-world", tool: "gradle" },
+];
+
+// Run the active tool's outdated-library scan in `dir` and return the merged
+// updates list, using exactly the exported command vectors + parsers.
+async function scanOutdated(dir, tool) {
+  if (tool === "maven") {
+    const tree = await runWrapper(dir, "maven", mavenDepTreeArgs());
+    assert.equal(tree.code, 0, `dependency:tree failed (exit ${tree.code}):\n${tree.out.slice(-4000)}`);
+    const upd = await runWrapper(dir, "maven", mavenDepUpdatesArgs());
+    assert.equal(upd.code, 0, `display-dependency-updates failed (exit ${upd.code}):\n${upd.out.slice(-4000)}`);
+    const nodes = parseDependencyTree(tree.out);
+    const updMap = parseDependencyUpdates(upd.out);
+    return mergeDependencyUpdates(nodes, updMap);
+  }
+  // Gradle: inject the ben-manes plugin via a throwaway init script that writes a
+  // JSON report into our temp dir, exactly like runGradleDependencyScan.
+  const outDir = mkdtempSync(path.join(os.tmpdir(), "coffilot-deps-e2e-"));
+  try {
+    const initScript = path.join(outDir, "deps-init.gradle");
+    writeFileSync(initScript, gradleDependencyUpdatesInitBody(outDir));
+    const tree = await runWrapper(dir, "gradle", gradleDepTreeArgs());
+    assert.equal(tree.code, 0, `gradle dependencies failed (exit ${tree.code}):\n${tree.out.slice(-4000)}`);
+    const upd = await runWrapper(dir, "gradle", gradleDepUpdatesArgs(initScript));
+    assert.equal(upd.code, 0, `dependencyUpdates failed (exit ${upd.code}):\n${upd.out.slice(-4000)}`);
+    const nodes = parseGradleDependencyTree(tree.out, { configFilter: gradleDepConfigFilter });
+    const updMap = new Map();
+    for (const f of readdirSync(outDir)) {
+      if (!f.endsWith(".json")) continue;
+      for (const [k, v] of parseGradleDependencyUpdates(readFileSync(path.join(outDir, f), "utf8"))) {
+        if (!updMap.has(k)) updMap.set(k, v);
+      }
+    }
+    return mergeDependencyUpdates(nodes, updMap);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+}
+
+for (const s of DEP_SCANS) {
+  const dir = path.join(projectsDir, s.project);
+
+  test(
+    `${s.project}: Upgrades scan flags the outdated guava dependency`,
+    { skip: SKIP, timeout: BUILD_TIMEOUT_MS },
+    async () => {
+      assert.ok(existsSync(dir), `missing integration project: ${dir}`);
+
+      const updates = await scanOutdated(dir, s.tool);
+      assert.ok(updates.length > 0, `${s.project}: expected at least one outdated library`);
+
+      const guava = updates.find((u) => u.group === "com.google.guava" && u.artifact === "guava");
+      assert.ok(
+        guava,
+        `${s.project}: expected guava in the outdated list, got ${updates.map((u) => u.artifact).join(", ")}`,
+      );
+      assert.equal(guava.current, "19.0", `${s.project}: guava current version`);
+      assert.notEqual(guava.latest, "19.0", `${s.project}: guava should have a newer latest version`);
+      assert.equal(guava.direct, true, `${s.project}: guava is a declared (direct) dependency`);
+      assert.ok(["major", "minor", "patch", "other"].includes(guava.jump), `${s.project}: guava jump classified`);
     },
   );
 }

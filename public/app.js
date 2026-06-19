@@ -75,6 +75,13 @@ const warmCopied = document.getElementById("warm-copied");
 const warmDocs = document.getElementById("warm-docs");
 const btnAddBootui = document.getElementById("btn-add-bootui");
 const btnAddDevtools = document.getElementById("btn-add-devtools");
+const btnAddActuator = document.getElementById("btn-add-actuator");
+const actuatorStatus = document.getElementById("actuator-status");
+const bootuiDesc = document.getElementById("bootui-desc");
+const bootuiConfigured = document.getElementById("bootui-configured");
+const btnAddBootuiSpring = document.getElementById("btn-add-bootui-spring");
+const bootuiSpringHint = document.getElementById("bootui-spring-hint");
+const bootuiSpringStatus = document.getElementById("bootui-spring-status");
 const setJdtls = document.getElementById("set-jdtls");
 const jdtlsDot = document.getElementById("jdtls-dot");
 const jdtlsStateEl = document.getElementById("jdtls-state");
@@ -92,6 +99,9 @@ const devtoolsToggle = document.getElementById("devtools-toggle");
 const devtoolsInput = document.getElementById("in-devtools");
 const devtoolsActions = document.getElementById("devtools-actions");
 const springVersionEl = document.getElementById("spring-version");
+const springActuatorSection = document.getElementById("spring-actuator-section");
+const springBootuiSection = document.getElementById("spring-bootui-section");
+const springDevtoolsSection = document.getElementById("spring-devtools-section");
 const btnUpgradeSpring = document.getElementById("btn-upgrade-spring");
 const btnReload = document.getElementById("btn-reload");
 const btnRestartApp = document.getElementById("btn-restart-app");
@@ -190,10 +200,16 @@ const quarkusMcpState = document.getElementById("quarkus-mcp-state");
 const quarkusMcpScansEl = document.getElementById("quarkus-mcp-scans");
 const quarkusMcpRegisterBtn = document.getElementById("quarkus-mcp-register");
 const quarkusEmptyEl = document.getElementById("quarkus-empty");
+const quarkusDescEl = document.getElementById("quarkus-desc");
 const scansSrc = document.getElementById("scans-src");
 const scansHint = document.getElementById("scans-hint");
 const scansListEl = document.getElementById("scans-list");
 const scansResultEl = document.getElementById("scans-result");
+const depsScanBtn = document.getElementById("deps-scan");
+const depsDirectToggle = document.getElementById("deps-direct-toggle");
+const depsDirectInput = document.getElementById("deps-direct");
+const depsResultEl = document.getElementById("deps-result");
+const depsSrc = document.getElementById("deps-src");
 let caps = {};
 // Whether a Maven/Gradle build tool is present. When false the canvas runs
 // in degraded mode: Build/Test/Package/Run stay disabled.
@@ -381,24 +397,35 @@ function setAsideOpen(open) {
 }
 function showAsideTab(name) {
   document.querySelectorAll(".atab").forEach((t) => t.classList.toggle("active", t.dataset.atab === name));
-  document.getElementById("atab-metrics").classList.toggle("active", name === "metrics");
+  document.getElementById("atab-jvm").classList.toggle("active", name === "jvm");
   document.getElementById("atab-loggers").classList.toggle("active", name === "loggers");
   document.getElementById("atab-spring").classList.toggle("active", name === "spring");
-  document.getElementById("atab-scans").classList.toggle("active", name === "scans");
+  document.getElementById("atab-bootui").classList.toggle("active", name === "bootui");
   document.getElementById("atab-quarkus").classList.toggle("active", name === "quarkus");
   document.getElementById("atab-settings").classList.toggle("active", name === "settings");
+  document.getElementById("atab-deps").classList.toggle("active", name === "deps");
+  if (name === "deps") initDeps();
   syncLoggersPolling();
   syncAsideWide();
 }
-// BootUI scan reports can be wide (severity badges + expandable findings), so the
-// aside grows to a roomier width while scan results are on screen and snaps back
-// to its slim default on any other tab. The default stays the minimal width.
+// BootUI scan reports and the dependency/upgrade list can be wide (severity badges
+// + expandable findings), so the aside grows to a roomier width while either is on
+// screen and snaps back to its slim default on any other tab.
 let hasScanResults = false;
+let hasDepsResults = false;
 function syncAsideWide() {
-  workspaceEl.classList.toggle("aside-wide", activeAsideTab() === "scans" && hasScanResults);
+  const tab = activeAsideTab();
+  workspaceEl.classList.toggle(
+    "aside-wide",
+    (tab === "bootui" && hasScanResults) || (tab === "deps" && hasDepsResults),
+  );
 }
 function markScanResults(on) {
   hasScanResults = on;
+  syncAsideWide();
+}
+function markDepsResults(on) {
+  hasDepsResults = on;
   syncAsideWide();
 }
 // Capture the current panel state as the persisted preference and save it. The
@@ -414,7 +441,7 @@ function rememberAsideState() {
 function applyAsideState(s) {
   if (asideStateApplied || !s) return;
   asideStateApplied = true;
-  asideTabPref = ["metrics", "loggers", "spring", "scans", "quarkus", "settings"].includes(s.asideTab)
+  asideTabPref = ["jvm", "loggers", "spring", "bootui", "quarkus", "settings", "deps"].includes(s.asideTab)
     ? s.asideTab
     : "settings";
   asideOpenPref = s.asideOpen === true;
@@ -472,51 +499,102 @@ syncAsideMode();
 // each group the tabs keep a fixed canonical order (ASIDE_ORDER) so they never
 // shuffle relative to one another. Clicking a greyed tab still opens it so its
 // in-panel text explains what's missing.
-const ASIDE_ALWAYS = new Set(["settings"]);
-// Canonical left-to-right order, applied within both the available and the
-// unavailable group. Settings always leads the available group (it's never
-// unavailable); "quarkus" takes the trailing slot for the Quarkus Agent MCP tab.
-const ASIDE_ORDER = ["settings", "metrics", "loggers", "spring", "scans", "quarkus"];
+const ASIDE_ALWAYS = new Set(["settings", "deps"]);
+// Canonical order, applied within both the available and the unavailable group so
+// the tabs never shuffle relative to one another. Settings always leads (it's
+// never unavailable); Quarkus precedes BootUI and Upgrades (deps) trails. The same
+// sequence is used whether a tab is active or greyed — only the group it sits in
+// changes, with unavailable tabs pushed to the bottom.
+const ASIDE_ORDER = ["settings", "jvm", "loggers", "spring", "quarkus", "bootui", "deps"];
 const ASIDE_REASON = {
-  metrics:
-    "Live JVM metrics need a running app that exposes metrics — Spring Boot Actuator/BootUI or Quarkus Micrometer. Click to learn more.",
+  jvm: "Live JVM metrics need a running app that exposes metrics — Spring Boot Actuator/BootUI or Quarkus Micrometer. Click to learn more.",
   loggers:
     "Live log levels need a running Spring Boot app (Actuator /loggers) or a Quarkus app with the logging-manager extension. Click to learn more.",
   spring:
     "The Spring Boot tab needs a Spring Boot module — version advisor and DevTools live reload. Click to learn more.",
-  scans: "The BootUI panel needs a running BootUI app — Run a module with the BootUI starter. Click to learn more.",
+  bootui: "The BootUI panel needs a running BootUI app — Run a module with the BootUI starter. Click to learn more.",
   quarkus:
     "The Quarkus panel needs a Quarkus module — open a Quarkus project to register its Agent MCP server with Copilot. Click to learn more.",
 };
-// metrics / loggers / scans are each gated on the running app exposing the right
-// capability (see updateAsideAvailability callers); the BootUI (scans) tab is
+// jvm / loggers / bootui are each gated on the running app exposing the right
+// capability (see updateAsideAvailability callers); the BootUI (bootui) tab is
 // available only while a BootUI app is actually up, exactly like the other two.
 // quarkus and spring are gated on the project (a Quarkus / Spring Boot module),
 // not the running app, so they come from caps rather than the metrics snapshot.
 // Each source updates only its own keys, so availabilities are merged rather than
 // replaced wholesale.
-const asideAvail = { metrics: false, loggers: false, scans: false, spring: false, quarkus: false };
+const asideAvail = { jvm: false, loggers: false, bootui: false, spring: false, quarkus: false };
+const asideTabsEl = document.querySelector(".aside-tabs");
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+// Skip the open animation: the first layout (and the test environment) should snap
+// into place; only later availability changes glide.
+let asideOrderApplied = false;
+// The flex `order` for a tab: the available group (0+) sorts before the separator
+// (order 50), the unavailable group (100+) sinks below it. Within each group the
+// canonical ASIDE_ORDER index keeps the sequence fixed.
+function computeAsideOrder(name, ok) {
+  const rank = ASIDE_ORDER.indexOf(name);
+  return (ok ? 0 : 100) + (rank === -1 ? ASIDE_ORDER.length : rank);
+}
+// FLIP: flex `order` changes can't be CSS-animated, so when a tab crosses between
+// the available and unavailable group we measure its old slot, let it jump to the
+// new one, then translate it back and transition the translate away so it appears
+// to glide. `first` holds the pre-change rects in `tabs` order.
+function flipAsideTabs(tabs, first) {
+  const movers = [];
+  tabs.forEach((btn, i) => {
+    const last = btn.getBoundingClientRect();
+    const dx = first[i].left - last.left;
+    const dy = first[i].top - last.top;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+    btn.style.transition = "none";
+    btn.style.transform = `translate(${dx}px, ${dy}px)`;
+    movers.push(btn);
+  });
+  if (!movers.length) return;
+  // Commit the inverted positions, then release them so each tab animates to its
+  // real slot (the forced reflow matches the pattern used elsewhere in this file).
+  if (asideTabsEl) void asideTabsEl.offsetWidth;
+  movers.forEach((btn) => {
+    btn.style.transition = "transform 200ms var(--ease-out)";
+    btn.style.transform = "";
+    const done = (e) => {
+      if (e.propertyName !== "transform") return;
+      btn.style.transition = "";
+      btn.removeEventListener("transitionend", done);
+    };
+    btn.addEventListener("transitionend", done);
+  });
+}
 function updateAsideAvailability(avail) {
   if (avail) Object.assign(asideAvail, avail);
-  let anyUnavailable = false;
-  document.querySelectorAll(".atab").forEach((btn) => {
+  const tabs = Array.from(document.querySelectorAll(".atab"));
+  const plan = tabs.map((btn) => {
     const name = btn.dataset.atab;
     const ok = ASIDE_ALWAYS.has(name) || !!asideAvail[name];
+    return { btn, name, ok, order: String(computeAsideOrder(name, ok)) };
+  });
+  // Only measure/animate when a tab actually moves group, and never on the first
+  // layout or when the user prefers reduced motion. Keeping the hot path (repeated
+  // metrics pushes with no change) free of layout reads avoids thrash.
+  const animate = asideOrderApplied && !reduceMotion.matches && plan.some((p) => p.btn.style.order !== p.order);
+  const first = animate ? tabs.map((b) => b.getBoundingClientRect()) : null;
+
+  let anyUnavailable = false;
+  plan.forEach(({ btn, name, ok, order }) => {
     if (!ok) anyUnavailable = true;
     btn.classList.toggle("unavailable", !ok);
     btn.setAttribute("aria-disabled", ok ? "false" : "true");
-    // Available group sorts before the unavailable group; the canonical index
-    // fixes the order within each group regardless of DOM order. The separator
-    // (.atab-sep, order 50) sits between the two ranges. Settings is first in
-    // ASIDE_ORDER, so it stays pinned to the top of the bar.
-    const rank = ASIDE_ORDER.indexOf(name);
-    btn.style.order = String((ok ? 0 : 100) + (rank === -1 ? ASIDE_ORDER.length : rank));
+    btn.style.order = order;
     if (!btn.dataset.titleAvail) btn.dataset.titleAvail = btn.getAttribute("title") || "";
     btn.title = ok ? btn.dataset.titleAvail : ASIDE_REASON[name] || btn.dataset.titleAvail;
   });
   // The divider only makes sense when there's actually a disabled group below it.
   const sep = document.querySelector(".atab-sep");
   if (sep) sep.hidden = !anyUnavailable;
+
+  if (first) flipAsideTabs(tabs, first);
+  asideOrderApplied = true;
 }
 // Nothing is reachable until the first metrics snapshot lands, so start with only
 // Settings enabled (renderMetrics refines this on every push).
@@ -1140,15 +1218,135 @@ async function refreshVars() {
 // on every SSE push, so we replay the previous fill width and bump it to the new
 // value on the next frame, letting the CSS width transition animate smoothly.
 let lastHeapPct = 0;
+// The Live JVM and Loggers tabs are greyed when the app is down or exposes no
+// diagnostic endpoint. Both panes share diagnosticInactiveBody / paintDiagnosticInactive
+// so they tell one consistent story: for the selected module, either confirm the
+// required dependency is already in the build ("\u2026 is set up") or offer an orange
+// "Add \u2026 with Copilot" fix to add it. The *AskedKinds sets remember which fixes were
+// pressed so the SSE/poll re-render keeps them disabled, and the *InactiveKey guards
+// skip rebuilding an identical view (which would otherwise reset a just-pressed button).
+let metricsInactiveKey = null;
+const metricsAskedKinds = new Set();
+
+// The selected module the run lane would launch \u2014 its build file is where we read
+// which diagnostic dependencies (Actuator, BootUI, Micrometer, logging-manager) live.
+function selectedRunModule() {
+  return (
+    moduleList.find((m) => m.name === moduleSelect.value) || moduleList.find((m) => m.runnable) || moduleList[0] || null
+  );
+}
+
+// Build the dependency status/fix block for a diagnostic pane. Spring Boot is layered \u2014
+// Actuator is the base and BootUI the richer tier \u2014 so: BootUI present => just say it's
+// set up (no Actuator offer, since BootUI already includes it); Actuator present but no
+// BootUI => say Actuator is set up and still offer BootUI; neither => offer Add Actuator
+// then Add BootUI, in that order. Quarkus uses the feature-specific dependency
+// ("metrics" => Micrometer, "loggers" => logging-manager): present => say so, else offer
+// its fix. appDown tailors "run the app" vs. "expose its endpoints and restart". Returns
+// { lines, fixes } consumed by paintDiagnosticInactive.
+function diagnosticInactiveBody(feature, appDown) {
+  const mod = selectedRunModule();
+  const next = appDown ? "run the app to use this tab" : "expose its endpoints and restart to use this tab";
+  const lines = [];
+  const fixes = [];
+  if (mod && mod.springBoot) {
+    if (mod.bootui) {
+      lines.push(`<p class="muted ok">\u2713 BootUI is set up \u2014 ${next}.</p>`);
+    } else if (mod.actuator) {
+      lines.push(`<p class="muted ok">\u2713 Spring Boot Actuator is set up \u2014 ${next}.</p>`);
+      lines.push('<p class="hint">Add BootUI for its developer console, richer metrics and advisor scans.</p>');
+      fixes.push({ id: "diag-fix-bootui", kind: "install-bootui", label: "Add BootUI with Copilot" });
+    } else {
+      lines.push(
+        feature === "loggers"
+          ? '<p class="muted">This Spring Boot app doesn\u2019t include Spring Boot Actuator, so log levels can\u2019t be changed live.</p>'
+          : '<p class="muted">This Spring Boot app doesn\u2019t include Spring Boot Actuator, so the Live JVM tab can\u2019t read metrics.</p>',
+      );
+      fixes.push({ id: "diag-fix-actuator", kind: "install-actuator", label: "Add Actuator with Copilot" });
+      fixes.push({ id: "diag-fix-bootui", kind: "install-bootui", label: "Add BootUI with Copilot" });
+    }
+  } else if (mod && mod.quarkus) {
+    if (feature === "loggers") {
+      if (mod.loggingManager) {
+        lines.push(`<p class="muted ok">\u2713 Quarkus logging-manager is set up \u2014 ${next}.</p>`);
+      } else {
+        lines.push(
+          '<p class="muted">This Quarkus app doesn\u2019t include the logging-manager extension, so log levels can\u2019t be changed live.</p>',
+        );
+        fixes.push({ id: "diag-fix-lm", kind: "install-logging-manager", label: "Add logging-manager with Copilot" });
+      }
+    } else if (mod.quarkusMetrics) {
+      lines.push(`<p class="muted ok">\u2713 Quarkus Micrometer is set up \u2014 ${next}.</p>`);
+    } else {
+      lines.push(
+        '<p class="muted">This Quarkus app doesn\u2019t include Micrometer metrics, so the Live JVM tab can\u2019t read metrics.</p>',
+      );
+      fixes.push({ id: "diag-fix-qm", kind: "install-quarkus-metrics", label: "Add Quarkus metrics with Copilot" });
+    }
+  } else {
+    lines.push(
+      feature === "loggers"
+        ? '<p class="hint">Live log-level control works only for Spring Boot apps (Actuator <code>/loggers</code>) or Quarkus apps (the <code>quarkus-logging-manager</code> extension).</p>'
+        : '<p class="hint">Live JVM metrics need a Spring Boot app (Actuator or BootUI) or a Quarkus app (Micrometer).</p>',
+    );
+  }
+  return { lines, fixes };
+}
+
+// Stable signature of an inactive view, so an identical re-render is skipped.
+function diagnosticInactiveKey(lead, body, asked) {
+  return [lead, body.lines.join("|"), body.fixes.map((f) => f.kind).join(","), [...asked].sort().join(",")].join("::");
+}
+
+// Paint an inactive diagnostic pane: a lead line (why it's greyed right now) then the
+// dependency status/fix block. Each pending fix becomes an orange button that posts its
+// Copilot fix and flips to "Asked Copilot \u2713"; already-asked fixes render disabled.
+function paintDiagnosticInactive(targetEl, lead, body, asked) {
+  let html = lead ? `<p class="muted">${lead}</p>` : "";
+  html += body.lines.join("");
+  if (body.fixes.length) {
+    html += '<div class="set-proposals" style="margin-top: 0.5rem">';
+    for (const f of body.fixes) {
+      html += asked.has(f.kind)
+        ? '<button class="fix fix-copilot tiny" disabled>Asked Copilot \u2713</button>'
+        : `<button id="${f.id}" class="fix fix-copilot tiny">${f.label}</button>`;
+    }
+    html += "</div>";
+  }
+  targetEl.innerHTML = html;
+  for (const f of body.fixes) {
+    if (asked.has(f.kind)) continue;
+    const btn = document.getElementById(f.id);
+    if (!btn) continue;
+    btn.onclick = () => {
+      asked.add(f.kind);
+      btn.disabled = true;
+      btn.textContent = "Asked Copilot \u2713";
+      post("/api/fix", { kind: f.kind, module: moduleSelect.value });
+    };
+  }
+}
+
+// Render the Live JVM pane's inactive view (app down, or running without a metrics
+// endpoint).
+function renderMetricsInactive(appDown) {
+  const body = diagnosticInactiveBody("metrics", appDown);
+  const lead = appDown ? "The app isn\u2019t running." : "The running app exposes no metrics endpoint.";
+  const key = diagnosticInactiveKey(lead, body, metricsAskedKinds);
+  if (key === metricsInactiveKey) return;
+  metricsInactiveKey = key;
+  paintDiagnosticInactive(metricsEl, lead, body, metricsAskedKinds);
+  metricsHint.hidden = true;
+}
 function renderMetrics(m) {
   const nowUp = !!(m && m.appUp);
   // The metrics tier is the single source of truth for which tool panels are
   // reachable, so refresh the bar's availability on every snapshot.
   const tier = nowUp ? m.metricsTier || "process" : null;
   updateAsideAvailability({
-    metrics: nowUp && tier !== "process",
+    jvm: nowUp && tier !== "process",
     loggers: nowUp && (tier === "bootui" || tier === "actuator" || tier === "quarkus"),
-    scans: nowUp && tier === "bootui",
+    bootui: nowUp && tier === "bootui",
   });
   if (nowUp !== appRunning) {
     appRunning = nowUp;
@@ -1159,10 +1357,8 @@ function renderMetrics(m) {
     lastHeapPct = 0;
     metricsSrc.hidden = true;
     renderMcp(null);
-    renderScans(false);
-    metricsEl.innerHTML = '<p class="muted">Application isn\u2019t running or doesn\u2019t expose metrics.</p>';
-    metricsHint.innerHTML =
-      'To get metrics, add <strong>Spring Boot Actuator</strong> or <strong>Quarkus Micrometer/health</strong>. For even richer metrics with Spring Boot, add <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a>.';
+    renderScans(false, true);
+    renderMetricsInactive(true);
     return;
   }
   metricsSrc.hidden = false;
@@ -1172,14 +1368,17 @@ function renderMetrics(m) {
 
   if (tier === "process") {
     lastHeapPct = 0;
-    metricsEl.innerHTML =
-      '<p class="muted">App is running, but no <code>/bootui/api</code>, <code>/actuator</code> or <code>/q/metrics</code> endpoint answered, so live JVM metrics aren\u2019t available.</p>';
-    metricsHint.innerHTML =
-      "Add <code>spring-boot-starter-actuator</code> / BootUI (Spring) or <code>quarkus-micrometer-registry-prometheus</code> (Quarkus) to surface heap, threads and health here.";
     renderMcp(null);
-    renderScans(false);
+    renderScans(false, false);
+    renderMetricsInactive(false);
     return;
   }
+
+  // Real metrics: the tab is active again, so clear the inactive-view guard and
+  // restore the contextual hint that the active tiers populate below.
+  metricsInactiveKey = null;
+  metricsAskedKinds.clear();
+  metricsHint.hidden = false;
 
   const o = m.overview || {};
   const heap = (m.memory && m.memory.heap) || {};
@@ -1230,12 +1429,12 @@ function renderMetrics(m) {
       ? "Metrics read from Quarkus Micrometer (<code>/q/metrics</code>) and SmallRye Health (<code>/q/health</code>)."
       : "Health read from Quarkus SmallRye Health (<code>/q/health</code>). Add <code>quarkus-micrometer-registry-prometheus</code> to surface heap, threads and uptime here.";
     renderMcp(null);
-    renderScans(false);
+    renderScans(false, false);
   } else {
     metricsHint.innerHTML =
       "Metrics normalized from Spring Boot <code>/actuator/**</code>. Add BootUI for advisor scans and richer detail.";
     renderMcp(null);
-    renderScans(false);
+    renderScans(false, false);
   }
 }
 
@@ -1325,12 +1524,29 @@ function renderScanPlaceholders() {
     ).join("");
 }
 
-function renderScans(available) {
+// Inactive Advisor-scans message, consistent with the Live JVM / Loggers panes:
+// a lead line (why the tab is greyed right now) then the BootUI dependency story.
+// When BootUI is set up the pane title already confirms it, so the inactive body
+// just gives the next step; otherwise we point at the "Add BootUI with Copilot"
+// CTA above (Spring) or explain the gap.
+function scansInactiveHtml(appDown) {
+  const mod = selectedRunModule();
+  const lead = `<p class="muted">${appDown ? "The app isn\u2019t running." : "The running app has no BootUI endpoint."}</p>`;
+  if (mod && mod.springBoot) {
+    if (mod.bootui) {
+      const next = appDown ? "Run the app to use this tab" : "Expose its endpoints and restart to use this tab";
+      return `${lead}<p class="muted">${next}.</p>`;
+    }
+    return `${lead}<p class="hint">Advisor scans need BootUI \u2014 add it above, then run the app.</p>`;
+  }
+  return `${lead}<p class="hint">Advisor scans need a <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a>-enabled Spring Boot app.</p>`;
+}
+
+function renderScans(available, appDown = true) {
   if (!available) {
     scansLoaded = false;
     scansSrc.hidden = true;
-    scansHint.innerHTML =
-      'Start a <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a> app (dev profile) with <strong>Run</strong> to run its advisor scans against the live app.';
+    scansHint.innerHTML = scansInactiveHtml(appDown);
     renderScanPlaceholders();
     scansResultEl.innerHTML = "";
     markScanResults(false);
@@ -1597,6 +1813,7 @@ function renderQuarkusMcp() {
   updateAsideAvailability({ quarkus: isQuarkus });
   quarkusMcpPanel.hidden = !isQuarkus;
   quarkusEmptyEl.hidden = isQuarkus;
+  if (quarkusDescEl) quarkusDescEl.hidden = !isQuarkus;
   if (!isQuarkus) {
     quarkusMcpState.textContent = "";
     return;
@@ -1639,6 +1856,145 @@ quarkusMcpRegisterBtn.onclick = async () => {
   await post("/api/fix", { kind: "register-quarkus-mcp", runner: quarkusMcpRegisterBtn.dataset.runner || "jbang" });
 };
 
+// ---- Dependencies & upgrades (Upgrades aside tab) ----------------------
+// The outdated-libraries scan shells out to the build tool on demand. We fetch
+// the cached snapshot when the tab is first opened, and only run the slow version
+// scan when the user clicks "Check dependencies".
+let depsState = null;
+let depsLoaded = false;
+
+async function initDeps() {
+  if (depsLoaded) return;
+  depsLoaded = true;
+  renderDeps(await getJson("/api/deps"));
+}
+
+async function runDepsScan() {
+  if (!depsScanBtn) return;
+  depsScanBtn.disabled = true;
+  const orig = depsScanBtn.textContent;
+  depsScanBtn.textContent = "Checking\u2026";
+  depsResultEl.innerHTML = `<div class="deps-section"><h3>Outdated libraries</h3><p class="muted">Scanning\u2026 resolving the latest available versions (this can take a while).</p></div>`;
+  markDepsResults(false);
+  const r = await postJson("/api/deps/scan", {});
+  depsScanBtn.disabled = false;
+  depsScanBtn.textContent = orig;
+  renderDeps(r);
+}
+
+function renderDeps(report) {
+  if (!report || !report.counts) {
+    // A genuine report always carries a counts block; a fetch failure returns { error }.
+    depsResultEl.innerHTML = `<p class="deps-error">Couldn't load the dependency report${report && report.error ? ": " + esc(report.error) : ""}.</p>`;
+    return;
+  }
+  depsState = report;
+  depsResultEl.innerHTML = updatesSectionHtml(report);
+
+  // "Direct only" is a view preference, not a scan parameter: keep it interactive
+  // whenever the project supports update scanning so it can be set before a scan
+  // and applies live to the list afterwards. Only disable it when this build tool
+  // can't scan for updates at all (nothing to filter).
+  const canFilter = report.updatesSupported !== false;
+  if (depsDirectInput) depsDirectInput.disabled = !canFilter;
+  if (depsDirectToggle) depsDirectToggle.classList.toggle("disabled", !canFilter);
+
+  const outdated = report.counts ? report.counts.total : 0;
+  if (depsSrc) {
+    if (report.ran && outdated > 0) {
+      depsSrc.textContent = `${outdated} outdated`;
+      depsSrc.hidden = false;
+    } else {
+      depsSrc.hidden = true;
+    }
+  }
+  markDepsResults(!!(report.ran && report.updates && report.updates.length));
+
+  depsResultEl
+    .querySelectorAll("button[data-dep-fix]")
+    .forEach((b) => (b.onclick = () => fixDep(Number(b.dataset.depFix), b)));
+}
+
+function updatesSectionHtml(report) {
+  const head = (extra = "") => `<div class="deps-section-head"><h3>Outdated libraries</h3>${extra}</div>`;
+  if (!report.updatesSupported) {
+    return (
+      `<div class="deps-section">${head()}` +
+      `<p class="hint">Outdated-library scanning needs a Maven or Gradle project${report.buildTool ? ` (this is a ${esc(report.buildTool)} project)` : ""}.</p></div>`
+    );
+  }
+  if (!report.ran) {
+    return (
+      `<div class="deps-section">${head()}` +
+      `<p class="hint">Click <strong>Check dependencies</strong> to scan for newer library versions.</p></div>`
+    );
+  }
+  if (report.error && (!report.updates || !report.updates.length)) {
+    return `<div class="deps-section">${head()}<p class="deps-error">Scan failed: ${esc(report.error)}</p></div>`;
+  }
+  if (!report.updates.length) {
+    return `<div class="deps-section">${head()}<p class="deps-ok">\u2713 All libraries are up to date.</p></div>`;
+  }
+  const counts = `<span class="deps-counts">${report.counts.direct} direct \u00b7 ${report.counts.transitive} transitive</span>`;
+  const directOnly = !!(depsDirectInput && depsDirectInput.checked);
+  const rows = report.updates.map((u, i) => (directOnly && !u.direct ? "" : depRowHtml(u, i))).join("");
+  const body = rows
+    ? `<div class="dep-list">${rows}</div>`
+    : `<p class="hint">No direct dependencies are outdated. Untick \u201cDirect only\u201d to see transitive ones.</p>`;
+  return `<div class="deps-section">${head(counts)}${body}</div>`;
+}
+
+function depRowHtml(u, i) {
+  const scopeBadge = u.direct
+    ? `<span class="dep-scope direct">direct</span>`
+    : `<span class="dep-scope transitive">transitive</span>`;
+  const preBadge = u.prerelease
+    ? `<span class="dep-pre" title="The latest version is a pre-release">pre-release</span>`
+    : "";
+  const via =
+    !u.direct && u.via
+      ? `<div class="finding-kv"><span class="fk">Pulled in by</span><span class="fv"><code>${esc(u.via)}</code></span></div>`
+      : "";
+  return (
+    `<details class="dep-item" data-dep="${i}"><summary>` +
+    `<span class="jump-badge jump-${esc(u.jump)}" title="${esc(u.jump)} version change">${esc(u.jump)}</span>` +
+    `<span class="finding-title">${esc(u.artifact)}</span>` +
+    `<span class="dep-ver"><span class="ver-old">${esc(u.current)}</span><span class="ver-arrow">\u2192</span><span class="ver-new">${esc(u.latest)}</span></span>` +
+    scopeBadge +
+    `</summary><div class="finding-body">` +
+    `<div class="finding-kv"><span class="fk">Coordinates</span><span class="fv"><code>${esc(u.group)}:${esc(u.artifact)}</code></span></div>` +
+    `<div class="finding-kv"><span class="fk">Latest</span><span class="fv">${esc(u.latest)} ${preBadge}</span></div>` +
+    `<div class="finding-kv"><span class="fk">Scope</span><span class="fv">${esc(u.scope)}</span></div>` +
+    via +
+    `<button class="fix fix-copilot tiny" data-dep-fix="${i}">Fix with Copilot</button>` +
+    `</div></details>`
+  );
+}
+
+async function fixDep(i, btn) {
+  const u = depsState && depsState.updates && depsState.updates[i];
+  if (!u) return;
+  btn.disabled = true;
+  btn.textContent = "Sent to Copilot \u2713";
+  await post("/api/fix", {
+    kind: "fix-dependency",
+    group: u.group,
+    artifact: u.artifact,
+    current: u.current,
+    latest: u.latest,
+    direct: u.direct,
+    scope: u.direct ? "direct" : "transitive",
+    via: u.via,
+  });
+}
+
+if (depsScanBtn) depsScanBtn.onclick = runDepsScan;
+if (depsDirectInput)
+  depsDirectInput.onchange = () => {
+    if (depsState) renderDeps(depsState);
+    saveSettings();
+  };
+
 // ---- Runtime log levels (Loggers aside tab) ----------------------------
 // Lists the running app's loggers from Spring Boot Actuator /loggers or the Quarkus
 // logging-manager extension and lets you change a level live (no restart).
@@ -1652,11 +2008,11 @@ const LOGGER_LEVELS = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
 let appRunning = false;
 let loggersData = null;
 let loggersTimer = null;
-// Tracks whether the user already pressed "Fix with Copilot" on the current
-// no-endpoint view, so the 5s poll re-render doesn't reset the button. Cleared when
-// the app goes down or loggers become available. loggersUnavailKey guards against
-// rebuilding an identical unavailable view on every poll.
-let loggersFixAsked = false;
+// loggersAskedKinds remembers which "Add … with Copilot" fixes were pressed on the
+// current inactive view so the 5s poll re-render doesn't reset them; cleared when the
+// app goes down or loggers become available. loggersUnavailKey guards against
+// rebuilding an identical inactive view on every poll.
+const loggersAskedKinds = new Set();
 let loggersUnavailKey = null;
 
 function loggersTabActive() {
@@ -1691,26 +2047,20 @@ async function loadLoggers() {
 
 function renderLoggers(data, force) {
   if (!data || data.appDown) {
-    loggersSrc.hidden = true;
-    loggersControls.hidden = true;
-    loggersListEl.innerHTML =
-      '<p class="muted">App not running. Click <strong>Run</strong> to control its log levels.</p>';
-    loggersData = null;
-    loggersFixAsked = false;
-    loggersUnavailKey = null;
+    renderLoggersInactive(true);
     return;
   }
   if (!data.available) {
-    renderLoggersUnavailable(data.runMode);
+    renderLoggersInactive(false);
     return;
   }
   loggersData = data;
-  loggersFixAsked = false;
+  loggersAskedKinds.clear();
   loggersUnavailKey = null;
   loggersSrc.hidden = false;
-  const quarkus = data.source === "quarkus";
-  loggersSrc.className = quarkus ? "src quarkus" : "src actuator";
-  loggersSrc.textContent = quarkus ? "Quarkus" : "Actuator";
+  loggersSrc.className =
+    "src " + (data.source === "quarkus" ? "quarkus" : data.source === "bootui" ? "bootui" : "actuator");
+  loggersSrc.textContent = data.source === "quarkus" ? "Quarkus" : data.source === "bootui" ? "BootUI" : "Actuator";
   loggersControls.hidden = false;
   // Don't rebuild the list out from under the user while they're using it
   // (an open select or focused search box) unless explicitly forced.
@@ -1718,51 +2068,19 @@ function renderLoggers(data, force) {
   renderLoggersList();
 }
 
-// The app is up but exposes no runtime-logger endpoint. Tailor the hint to the
-// framework: Spring Boot and Quarkus each get a one-click "Fix with Copilot" that
-// asks the agent to add the missing dependency; anything else just explains the
-// feature only works for those two.
-function renderLoggersUnavailable(runMode) {
+// Render the Loggers pane's inactive view (app down, or running without a runtime
+// logger endpoint), sharing the dependency status/fix block with Live JVM so the two
+// diagnostic panes stay consistent.
+function renderLoggersInactive(appDown) {
   loggersSrc.hidden = true;
   loggersControls.hidden = true;
   loggersData = null;
-  const key = (runMode || "other") + ":" + (loggersFixAsked ? "asked" : "open");
+  const body = diagnosticInactiveBody("loggers", appDown);
+  const lead = appDown ? "The app isn\u2019t running." : "The running app exposes no runtime-logger endpoint.";
+  const key = diagnosticInactiveKey(lead, body, loggersAskedKinds);
   if (key === loggersUnavailKey) return;
   loggersUnavailKey = key;
-  let html;
-  let fix = null;
-  if (runMode === "spring") {
-    html =
-      '<p class="muted">No Spring Boot Actuator <code>/loggers</code> endpoint is exposed on the running app, ' +
-      "so log levels can\u2019t be changed here. Add <code>spring-boot-starter-actuator</code> and expose it " +
-      "(<code>management.endpoints.web.exposure.include=loggers</code>).</p>";
-    fix = "install-actuator-loggers";
-  } else if (runMode === "quarkus") {
-    html =
-      '<p class="muted">No Quarkus logging-manager endpoint is exposed on the running app, so log levels ' +
-      "can\u2019t be changed here. Add the <code>quarkus-logging-manager</code> extension.</p>";
-    fix = "install-logging-manager";
-  } else {
-    html =
-      '<p class="muted">Live log-level control works only for Spring Boot apps (via the Actuator ' +
-      "<code>/loggers</code> endpoint) or Quarkus apps (via the <code>quarkus-logging-manager</code> extension).</p>";
-  }
-  if (fix) {
-    html += loggersFixAsked
-      ? '<button class="fix fix-copilot tiny" style="margin-top: 0.4rem" disabled>Asked Copilot \u2713</button>'
-      : '<button id="loggers-fix" class="fix fix-copilot tiny" style="margin-top: 0.4rem">Fix with Copilot</button>';
-  }
-  loggersListEl.innerHTML = html;
-  const btn = fix && document.getElementById("loggers-fix");
-  if (btn) {
-    btn.onclick = () => {
-      loggersFixAsked = true;
-      loggersUnavailKey = null;
-      btn.disabled = true;
-      btn.textContent = "Asked Copilot \u2713";
-      post("/api/fix", { kind: fix, module: moduleSelect.value });
-    };
-  }
+  paintDiagnosticInactive(loggersListEl, lead, body, loggersAskedKinds);
 }
 
 function renderLoggersList() {
@@ -2114,16 +2432,54 @@ function updateDevSetup() {
   if (lblProfiles) lblProfiles.textContent = quarkus ? "Quarkus profile" : "Spring Boot profiles";
   profileItems = quarkus ? quarkusItems : springItems;
 
-  // Activate-BootUI CTA: only available — shown and enabled — for a Spring Boot
-  // module that doesn't depend on BootUI yet. Hidden for non-Spring apps and once
-  // the module already has BootUI (since it's then active).
+  // The Spring Boot tab is greyed (inactive) when the project has no Spring Boot
+  // module at all; its Actuator/BootUI/DevTools sections are meaningless then, so
+  // hide them and let renderSpringAdvisor show the "not a Spring Boot project" reason.
+  // BootUI bundles Actuator, so when BootUI is configured the Actuator part is hidden
+  // and the BootUI part below confirms the richer tier instead.
   const hasBootui = !!(mod && mod.bootui);
+  const hasActuator = spring && !!mod.actuator;
+  const springProject = !!(caps && caps.springBoot);
+  if (springActuatorSection) springActuatorSection.hidden = !springProject || hasBootui;
+  if (springBootuiSection) springBootuiSection.hidden = !springProject;
+  if (springDevtoolsSection) springDevtoolsSection.hidden = !springProject;
+
+  // Actuator section (shown only while BootUI is absent): confirm Actuator is on the
+  // classpath, or offer to add it (it backs the Live JVM metrics and Loggers tabs).
+  const showAddActuator = spring && !hasActuator && !hasBootui;
+  if (actuatorStatus) actuatorStatus.hidden = !(hasActuator && !hasBootui);
+  btnAddActuator.hidden = !showAddActuator;
+  if (showAddActuator) {
+    btnAddActuator.disabled = false;
+    btnAddActuator.textContent = "Add Actuator with Copilot";
+    btnAddActuator.title =
+      "Ask Copilot to add the Spring Boot Actuator starter and expose its endpoints so the Live JVM and Loggers tabs work.";
+  }
+
+  // BootUI section (Spring Boot tab): confirm BootUI once configured, otherwise offer
+  // to add it — shown below the Actuator part so a Spring app without either gets both
+  // CTAs. The "richer metrics + advisor scans" pitch hides once it's set up.
   const canAddBootui = spring && !hasBootui;
+  const bootuiTitle = caps.gradle
+    ? "Ask Copilot to add the BootUI starter to this module's developmentOnly configuration to unlock its console, richer metrics and advisor scans."
+    : "Ask Copilot to add the BootUI starter to this module's dev profile to unlock its console, richer metrics and advisor scans.";
+  if (bootuiSpringHint) bootuiSpringHint.hidden = hasBootui;
+  if (bootuiSpringStatus) bootuiSpringStatus.hidden = !hasBootui;
+  if (btnAddBootuiSpring) {
+    btnAddBootuiSpring.hidden = !canAddBootui;
+    btnAddBootuiSpring.disabled = !canAddBootui;
+    btnAddBootuiSpring.textContent = "Add BootUI with Copilot";
+    btnAddBootuiSpring.title = bootuiTitle;
+  }
+
+  // BootUI panel (scans tab): the same Add-BootUI CTA in its advisor-scans context,
+  // and a "configured" confirmation that replaces the "add the starter" description.
   btnAddBootui.hidden = !canAddBootui;
   btnAddBootui.disabled = !canAddBootui;
-  btnAddBootui.textContent = caps.gradle ? "Add BootUI (developmentOnly)" : "Add BootUI to dev profile";
-  btnAddBootui.title =
-    "Add the BootUI starter to this module's dev profile to unlock its console, richer metrics and advisor scans.";
+  btnAddBootui.textContent = "Add BootUI with Copilot";
+  btnAddBootui.title = bootuiTitle;
+  if (bootuiConfigured) bootuiConfigured.hidden = !hasBootui;
+  if (bootuiDesc) bootuiDesc.hidden = hasBootui;
 
   // DevTools section (Spring Boot tab): show the live-reload toggle + manual
   // actions once DevTools is on the classpath, otherwise offer to add it.
@@ -2136,7 +2492,10 @@ function updateDevSetup() {
   btnAddDevtools.hidden = !showAddDevtools;
   if (showAddDevtools) {
     btnAddDevtools.disabled = false;
-    btnAddDevtools.textContent = caps.gradle ? "Add DevTools (developmentOnly)" : "Add DevTools to dev profile";
+    btnAddDevtools.textContent = "Add DevTools with Copilot";
+    btnAddDevtools.title = caps.gradle
+      ? "Ask Copilot to add Spring Boot DevTools to this module's developmentOnly configuration and enable live reload."
+      : "Ask Copilot to add Spring Boot DevTools to a dev-only Maven profile and enable live reload.";
   }
 
   // Keep the Spring Boot tab's availability in step with the build files (it's
@@ -2146,7 +2505,7 @@ function updateDevSetup() {
 
 // --- Spring Boot version + EOL/upgrade advisor (Spring Boot tab) -------------
 // The backend (springBootAdvisor) reports the detected version, its release line
-// and a support status; we render it and gate the "Upgrade with Copilot" button.
+// and a support status; we render it and gate the "Update with Copilot" button.
 const SPRING_STATUS = {
   current: { label: "Latest release line", cls: "ok" },
   supported: { label: "Supported — a newer release line is available", cls: "warn" },
@@ -2160,7 +2519,7 @@ function renderSpringAdvisor(adv) {
   springAdvisor = adv || null;
   if (!springVersionEl) return;
   if (!adv || !adv.detected) {
-    springVersionEl.innerHTML = '<p class="muted">No Spring Boot module detected.</p>';
+    springVersionEl.innerHTML = '<p class="muted">This isn\u2019t a Spring Boot project.</p>';
     btnUpgradeSpring.hidden = true;
     return;
   }
@@ -2188,8 +2547,8 @@ function renderSpringAdvisor(adv) {
   btnUpgradeSpring.hidden = !showUpgrade;
   if (showUpgrade) {
     btnUpgradeSpring.disabled = false;
-    btnUpgradeSpring.textContent = "Upgrade with Copilot";
-    btnUpgradeSpring.title = `Ask Copilot to upgrade from Spring Boot ${adv.version} to the latest stable release.`;
+    btnUpgradeSpring.textContent = "Update with Copilot";
+    btnUpgradeSpring.title = `Ask Copilot to update from Spring Boot ${adv.version} to the latest stable release.`;
   }
 }
 
@@ -2305,6 +2664,23 @@ function applySettingsState(s) {
     // Only set if the option exists; otherwise fall back to Auto so a stale/removed
     // JDK doesn't leave the control on a phantom value.
     jdkSelect.value = [...jdkSelect.options].some((o) => o.value === want) ? want : "";
+  }
+  // View/preference toggles: restore the saved checkbox state, then re-render the
+  // dependent view so the filter takes effect immediately.
+  if (dbgSuspendInput) dbgSuspendInput.checked = s.debugSuspend === true;
+  if (failuresOnlyInput) {
+    const want = s.testFailuresOnly === true;
+    if (failuresOnlyInput.checked !== want) {
+      failuresOnlyInput.checked = want;
+      rerenderTestFilter();
+    }
+  }
+  if (depsDirectInput) {
+    const want = s.depsDirectOnly === true;
+    if (depsDirectInput.checked !== want) {
+      depsDirectInput.checked = want;
+      if (depsState) renderDeps(depsState);
+    }
   }
   applyAsideState(s);
 }
@@ -2775,15 +3151,27 @@ btnOpenBrowser.onclick = () => post("/api/open-app", {});
 moduleSelect.addEventListener("change", () => {
   updateDevSetup();
 });
-btnAddBootui.onclick = async () => {
-  btnAddBootui.disabled = true;
-  btnAddBootui.textContent = "Asked Copilot \u2713";
+// Both BootUI CTAs (Spring tab + scans tab) trigger the same install-bootui fix, so
+// asking from either flips both to the asked state.
+async function askInstallBootui() {
+  for (const b of [btnAddBootui, btnAddBootuiSpring]) {
+    if (!b) continue;
+    b.disabled = true;
+    b.textContent = "Asked Copilot \u2713";
+  }
   await post("/api/fix", { kind: "install-bootui", module: moduleSelect.value });
-};
+}
+btnAddBootui.onclick = askInstallBootui;
+if (btnAddBootuiSpring) btnAddBootuiSpring.onclick = askInstallBootui;
 btnAddDevtools.onclick = async () => {
   btnAddDevtools.disabled = true;
   btnAddDevtools.textContent = "Asked Copilot \u2713";
   await post("/api/fix", { kind: "install-devtools", module: moduleSelect.value });
+};
+btnAddActuator.onclick = async () => {
+  btnAddActuator.disabled = true;
+  btnAddActuator.textContent = "Asked Copilot \u2713";
+  await post("/api/fix", { kind: "install-actuator", module: moduleSelect.value });
 };
 btnUpgradeSpring.onclick = async () => {
   btnUpgradeSpring.disabled = true;
@@ -2842,6 +3230,9 @@ function saveSettings() {
     jdkHome: jdkSelect ? jdkSelect.value : "",
     asideTab: asideTabPref,
     asideOpen: asideOpenPref,
+    depsDirectOnly: !!(depsDirectInput && depsDirectInput.checked),
+    testFailuresOnly: !!(failuresOnlyInput && failuresOnlyInput.checked),
+    debugSuspend: !!(dbgSuspendInput && dbgSuspendInput.checked),
   });
 }
 warmInput.addEventListener("change", saveSettings);
@@ -2864,8 +3255,13 @@ if (flameDuration) flameDuration.addEventListener("change", saveSettings);
 function rerenderTestFilter() {
   if (lastTestReportData) renderTests(lastTestReportData, lastTestRenderOpts);
 }
-if (failuresOnlyInput) failuresOnlyInput.addEventListener("change", rerenderTestFilter);
+if (failuresOnlyInput)
+  failuresOnlyInput.addEventListener("change", () => {
+    rerenderTestFilter();
+    saveSettings();
+  });
 if (testSearchEl) testSearchEl.addEventListener("input", rerenderTestFilter);
+if (dbgSuspendInput) dbgSuspendInput.addEventListener("change", saveSettings);
 
 // "Full build" persists the affected-vs-full-suite preference for the Test button.
 fullbuildInput.addEventListener("change", () => {

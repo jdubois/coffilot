@@ -91,10 +91,16 @@ Shipped in the extension today:
   native-access warnings.
 - Agent-facing actions: `build_app`, `run_tests`, `run_affected_tests`,
   `package_app`, `start_app`, `stop_app`, `get_status`, `get_metrics`,
-  `profile_app`, `fix_issue`, `run_scan`, `set_log_level`, plus the debug actions
-  `start_debug`, `stop_debug`, `set_breakpoint`, `remove_breakpoint`,
-  `debug_continue`, `debug_step`, `debug_stack`, `get_variables`, `debug_evaluate`
-  and `debug_status`.
+  `profile_app`, `fix_issue`, `run_scan`, `check_dependencies`, `set_log_level`,
+  plus the debug actions `start_debug`, `stop_debug`, `set_breakpoint`,
+  `remove_breakpoint`, `debug_continue`, `debug_step`, `debug_stack`,
+  `get_variables`, `debug_evaluate` and `debug_status`.
+- **Upgrades tab** &mdash; a right-panel tab (no running app needed) that lists outdated
+  libraries for **Maven** (`dependency:tree` + `versions:display-dependency-updates`) and
+  **Gradle** (the built-in `dependencies` report + the ben-manes `dependencyUpdates` task,
+  injected via a throwaway `--init-script`) &mdash; current → latest, major/minor/patch
+  badge, pre-release warning, direct/transitive marker with a "Direct only" toggle. Each
+  finding has a "Fix with Copilot" button. Endpoints `GET /api/deps` / `POST /api/deps/scan`.
 
 ## Known limitations
 
@@ -138,6 +144,11 @@ Near-term, roughly in priority order:
       `public/index.html` + `public/app.js`) wired into CI alongside `npm run check`,
       plus `node:test` unit tests for the pure parsers/normalizers and an
       integration-project matrix (Maven + Gradle) in CI.
+- [x] Add an Upgrades tab: a Maven outdated-library scan with a direct/transitive filter
+      and per-finding "Fix with Copilot".
+- [x] Extend the outdated-library scan to Gradle (the ben-manes `dependencyUpdates` task
+      injected via a throwaway `--init-script`, plus the `dependencies` report for the
+      direct/transitive tree) so the Upgrades tab covers Gradle too.
 - [ ] Document and test the share-as-gist / install-from-repo round trip.
 
 Explicitly **out of scope**: remote (non-loopback) access, and anything that mutates

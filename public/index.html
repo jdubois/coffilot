@@ -407,7 +407,7 @@
       </div>
       <aside id="aside">
         <div class="aside-tabs">
-          <button class="atab" data-atab="metrics" title="Live JVM metrics of the running app">
+          <button class="atab" data-atab="jvm" title="Live JVM metrics of the running app">
             <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
               <path
                 d="M8 4a.5.5 0 0 1 .5.5V6a.5.5 0 0 1-1 0V4.5A.5.5 0 0 1 8 4M3.732 5.732a.5.5 0 0 1 .707 0l.915.914a.5.5 0 1 1-.708.708l-.914-.915a.5.5 0 0 1 0-.707M2 10a.5.5 0 0 1 .5-.5h1.586a.5.5 0 0 1 0 1H2.5A.5.5 0 0 1 2 10m9.5 0a.5.5 0 0 1 .5-.5H14a.5.5 0 0 1 0 1h-2a.5.5 0 0 1-.5-.5m.754-4.246a.39.39 0 0 0-.527-.02L7.547 9.31a.91.91 0 1 0 1.302 1.258l3.434-4.297a.39.39 0 0 0-.029-.518z"
@@ -443,7 +443,7 @@
           </button>
           <button
             class="atab"
-            data-atab="scans"
+            data-atab="bootui"
             title="BootUI: add it to your project, run advisor scans against the live app, and bridge its MCP server to Copilot"
           >
             <!-- BootUI brand mark (the "hot cup"), drawn monochrome via
@@ -484,6 +484,17 @@
             </svg>
             <span class="atab-label">Settings</span>
           </button>
+          <button class="atab" data-atab="deps" title="Check for outdated libraries and update them with Copilot">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M7.47 1.22a.75.75 0 0 1 1.06 0l3 3a.75.75 0 0 1-1.06 1.06L8.75 3.56V10a.75.75 0 0 1-1.5 0V3.56L5.53 5.28a.75.75 0 0 1-1.06-1.06z"
+              />
+              <path
+                d="M2.75 9a.75.75 0 0 1 .75.75v2.5c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25v-2.5a.75.75 0 0 1 1.5 0v2.5A2.75 2.75 0 0 1 11.25 15h-6.5A2.75 2.75 0 0 1 2 12.25v-2.5A.75.75 0 0 1 2.75 9"
+              />
+            </svg>
+            <span class="atab-label">Updates</span>
+          </button>
           <div class="atab-sep" role="separator" aria-hidden="true" hidden></div>
           <button id="aside-toggle" class="aside-toggle" type="button" aria-label="Hide panel" title="Hide panel">
             <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
@@ -495,7 +506,7 @@
         </div>
 
         <div class="aside-body">
-          <div id="atab-metrics" class="apane">
+          <div id="atab-jvm" class="apane">
             <h2>Live JVM metrics<span id="metrics-src" class="src" hidden></span></h2>
             <div id="metrics">
               <p class="muted">Application isn&rsquo;t running or doesn&rsquo;t expose metrics.</p>
@@ -527,54 +538,95 @@
               <p class="muted">Detecting the Spring Boot version…</p>
             </div>
             <div class="set-row set-proposals">
-              <button id="btn-upgrade-spring" class="fix tiny" hidden>Upgrade with Copilot</button>
+              <button id="btn-upgrade-spring" class="fix fix-copilot tiny" hidden>Update with Copilot</button>
             </div>
 
-            <h2 class="spring-h2">DevTools</h2>
-            <p class="hint" id="devtools-hint">
-              Spring Boot DevTools recompiles on save and restarts the app in place — the canvas plays the IDE's
-              recompile role, so the dev loop works without an editor.
-            </p>
-            <!-- DevTools live-reload toggle (only meaningful once DevTools is on the
+            <div id="spring-actuator-section">
+              <h2 class="spring-h2">Actuator</h2>
+              <p class="hint" id="actuator-hint">
+                Spring Boot Actuator exposes runtime endpoints — the canvas reads live JVM metrics in the Live JVM tab
+                and changes log levels without a restart in the Loggers tab.
+              </p>
+              <!-- Confirmation that Actuator is on the classpath (mirrors the DevTools
+               toggle row: a status line once the dependency is present). -->
+              <div class="set-row" id="actuator-status" hidden>
+                <span class="muted">Spring Boot Actuator is on the classpath.</span>
+              </div>
+              <!-- Add Actuator: shown only for a Spring Boot module that doesn't depend
+               on Actuator yet (and isn't already covered by BootUI). -->
+              <div class="set-row set-proposals">
+                <button id="btn-add-actuator" class="fix fix-copilot tiny" hidden>Add Actuator with Copilot</button>
+              </div>
+            </div>
+
+            <!-- BootUI section: the richer tier layered on top of Actuator. Confirms
+             BootUI once configured, otherwise offers to add it (shown below the
+             Actuator part so a Spring app without either gets both CTAs). When BootUI
+             is configured the Actuator part above is hidden, since BootUI includes it. -->
+            <div id="spring-bootui-section">
+              <h2 class="spring-h2">BootUI</h2>
+              <p class="hint" id="bootui-spring-hint">
+                BootUI is an embedded, local-only developer console — it layers richer live JVM metrics and advisor
+                scans (architecture, security, Hibernate, …) on top of Actuator.
+              </p>
+              <div class="set-row" id="bootui-spring-status" hidden>
+                <span class="muted">BootUI is configured — it includes Spring Boot Actuator.</span>
+              </div>
+              <div class="set-row set-proposals">
+                <button id="btn-add-bootui-spring" class="fix fix-copilot tiny" hidden>Add BootUI with Copilot</button>
+              </div>
+            </div>
+
+            <div id="spring-devtools-section">
+              <h2 class="spring-h2">DevTools</h2>
+              <p class="hint" id="devtools-hint">
+                Spring Boot DevTools recompiles on save and restarts the app in place — the canvas plays the IDE's
+                recompile role, so the dev loop works without an editor.
+              </p>
+              <!-- DevTools live-reload toggle (only meaningful once DevTools is on the
                classpath). Moved here from Settings so the whole DevTools story lives
                in one Spring-only place. -->
-            <div class="set-row switch-row" id="set-devtools" hidden>
-              <label class="switch" id="devtools-toggle">
-                <input type="checkbox" id="in-devtools" />
-                <span class="track"><span class="thumb"></span></span>
-                <span class="switch-label">Enable live reload</span>
-              </label>
-              <span
-                class="info"
-                id="devtools-info"
-                tabindex="0"
-                data-tip="Watch the running module's sources and recompile on save so DevTools restarts the app in place."
-                >&#9432;</span
-              >
-            </div>
-            <!-- Manual dev-loop actions, enabled while the app is running. -->
-            <div class="spring-actions" id="devtools-actions" hidden>
-              <button
-                id="btn-reload"
-                class="fix tiny"
-                disabled
-                title="Recompile now so DevTools restarts the running app in place."
-              >
-                Live reload
-              </button>
-              <button id="btn-restart-app" class="fix tiny" disabled title="Stop and relaunch the running app.">
-                Restart app
-              </button>
-            </div>
-            <!-- Add DevTools (dev profile): shown only for a Spring Boot module that
+              <div class="set-row switch-row" id="set-devtools" hidden>
+                <label class="switch" id="devtools-toggle">
+                  <input type="checkbox" id="in-devtools" />
+                  <span class="track"><span class="thumb"></span></span>
+                  <span class="switch-label">Enable live reload</span>
+                </label>
+                <span
+                  class="info"
+                  id="devtools-info"
+                  tabindex="0"
+                  data-tip="Watch the running module's sources and recompile on save so DevTools restarts the app in place."
+                  >&#9432;</span
+                >
+              </div>
+              <!-- Manual dev-loop actions, enabled while the app is running. -->
+              <div class="spring-actions" id="devtools-actions" hidden>
+                <button
+                  id="btn-reload"
+                  class="fix tiny"
+                  disabled
+                  title="Recompile now so DevTools restarts the running app in place."
+                >
+                  Live reload
+                </button>
+                <button id="btn-restart-app" class="fix tiny" disabled title="Stop and relaunch the running app.">
+                  Restart app
+                </button>
+              </div>
+              <!-- Add DevTools (dev profile): shown only for a Spring Boot module that
                doesn't depend on DevTools yet. -->
-            <div class="set-row set-proposals">
-              <button id="btn-add-devtools" class="fix tiny" hidden>Add DevTools to dev profile</button>
+              <div class="set-row set-proposals">
+                <button id="btn-add-devtools" class="fix fix-copilot tiny" hidden>Add DevTools with Copilot</button>
+              </div>
             </div>
           </div>
 
-          <div id="atab-scans" class="apane">
+          <div id="atab-bootui" class="apane">
             <h2>BootUI Spring Boot Starter<span id="scans-src" class="src bootui" hidden>live</span></h2>
+            <p class="hint ok" id="bootui-configured" hidden>
+              &#10003; BootUI is set up for this module — its advisor scans and richer live metrics are available.
+            </p>
             <p class="hint" id="bootui-desc">
               An embedded, local-only developer console for Spring Boot. Add the starter to a Spring Boot module to
               unlock richer live metrics and its advisor scans (architecture, security, Hibernate, …), then push
@@ -585,7 +637,7 @@
                module without BootUI, shown disabled elsewhere, and hidden once the
                module already depends on BootUI (then it's active). -->
             <button id="btn-add-bootui" class="fix fix-copilot tiny" style="margin-top: 0.4rem" hidden>
-              Add BootUI to dev profile
+              Add BootUI with Copilot
             </button>
 
             <!-- BootUI MCP server: optional bridge that exposes the running app's
@@ -616,16 +668,21 @@
             </div>
 
             <h2>Advisor scans</h2>
-            <p class="hint" id="scans-hint">
+            <div class="hint" id="scans-hint">
               Start a <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a> app (dev
               profile) with <strong>Run</strong> to run its advisor scans against the live app.
-            </p>
+            </div>
             <div id="scans-list" class="scans"></div>
             <div id="scans-result"></div>
           </div>
 
           <div id="atab-quarkus" class="apane">
             <h2>Quarkus Agent MCP<span id="quarkus-mcp-state" class="mcp-state"></span></h2>
+            <!-- Inactive-tab reason: shown right after the title when the project
+               has no Quarkus module (the rail tab is greyed in that case). -->
+            <p class="hint" id="quarkus-empty" hidden>
+              This isn&rsquo;t a Quarkus app. Open a Quarkus project to register its Agent MCP server with Copilot.
+            </p>
             <p class="hint" id="quarkus-desc">
               Register the standalone
               <a href="https://github.com/quarkusio/quarkus-agent-mcp" target="_blank" rel="noopener"
@@ -635,6 +692,11 @@
               proxy and structured exceptions. Coffilot only detects and registers it &mdash; the server runs as a
               separate process. Needs JBang or Java 21+; docs search also needs Docker/Podman.
             </p>
+            <!-- Register CTA: the primary action for this tab, placed above the
+               "Quarkus Agent MCP server" subtitle to match the BootUI tab layout. -->
+            <button id="quarkus-mcp-register" class="fix fix-copilot tiny" style="margin-top: 0.4rem" hidden>
+              Register with Copilot
+            </button>
             <!-- Quarkus Agent MCP: register the standalone quarkus-agent MCP
                server with the Copilot CLI and trigger its capabilities. The
                server is external (JBang / java), so this panel doesn't depend on
@@ -642,15 +704,9 @@
             <div id="quarkus-mcp" class="mcp-settings">
               <div class="switch-row">
                 <span class="switch-label">Quarkus Agent MCP server</span>
-                <button id="quarkus-mcp-register" class="fix fix-copilot tiny" style="margin-left: auto" hidden>
-                  Register with Copilot
-                </button>
               </div>
               <div id="quarkus-mcp-scans" class="scans"></div>
             </div>
-            <p class="hint" id="quarkus-empty" hidden>
-              No Quarkus module detected. Open a Quarkus project to register its Agent MCP server with Copilot.
-            </p>
           </div>
 
           <div id="atab-settings" class="apane active">
@@ -799,6 +855,26 @@
                 title="How often the Live JVM panel refreshes metrics from the running app (500–30000 ms)."
               />
             </div>
+          </div>
+
+          <div id="atab-deps" class="apane">
+            <h2>Dependencies updates<span id="deps-src" class="src" hidden></span></h2>
+            <p class="hint" id="deps-hint">
+              Scan for <strong>outdated libraries</strong> and update them with Copilot.
+            </p>
+            <div class="deps-controls">
+              <button class="tiny" id="deps-scan">Check dependencies</button>
+              <label
+                class="switch small"
+                id="deps-direct-toggle"
+                title="Hide transitive dependencies and show only the ones you declare."
+              >
+                <input type="checkbox" id="deps-direct" />
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-label">Direct only</span>
+              </label>
+            </div>
+            <div id="deps-result"></div>
           </div>
         </div>
       </aside>

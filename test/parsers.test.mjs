@@ -18,6 +18,7 @@ const {
   promFirstLabel,
   quarkusMetrics,
   normalizeQuarkusLoggers,
+  normalizeBootuiLoggers,
   maskSecrets,
   buildHistoryEntry,
   clampHistory,
@@ -28,6 +29,18 @@ const {
   jdkSupportsNativeAccess,
   springBootVersionFromPom,
   springBootVersionFromGradle,
+  parseDependencyTree,
+  parseDependencyUpdates,
+  mergeDependencyUpdates,
+  parseGradleDependencyTree,
+  parseGradleDependencyUpdates,
+  gradleDepConfigFilter,
+  classifyVersionJump,
+  isPrerelease,
+  pomCaps,
+  gradleCaps,
+  looksLikeSmallryeHealth,
+  looksLikePrometheus,
 } = await import("../extension.mjs");
 
 // ---------------------------------------------------------------------------
@@ -271,6 +284,95 @@ test("quarkusMetrics defaults the health checks to an empty list", () => {
   assert.deepEqual(out.health, { status: "UP", checks: [] });
 });
 
+// A secured Spring Boot app redirects /q/* to its login page; fetch follows the
+// redirect to a 200 HTML body. These guards keep that page out of the Quarkus tier.
+test("looksLikeSmallryeHealth accepts SmallRye Health but rejects login pages and Spring error JSON", () => {
+  assert.equal(looksLikeSmallryeHealth({ status: "UP", checks: [] }), true, "real SmallRye Health");
+  assert.equal(looksLikeSmallryeHealth({ status: "DOWN" }), true, "DOWN with no checks is still health");
+  assert.equal(looksLikeSmallryeHealth(null), false, "no body");
+  assert.equal(looksLikeSmallryeHealth("<html>login</html>"), false, "an HTML string isn't health JSON");
+  // Spring Boot's default error JSON carries a numeric status, not "UP"/"DOWN".
+  assert.equal(
+    looksLikeSmallryeHealth({ timestamp: "now", status: 401, error: "Unauthorized", path: "/q/health" }),
+    false,
+    "Spring's numeric-status error JSON is rejected",
+  );
+});
+
+test("looksLikePrometheus accepts a Micrometer scrape but rejects a login page", () => {
+  assert.equal(looksLikePrometheus(PROM), true, "a real Prometheus scrape with samples");
+  assert.equal(
+    looksLikePrometheus(
+      "# HELP jvm_threads_live_threads The current number of live threads\n# TYPE jvm_threads_live_threads gauge",
+    ),
+    true,
+    "HELP/TYPE comments alone are enough",
+  );
+  assert.equal(looksLikePrometheus(null), false, "no body");
+  assert.equal(
+    looksLikePrometheus(
+      '<!DOCTYPE html><html lang="en"><head><title>Please sign in</title></head><body>...</body></html>',
+    ),
+    false,
+    "a Spring Security login page is not Prometheus exposition",
+  );
+});
+
+test("pomCaps / gradleCaps detect the Quarkus Micrometer metrics dependency", () => {
+  const withMetrics =
+    "<project><dependencies><dependency><groupId>io.quarkus</groupId>" +
+    "<artifactId>quarkus-micrometer-registry-prometheus</artifactId></dependency></dependencies></project>";
+  assert.equal(pomCaps(withMetrics, "app").quarkusMetrics, true, "Maven: micrometer registry detected");
+  assert.equal(pomCaps("<project/>", "app").quarkusMetrics, false, "Maven: absent when no micrometer dep");
+
+  const gradleWith = 'dependencies { implementation("io.quarkus:quarkus-micrometer-registry-prometheus") }';
+  assert.equal(gradleCaps(gradleWith, "app").quarkusMetrics, true, "Gradle: micrometer registry detected");
+  assert.equal(
+    gradleCaps("plugins { id 'java' }", "app").quarkusMetrics,
+    false,
+    "Gradle: absent when no micrometer dep",
+  );
+});
+
+test("pomCaps / gradleCaps detect the Quarkus logging-manager extension", () => {
+  const withLm =
+    "<project><dependencies><dependency><groupId>io.quarkiverse.loggingmanager</groupId>" +
+    "<artifactId>quarkus-logging-manager</artifactId></dependency></dependencies></project>";
+  assert.equal(pomCaps(withLm, "app").loggingManager, true, "Maven: logging-manager detected");
+  assert.equal(pomCaps("<project/>", "app").loggingManager, false, "Maven: absent when no logging-manager dep");
+
+  const gradleWith = 'dependencies { runtimeOnly("io.quarkiverse.loggingmanager:quarkus-logging-manager") }';
+  assert.equal(gradleCaps(gradleWith, "app").loggingManager, true, "Gradle: logging-manager detected");
+  assert.equal(
+    gradleCaps("plugins { id 'java' }", "app").loggingManager,
+    false,
+    "Gradle: absent when no logging-manager dep",
+  );
+});
+
+test("pomCaps reports the Maven profile id(s) carrying the BootUI starter", () => {
+  // BootUI scoped to a dev-only profile (the install-bootui layout): bootui is
+  // detected, and its carrying profile id is reported so the runner can -P it.
+  const devProfile =
+    "<project><profiles><profile><id>dev</id><dependencies><dependency>" +
+    "<groupId>com.julien-dubois.bootui</groupId><artifactId>bootui-spring-boot-starter</artifactId>" +
+    "</dependency></dependencies></profile></profiles></project>";
+  const caps = pomCaps(devProfile, "app");
+  assert.equal(caps.bootui, true, "BootUI detected when scoped to a profile");
+  assert.deepEqual(caps.bootuiProfiles, ["dev"], "the dev profile carrying BootUI is reported");
+
+  // BootUI as a top-level dependency: detected, but no profile to activate.
+  const topLevel =
+    "<project><dependencies><dependency><groupId>com.julien-dubois.bootui</groupId>" +
+    "<artifactId>bootui-spring-boot-starter</artifactId></dependency></dependencies></project>";
+  const caps2 = pomCaps(topLevel, "app");
+  assert.equal(caps2.bootui, true, "top-level BootUI detected");
+  assert.deepEqual(caps2.bootuiProfiles, [], "no profile to activate for a top-level dependency");
+
+  // No BootUI at all: empty profile list.
+  assert.deepEqual(pomCaps("<project/>", "app").bootuiProfiles, [], "no BootUI profiles when absent");
+});
+
 test("normalizeQuarkusLoggers maps the listing to the shared shape (ROOT first)", () => {
   const out = normalizeQuarkusLoggers(
     [
@@ -297,6 +399,34 @@ test("normalizeQuarkusLoggers falls back to JBoss levels and rejects non-arrays"
   const out = normalizeQuarkusLoggers([{ name: "ROOT", configuredLevel: "INFO", effectiveLevel: "INFO" }], null);
   assert.ok(out.levels.includes("TRACE") && out.levels.includes("FINEST"));
   assert.equal(normalizeQuarkusLoggers(null, ["INFO"]), null);
+});
+
+test("normalizeBootuiLoggers maps the /bootui/api/loggers report to the shared shape (ROOT first)", () => {
+  const out = normalizeBootuiLoggers({
+    availableLevels: ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"],
+    loggers: [
+      { name: "org.acme.Svc", configuredLevel: "DEBUG", effectiveLevel: "DEBUG" },
+      { name: "ROOT", configuredLevel: "INFO", effectiveLevel: "INFO" },
+      { name: "io.github", configuredLevel: null, effectiveLevel: "INFO" },
+    ],
+    page: { total: 3 },
+  });
+  assert.equal(out.available, true);
+  assert.equal(out.source, "bootui");
+  assert.deepEqual(
+    out.loggers.map((l) => l.name),
+    ["ROOT", "io.github", "org.acme.Svc"],
+  );
+  // A null configuredLevel normalizes to null (the UI's "inherit" state).
+  assert.equal(out.loggers[1].configuredLevel, null);
+  assert.deepEqual(out.levels, ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"]);
+});
+
+test("normalizeBootuiLoggers falls back to default levels and rejects non-reports", () => {
+  const out = normalizeBootuiLoggers({ loggers: [{ name: "ROOT", configuredLevel: "INFO", effectiveLevel: "INFO" }] });
+  assert.deepEqual(out.levels, ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"]);
+  assert.equal(normalizeBootuiLoggers(null), null, "no report");
+  assert.equal(normalizeBootuiLoggers({ availableLevels: ["INFO"] }), null, "a report without a loggers array");
 });
 
 // ---------------------------------------------------------------------------
@@ -581,4 +711,280 @@ test("springBootVersionFromGradle reads a buildscript classpath and skips variab
   assert.equal(springBootVersionFromGradle(classpath), "2.7.18");
   const variable = `plugins { id 'org.springframework.boot' version "$springBootVersion" }`;
   assert.equal(springBootVersionFromGradle(variable), null);
+});
+
+// ---------------------------------------------------------------------------
+// Dependencies — outdated-library parsers
+// ---------------------------------------------------------------------------
+
+test("parseDependencyTree classifies direct vs transitive by tree depth", () => {
+  const out = [
+    "[INFO] com.example:demo:jar:1.0.0",
+    "[INFO] +- org.springframework.boot:spring-boot-starter-webmvc:jar:4.0.0:compile",
+    "[INFO] |  +- org.springframework:spring-web:jar:7.0.0:compile",
+    "[INFO] |  \\- com.fasterxml.jackson.core:jackson-databind:jar:2.18.0:compile",
+    "[INFO] \\- com.google.guava:guava:jar:19.0:compile",
+  ].join("\n");
+  const nodes = parseDependencyTree(out);
+  const byKey = Object.fromEntries(nodes.map((n) => [n.key, n]));
+  assert.equal(byKey["org.springframework.boot:spring-boot-starter-webmvc"].direct, true);
+  assert.equal(byKey["com.google.guava:guava"].direct, true);
+  assert.equal(byKey["org.springframework:spring-web"].direct, false);
+  assert.equal(byKey["org.springframework:spring-web"].via, "org.springframework.boot:spring-boot-starter-webmvc");
+  assert.equal(byKey["com.fasterxml.jackson.core:jackson-databind"].version, "2.18.0");
+});
+
+test("parseDependencyTree handles a 6-part coordinate with a classifier", () => {
+  const out = "[INFO] +- org.example:native-lib:jar:linux-x86_64:1.2.3:runtime";
+  const nodes = parseDependencyTree(out);
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].version, "1.2.3");
+  assert.equal(nodes[0].scope, "runtime");
+  assert.equal(nodes[0].direct, true);
+});
+
+test("parseDependencyTree keeps the shallowest occurrence of a duplicate", () => {
+  const out = [
+    "[INFO] +- com.google.guava:guava:jar:19.0:compile",
+    "[INFO] \\- org.example:wrapper:jar:1.0:compile",
+    "[INFO]    \\- com.google.guava:guava:jar:19.0:compile",
+  ].join("\n");
+  const nodes = parseDependencyTree(out);
+  const guava = nodes.filter((n) => n.key === "com.google.guava:guava");
+  assert.equal(guava.length, 1);
+  assert.equal(guava[0].direct, true);
+});
+
+test("parseDependencyUpdates extracts current -> latest per coordinate", () => {
+  const out = [
+    "[INFO] The following dependencies in Dependencies have newer versions:",
+    "[INFO]   com.google.guava:guava ..................... 19.0 -> 33.6.0-jre",
+    "[INFO]   org.slf4j:slf4j-api ........................ 1.7.20 -> 2.1.0-alpha1",
+    "[INFO] ",
+  ].join("\n");
+  const map = parseDependencyUpdates(out);
+  assert.equal(map.get("com.google.guava:guava").latest, "33.6.0-jre");
+  assert.equal(map.get("org.slf4j:slf4j-api").current, "1.7.20");
+  assert.equal(map.size, 2);
+});
+
+test("mergeDependencyUpdates joins tree + updates, sorts direct-first by jump", () => {
+  const nodes = parseDependencyTree(
+    [
+      "[INFO] +- com.google.guava:guava:jar:19.0:compile",
+      "[INFO] \\- org.example:lib:jar:1.0.0:compile",
+      "[INFO]    \\- org.slf4j:slf4j-api:jar:1.7.20:compile",
+    ].join("\n"),
+  );
+  const updates = parseDependencyUpdates(
+    [
+      "[INFO]   com.google.guava:guava ... 19.0 -> 33.6.0-jre",
+      "[INFO]   org.slf4j:slf4j-api ...... 1.7.20 -> 2.1.0-alpha1",
+    ].join("\n"),
+  );
+  const merged = mergeDependencyUpdates(nodes, updates);
+  assert.equal(merged.length, 2);
+  // guava is direct so it sorts ahead of the transitive slf4j.
+  assert.equal(merged[0].artifact, "guava");
+  assert.equal(merged[0].direct, true);
+  assert.equal(merged[0].jump, "major");
+  assert.equal(merged[1].direct, false);
+  assert.equal(merged[1].via, "org.example:lib");
+  // slf4j's latest is a pre-release while the current isn't.
+  assert.equal(merged[1].prerelease, true);
+});
+
+test("classifyVersionJump distinguishes major / minor / patch", () => {
+  assert.equal(classifyVersionJump("1.0.0", "2.0.0"), "major");
+  assert.equal(classifyVersionJump("1.2.0", "1.5.0"), "minor");
+  assert.equal(classifyVersionJump("1.2.3", "1.2.9"), "patch");
+  assert.equal(classifyVersionJump("19.0", "33.6.0-jre"), "major");
+  assert.equal(classifyVersionJump("weird", "1.0"), "other");
+});
+
+test("isPrerelease detects alpha/beta/rc/milestone/snapshot qualifiers", () => {
+  assert.equal(isPrerelease("2.1.0-alpha1"), true);
+  assert.equal(isPrerelease("3.0.0-RC1"), true);
+  assert.equal(isPrerelease("1.0.0-M2"), true);
+  assert.equal(isPrerelease("5.2.0-SNAPSHOT"), true);
+  assert.equal(isPrerelease("33.6.0-jre"), false);
+  assert.equal(isPrerelease("3.20.0"), false);
+});
+
+// Real `gradle dependencies --configuration runtimeClasspath` output (5-char
+// indent per level, with a repeated-subtree (*) marker).
+const GRADLE_TREE = [
+  "",
+  "------------------------------------------------------------",
+  "Root project 'gradledep'",
+  "------------------------------------------------------------",
+  "",
+  "runtimeClasspath - Runtime classpath of source set 'main'.",
+  "+--- com.google.guava:guava:19.0",
+  "+--- org.apache.commons:commons-lang3:3.4",
+  "+--- org.slf4j:slf4j-api:1.7.20",
+  "+--- com.fasterxml.jackson.core:jackson-databind:2.9.0",
+  "|    +--- com.fasterxml.jackson.core:jackson-annotations:2.9.0",
+  "|    \\--- com.fasterxml.jackson.core:jackson-core:2.9.0",
+  "\\--- org.springframework:spring-web:5.2.0.RELEASE",
+  "     +--- org.springframework:spring-beans:5.2.0.RELEASE",
+  "     |    \\--- org.springframework:spring-core:5.2.0.RELEASE",
+  "     |         \\--- org.springframework:spring-jcl:5.2.0.RELEASE",
+  "     \\--- org.springframework:spring-core:5.2.0.RELEASE (*)",
+  "",
+  "(*) - Indicates repeated occurrences of a transitive dependency subtree.",
+].join("\n");
+
+test("parseGradleDependencyTree classifies direct vs transitive by indent depth", () => {
+  const nodes = parseGradleDependencyTree(GRADLE_TREE);
+  const byKey = Object.fromEntries(nodes.map((n) => [n.key, n]));
+  assert.equal(byKey["com.google.guava:guava"].direct, true);
+  assert.equal(byKey["com.google.guava:guava"].version, "19.0");
+  assert.equal(byKey["com.google.guava:guava"].scope, "runtime");
+  // jackson-core is a transitive dep pulled in by jackson-databind.
+  assert.equal(byKey["com.fasterxml.jackson.core:jackson-core"].direct, false);
+  assert.equal(byKey["com.fasterxml.jackson.core:jackson-core"].via, "com.fasterxml.jackson.core:jackson-databind");
+  // spring-jcl is several levels deep but its `via` is still the direct ancestor.
+  assert.equal(byKey["org.springframework:spring-jcl"].direct, false);
+  assert.equal(byKey["org.springframework:spring-jcl"].via, "org.springframework:spring-web");
+});
+
+test("parseGradleDependencyTree keeps the shallowest occurrence and ignores (*)", () => {
+  const nodes = parseGradleDependencyTree(GRADLE_TREE);
+  const core = nodes.filter((n) => n.key === "org.springframework:spring-core");
+  // The (*) repeat at depth 1 wins over the depth-2 first occurrence, but it is
+  // still transitive, and deduped to a single node.
+  assert.equal(core.length, 1);
+  assert.equal(core[0].direct, false);
+});
+
+test("parseGradleDependencyTree resolves version coercion (a -> b)", () => {
+  const nodes = parseGradleDependencyTree(
+    [
+      "runtimeClasspath - Runtime classpath.",
+      "+--- org.slf4j:slf4j-api:1.7.20 -> 2.0.13",
+      "\\--- com.example:lib -> 3.1.0",
+    ].join("\n"),
+  );
+  const byKey = Object.fromEntries(nodes.map((n) => [n.key, n]));
+  assert.equal(byKey["org.slf4j:slf4j-api"].version, "2.0.13");
+  // A constraint-only line (no requested version) still resolves via the arrow.
+  assert.equal(byKey["com.example:lib"].version, "3.1.0");
+});
+
+test("gradleDepConfigFilter keeps real dependency classpaths and drops internal configs", () => {
+  for (const ok of [
+    "compileClasspath",
+    "runtimeClasspath",
+    "testCompileClasspath",
+    "testRuntimeClasspath",
+    "productionRuntimeClasspath",
+    "integrationTestRuntimeClasspath",
+    "annotationProcessor",
+    "testAnnotationProcessor",
+    "developmentOnly",
+    "testAndDevelopmentOnly",
+  ]) {
+    assert.equal(gradleDepConfigFilter(ok), true, `${ok} should be a dependency classpath`);
+  }
+  for (const no of [
+    "kotlinCompilerPluginClasspathMain",
+    "kotlinBuildToolsApiClasspath",
+    "kotlinCompilerClasspath",
+    "apiElements",
+    "runtimeElements",
+    "mainSourceElements",
+    "implementationDependenciesMetadata",
+    "default",
+    "archives",
+  ]) {
+    assert.equal(gradleDepConfigFilter(no), false, `${no} should be excluded`);
+  }
+});
+
+test("parseGradleDependencyTree with a configFilter ignores internal plugin configs", () => {
+  // A real-world multi-config report: a plugin/compiler classpath that the user
+  // does not declare, plus the compile/test classpaths that they do.
+  const tree = [
+    "kotlinCompilerPluginClasspathMain - Kotlin compiler plugins for compilation",
+    "\\--- org.jetbrains.kotlin:kotlin-allopen-compiler-plugin-embeddable:2.2.0",
+    "",
+    "compileClasspath - Compile classpath for source set 'main'.",
+    "+--- com.example:app-lib:1.0",
+    "|    \\--- com.example:shared:1.0",
+    "",
+    "testRuntimeClasspath - Runtime classpath of source set 'test'.",
+    "\\--- org.junit.jupiter:junit-jupiter:5.10.0",
+    "     \\--- org.junit.jupiter:junit-jupiter-api:5.10.0",
+    "",
+  ].join("\n");
+  const nodes = parseGradleDependencyTree(tree, { configFilter: gradleDepConfigFilter });
+  const byKey = Object.fromEntries(nodes.map((n) => [n.key, n]));
+  // The compiler-plugin artifact lives only in a kotlin* config and is dropped.
+  assert.equal(byKey["org.jetbrains.kotlin:kotlin-allopen-compiler-plugin-embeddable"], undefined);
+  // Declared deps are direct; their transitive children are transitive.
+  assert.equal(byKey["com.example:app-lib"].direct, true);
+  assert.equal(byKey["com.example:shared"].direct, false);
+  assert.equal(byKey["org.junit.jupiter:junit-jupiter"].direct, true);
+  assert.equal(byKey["org.junit.jupiter:junit-jupiter-api"].direct, false);
+  // Without the filter every configuration is parsed, including the kotlin one.
+  const all = parseGradleDependencyTree(tree);
+  assert.ok(all.some((n) => n.key === "org.jetbrains.kotlin:kotlin-allopen-compiler-plugin-embeddable"));
+});
+
+test("parseGradleDependencyUpdates reads the ben-manes JSON outdated list", () => {
+  const json = JSON.stringify({
+    outdated: {
+      dependencies: [
+        { group: "com.google.guava", name: "guava", version: "19.0", available: { release: "33.6.0-jre" } },
+        {
+          group: "org.slf4j",
+          name: "slf4j-api",
+          version: "1.7.20",
+          available: { release: "2.1.0-alpha1", milestone: null },
+        },
+        {
+          group: "no.latest",
+          name: "lib",
+          version: "1.0",
+          available: { release: null, milestone: null, integration: null },
+        },
+      ],
+    },
+  });
+  const map = parseGradleDependencyUpdates(json);
+  assert.equal(map.get("com.google.guava:guava").latest, "33.6.0-jre");
+  assert.equal(map.get("org.slf4j:slf4j-api").latest, "2.1.0-alpha1");
+  // A dependency with no available version is dropped.
+  assert.equal(map.has("no.latest:lib"), false);
+});
+
+test("parseGradleDependencyUpdates returns an empty map on malformed JSON", () => {
+  assert.equal(parseGradleDependencyUpdates("not json").size, 0);
+  assert.equal(parseGradleDependencyUpdates("{}").size, 0);
+});
+
+test("mergeDependencyUpdates joins a Gradle tree + ben-manes report", () => {
+  const nodes = parseGradleDependencyTree(GRADLE_TREE);
+  const updMap = parseGradleDependencyUpdates(
+    JSON.stringify({
+      outdated: {
+        dependencies: [
+          { group: "com.google.guava", name: "guava", version: "19.0", available: { release: "33.6.0-jre" } },
+          {
+            group: "org.springframework",
+            name: "spring-core",
+            version: "5.2.0.RELEASE",
+            available: { release: "6.1.0" },
+          },
+        ],
+      },
+    }),
+  );
+  const merged = mergeDependencyUpdates(nodes, updMap);
+  const byKey = Object.fromEntries(merged.map((m) => [`${m.group}:${m.artifact}`, m]));
+  assert.equal(byKey["com.google.guava:guava"].direct, true);
+  assert.equal(byKey["com.google.guava:guava"].jump, "major");
+  assert.equal(byKey["org.springframework:spring-core"].direct, false);
+  assert.equal(byKey["org.springframework:spring-core"].via, "org.springframework:spring-web");
 });

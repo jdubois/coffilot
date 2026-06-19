@@ -1048,7 +1048,7 @@ aside h2 {
 }
 /* Caret that rotates when the row is open. */
 .scan-finding > summary::before {
-  content: "\u203A";
+  content: "\203A";
   flex: 0 0 auto;
   color: var(--text-color-muted, #656d76);
   transition: transform var(--dur-fast, 0.12s) var(--ease-out, ease);
@@ -1123,6 +1123,160 @@ aside h2 {
 }
 .sev-badge.sev-info {
   color: var(--text-color-muted, #656d76);
+}
+
+/* ---- Dependencies & upgrades (Upgrades aside tab) -------------------- */
+.deps-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.6rem;
+}
+.switch.small {
+  font-size: 12px;
+}
+.deps-section + .deps-section {
+  margin-top: 0.9rem;
+}
+.deps-section > h3,
+.deps-section-head h3 {
+  margin: 0 0 0.4rem;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-color-muted, #656d76);
+}
+.deps-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.deps-section-head h3 {
+  margin: 0;
+}
+.deps-counts {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-color-muted, #656d76);
+}
+.deps-ok {
+  margin: 0.2rem 0 0;
+  color: var(--true-color-green, #1a7f37);
+}
+.deps-error {
+  margin: 0.2rem 0 0;
+  color: var(--true-color-red, #cf222e);
+}
+.dep-list {
+  border: 1px solid var(--border-color-muted, #d8dee4);
+  border-radius: 6px;
+  overflow: hidden;
+}
+/* A dependency row reuses the scan-finding interaction (caret + summary). */
+.dep-item {
+  border-top: 1px solid var(--border-color-muted, #d8dee4);
+}
+.dep-item:first-child {
+  border-top: none;
+}
+.dep-item > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.5rem;
+  cursor: pointer;
+  list-style: none;
+}
+.dep-item > summary::-webkit-details-marker {
+  display: none;
+}
+.dep-item > summary::before {
+  content: "\203A";
+  flex: 0 0 auto;
+  color: var(--text-color-muted, #656d76);
+  transition: transform var(--dur-fast, 0.12s) var(--ease-out, ease);
+}
+.dep-item[open] > summary::before {
+  transform: rotate(90deg);
+}
+.dep-item > summary:hover {
+  background: var(--background-color-muted, #f6f8fa);
+}
+.dep-item .finding-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.dep-ver {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.dep-ver .ver-old {
+  color: var(--text-color-muted, #656d76);
+  text-decoration: line-through;
+}
+.dep-ver .ver-arrow {
+  color: var(--text-color-muted, #656d76);
+}
+.dep-ver .ver-new {
+  color: var(--true-color-green, #1a7f37);
+  font-weight: 600;
+}
+/* Upgrade size badge (major / minor / patch). */
+.jump-badge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.05rem 0.3rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  line-height: 1.5;
+  color: var(--text-color-muted, #656d76);
+}
+.jump-badge.jump-major {
+  color: var(--true-color-red, #cf222e);
+}
+.jump-badge.jump-minor {
+  color: var(--true-color-orange, #bc4c00);
+}
+.jump-badge.jump-patch {
+  color: var(--true-color-blue, #0969da);
+}
+/* Direct / transitive pill. */
+.dep-scope {
+  flex: 0 0 auto;
+  font-size: 10px;
+  padding: 0.05rem 0.3rem;
+  border-radius: 999px;
+  background: var(--background-color-muted, #f6f8fa);
+  border: 1px solid var(--border-color-muted, #d8dee4);
+  color: var(--text-color-muted, #656d76);
+}
+.dep-scope.direct {
+  color: var(--text-color-default, #1f2328);
+}
+.dep-pre {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--true-color-yellow, #9a6700);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0 0.3rem;
+  margin-left: 0.3rem;
 }
 
 /* Install hint banner (shown only when mvnd is missing) */
@@ -2200,7 +2354,8 @@ button.fix.cof-pop-in {
   color: var(--text-color-muted, #656d76);
   gap: 0.35rem;
 }
-.muted.ok {
+.muted.ok,
+.hint.ok {
   color: var(--true-color-green, #1a7f37);
 }
 .muted.err {

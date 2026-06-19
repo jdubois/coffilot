@@ -20,6 +20,13 @@ application {
     mainClass = 'com.example.helloworld.App'
 }
 
+dependencies {
+    // A deliberately ancient release (2015) so the Upgrades-tab outdated-library
+    // scan always has a guaranteed-outdated direct dependency to report. It is
+    // unused by the code; it only exercises the dependency scan.
+    implementation 'com.google.guava:guava:19.0'
+}
+
 testing {
     suites {
         test {

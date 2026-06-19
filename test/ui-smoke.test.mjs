@@ -120,35 +120,527 @@ test("renderMcp tolerates an unavailable MCP server", () => {
   assert.doesNotThrow(() => win.renderMcp({ available: false }));
 });
 
-test("renderLoggers tailors the no-endpoint hint and fix button per framework", () => {
+test("the Loggers tab shares the inactive dependency story with Live JVM", () => {
   const list = () => win.document.getElementById("loggers-list").innerHTML;
 
-  // Spring Boot: Actuator hint + a Fix button wired to install-actuator-loggers.
-  assert.doesNotThrow(() => win.renderLoggers({ available: false, runMode: "spring" }));
-  assert.ok(list().includes("Actuator"), "expected the Spring Boot Actuator hint");
-  assert.ok(!list().includes("quarkus-logging-manager"), "no Quarkus copy for a Spring app");
-  assert.ok(win.document.getElementById("loggers-fix"), "expected a Fix with Copilot button");
+  // App down on a plain Java project: a "not running" lead, no dependency fix.
+  win.applyEnv({ modules: [{ name: "lib", artifactId: "lib", runnable: true }], capabilities: { maven: true } });
+  win.renderLoggers({ available: false, appDown: true });
+  assert.match(list(), /isn.t running/i, "expected an app-not-running lead like Live JVM");
+  assert.equal(win.document.getElementById("diag-fix-lm"), null, "no fix button for a plain Java app");
 
-  // Quarkus: logging-manager hint + a Fix button, no Actuator copy.
-  assert.doesNotThrow(() => win.renderLoggers({ available: false, runMode: "quarkus" }));
-  assert.ok(list().includes("quarkus-logging-manager"), "expected the Quarkus logging-manager hint");
+  // Spring Boot without Actuator, app up but no /loggers: Add Actuator then Add BootUI.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: false }],
+    capabilities: { springBoot: true, maven: true },
+  });
+  win.renderLoggers({ available: false });
+  assert.ok(win.document.getElementById("diag-fix-actuator"), "Spring w/o Actuator offers Add Actuator");
+  assert.ok(win.document.getElementById("diag-fix-bootui"), "and Add BootUI alongside it");
+
+  // Quarkus without logging-manager: a single Add logging-manager fix, no Spring copy.
+  win.applyEnv({
+    modules: [{ name: "svc", artifactId: "svc", runnable: true, quarkus: true, loggingManager: false }],
+    capabilities: { quarkus: true, maven: true },
+  });
+  win.renderLoggers({ available: false });
+  assert.ok(win.document.getElementById("diag-fix-lm"), "Quarkus w/o logging-manager offers its fix");
   assert.ok(!/Actuator/.test(list()), "no Spring Boot copy for a Quarkus app");
-  assert.ok(win.document.getElementById("loggers-fix"), "expected a Fix with Copilot button");
 
-  // Plain Java (or unknown): generic message, no fix button.
-  assert.doesNotThrow(() => win.renderLoggers({ available: false, runMode: "java" }));
-  assert.ok(list().includes("only"), "expected the generic 'only Spring Boot or Quarkus' message");
-  assert.equal(win.document.getElementById("loggers-fix"), null, "no fix button for a non-framework app");
+  // Quarkus with logging-manager present: confirm it's set up, no fix button.
+  win.applyEnv({
+    modules: [{ name: "svc", artifactId: "svc", runnable: true, quarkus: true, loggingManager: true }],
+    capabilities: { quarkus: true, loggingManager: true, maven: true },
+  });
+  win.renderLoggers({ available: false, appDown: true });
+  assert.match(list(), /logging-manager is set up/i, "confirms logging-manager is set up");
+  assert.equal(win.document.getElementById("diag-fix-lm"), null, "no fix once logging-manager is present");
+});
+
+test("the Spring tab offers to add Actuator only when the module lacks it", () => {
+  const btn = win.document.getElementById("btn-add-actuator");
+  const status = win.document.getElementById("actuator-status");
+
+  // Spring Boot module without Actuator: the add button shows, status hidden.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: false, devtools: true }],
+    capabilities: { springBoot: true, maven: true },
+  });
+  assert.equal(btn.hidden, false, "Add Actuator shown when the module lacks Actuator");
+  assert.equal(status.hidden, true, "no 'on the classpath' status without Actuator");
+  assert.match(btn.textContent, /with Copilot$/, "Add Actuator label ends with 'with Copilot'");
+  assert.ok(btn.classList.contains("fix-copilot"), "Add Actuator uses the orange fix-copilot CTA color");
+  for (const id of ["btn-add-actuator", "btn-add-devtools", "btn-add-bootui", "btn-add-bootui-spring"]) {
+    const el = win.document.getElementById(id);
+    assert.match(el.textContent.trim(), /with Copilot$/, `${id} label ends with 'with Copilot'`);
+    assert.ok(el.classList.contains("fix-copilot"), `${id} uses the orange fix-copilot CTA color`);
+  }
+
+  // Spring Boot module with Actuator: button hidden, status shown.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: true, devtools: true }],
+    capabilities: { springBoot: true, maven: true },
+  });
+  assert.equal(btn.hidden, true, "Add Actuator hidden once Actuator is present");
+  assert.equal(status.hidden, false, "status confirms Actuator is on the classpath");
+
+  // Non-Spring module: neither the button nor the status shows.
+  win.applyEnv({
+    modules: [{ name: "lib", artifactId: "lib", runnable: true, springBoot: false, actuator: false }],
+    capabilities: {},
+  });
+  assert.equal(btn.hidden, true, "Add Actuator hidden for a non-Spring module");
+  assert.equal(status.hidden, true, "no Actuator status for a non-Spring module");
+});
+
+test("BootUI configured suppresses the Actuator part and confirms BootUI", () => {
+  const actuatorSection = win.document.getElementById("spring-actuator-section");
+  const bootuiSection = win.document.getElementById("spring-bootui-section");
+  const addActuator = win.document.getElementById("btn-add-actuator");
+  const actuatorStatus = win.document.getElementById("actuator-status");
+  const bootuiSpringStatus = win.document.getElementById("bootui-spring-status");
+  const bootuiSpringHint = win.document.getElementById("bootui-spring-hint");
+  const addBootuiSpring = win.document.getElementById("btn-add-bootui-spring");
+  const bootuiConfigured = win.document.getElementById("bootui-configured");
+  const bootuiDesc = win.document.getElementById("bootui-desc");
+  const addBootui = win.document.getElementById("btn-add-bootui");
+
+  // BootUI configured (it bundles Actuator) even with actuator:false on the module:
+  // the Actuator part is hidden entirely, the BootUI part confirms it, and the scans
+  // tab confirms it instead of pitching the starter.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: false, bootui: true }],
+    capabilities: { springBoot: true, bootui: true, maven: true },
+  });
+  assert.equal(actuatorSection.hidden, true, "Actuator section hidden when BootUI is configured");
+  assert.equal(addActuator.hidden, true, "no Add Actuator when BootUI is configured");
+  assert.equal(bootuiSection.hidden, false, "BootUI section shown for a Spring project");
+  assert.equal(bootuiSpringStatus.hidden, false, "Spring tab confirms BootUI is configured");
+  assert.match(bootuiSpringStatus.textContent, /BootUI is configured/i);
+  assert.equal(bootuiSpringHint.hidden, true, "the BootUI pitch hides once it's configured");
+  assert.equal(addBootuiSpring.hidden, true, "no Add BootUI (Spring tab) once configured");
+  assert.equal(addBootui.hidden, true, "no Add BootUI (scans tab) once configured");
+  assert.equal(bootuiConfigured.hidden, false, "scans tab confirms BootUI is set up");
+  assert.match(bootuiConfigured.textContent, /BootUI is set up/i);
+  assert.equal(bootuiDesc.hidden, true, "the add-the-starter description is hidden once BootUI is configured");
+
+  // Neither Actuator nor BootUI: both parts show, each with its Add … with Copilot CTA.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: false, bootui: false }],
+    capabilities: { springBoot: true, maven: true },
+  });
+  assert.equal(actuatorSection.hidden, false, "Actuator section shown when Actuator is absent");
+  assert.equal(addActuator.hidden, false, "offers Add Actuator");
+  assert.equal(bootuiSection.hidden, false, "BootUI section shown below the Actuator part");
+  assert.equal(addBootuiSpring.hidden, false, "offers Add BootUI below the Actuator part");
+  assert.equal(bootuiSpringStatus.hidden, true, "no BootUI confirmation when BootUI is absent");
+
+  // Actuator present but no BootUI: Actuator status shown, BootUI still offered.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: true, bootui: false }],
+    capabilities: { springBoot: true, actuator: true, maven: true },
+  });
+  assert.equal(actuatorSection.hidden, false, "Actuator section shown when present without BootUI");
+  assert.equal(actuatorStatus.hidden, false, "Actuator status shown when Actuator present without BootUI");
+  assert.equal(addActuator.hidden, true, "no Add Actuator when Actuator is already present");
+  assert.equal(addBootuiSpring.hidden, false, "still offers Add BootUI for richer metrics");
+  assert.equal(bootuiConfigured.hidden, true, "scans tab does not claim BootUI configured when it isn't");
+  assert.equal(bootuiDesc.hidden, false, "the add-the-starter description shows when BootUI is absent");
+});
+
+test("the Live JVM tab explains why it's inactive and offers the dependency fix", () => {
+  const metrics = () => win.document.getElementById("metrics").innerHTML;
+
+  // Spring Boot app without Actuator, not running: Add Actuator then Add BootUI.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: false }],
+    capabilities: { springBoot: true, maven: true },
+  });
+  win.renderMetrics({ appUp: false });
+  let actuator = win.document.getElementById("diag-fix-actuator");
+  assert.ok(actuator, "a Spring app without Actuator offers Add Actuator");
+  assert.match(actuator.textContent, /Add Actuator with Copilot/);
+  assert.ok(actuator.classList.contains("fix-copilot"), "the metrics fix uses the orange Copilot CTA color");
+  assert.ok(win.document.getElementById("diag-fix-bootui"), "and offers Add BootUI alongside it");
+
+  // Quarkus app without Micrometer, running but no endpoint (process tier).
+  win.applyEnv({
+    modules: [{ name: "svc", artifactId: "svc", runnable: true, quarkus: true, quarkusMetrics: false }],
+    capabilities: { quarkus: true, maven: true },
+  });
+  win.renderMetrics({ appUp: true, metricsTier: "process" });
+  const qm = win.document.getElementById("diag-fix-qm");
+  assert.ok(qm, "a Quarkus app without Micrometer offers a metrics fix");
+  assert.match(qm.textContent, /Add Quarkus metrics with Copilot/);
+
+  // Plain Java app, down: a reason, but no dependency fix to offer.
+  win.applyEnv({
+    modules: [{ name: "lib", artifactId: "lib", runnable: true }],
+    capabilities: { maven: true },
+  });
+  win.renderMetrics(null);
+  assert.equal(win.document.getElementById("diag-fix-actuator"), null, "no dependency fix for a plain Java app");
+  assert.match(metrics(), /isn.t running/i, "explains that the app isn't running");
+});
+
+test("the Live JVM tab layers the Spring Actuator and BootUI offers", () => {
+  // Actuator already on the classpath but no BootUI: confirm Actuator is set up,
+  // drop the Actuator offer, and keep the BootUI offer.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: true, bootui: false }],
+    capabilities: { springBoot: true, actuator: true, maven: true },
+  });
+  win.renderMetrics({ appUp: false });
+  let html = win.document.getElementById("metrics").innerHTML;
+  assert.match(html, /Actuator is set up/i, "tells the user Actuator is set up");
+  assert.equal(win.document.getElementById("diag-fix-actuator"), null, "no Actuator offer once it's present");
+  assert.ok(win.document.getElementById("diag-fix-bootui"), "still offers BootUI for richer metrics");
+
+  // BootUI present: it covers everything, so no Actuator offer at all.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: true, bootui: true }],
+    capabilities: { springBoot: true, actuator: true, bootui: true, maven: true },
+  });
+  win.renderMetrics({ appUp: false });
+  html = win.document.getElementById("metrics").innerHTML;
+  assert.match(html, /BootUI is set up/i, "tells the user BootUI is set up");
+  assert.equal(win.document.getElementById("diag-fix-actuator"), null, "no Actuator offer when BootUI is present");
+  assert.equal(win.document.getElementById("diag-fix-bootui"), null, "no BootUI offer when BootUI is present");
+});
+
+test("the Advisor scans inactive body gives the next step without repeating the title (§7.6)", () => {
+  const scansHint = () => win.document.getElementById("scans-hint").innerHTML;
+
+  // BootUI set up but the app is down: the pane title already says "BootUI is set
+  // up", so the inactive body just gives the next step (no redundant confirmation).
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: true, bootui: true }],
+    capabilities: { springBoot: true, actuator: true, bootui: true, maven: true },
+  });
+  win.renderMetrics({ appUp: false });
+  assert.match(scansHint(), /isn.t running/i, "scans tab explains the app isn't running");
+  assert.doesNotMatch(
+    scansHint(),
+    /BootUI is set up/i,
+    "inactive body no longer repeats the title's set-up confirmation",
+  );
+  assert.match(scansHint(), /run the app to use this tab/i, "scans tab tells the user to run the app");
+
+  // Spring app without BootUI: point at the Add BootUI CTA above instead.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: true, bootui: false }],
+    capabilities: { springBoot: true, actuator: true, maven: true },
+  });
+  win.renderMetrics({ appUp: false });
+  assert.match(scansHint(), /need BootUI/i, "scans tab says advisor scans need BootUI when it's absent");
+});
+
+test("the Spring and Quarkus tabs explain why they're inactive", () => {
+  const actuatorSection = win.document.getElementById("spring-actuator-section");
+  const devtoolsSection = win.document.getElementById("spring-devtools-section");
+  const quarkusEmpty = win.document.getElementById("quarkus-empty");
+
+  // Neither a Spring nor a Quarkus project: Spring sub-sections hidden with a
+  // reason, Quarkus tab shows its "not a Quarkus app" reason.
+  win.applyEnv({
+    modules: [{ name: "lib", artifactId: "lib", runnable: true }],
+    capabilities: { maven: true },
+    spring: { detected: false },
+  });
+  assert.equal(actuatorSection.hidden, true, "Actuator section hidden without a Spring module");
+  assert.equal(devtoolsSection.hidden, true, "DevTools section hidden without a Spring module");
+  assert.match(win.document.getElementById("spring-version").innerHTML, /isn.t a Spring Boot/i);
+  assert.equal(quarkusEmpty.hidden, false, "Quarkus reason shown when it isn't a Quarkus app");
+  assert.match(quarkusEmpty.textContent, /isn.t a Quarkus app/i);
+
+  // A Spring Boot project: the sub-sections come back.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true }],
+    capabilities: { springBoot: true, maven: true },
+    spring: { detected: true, version: "3.3.0", status: "current" },
+  });
+  assert.equal(actuatorSection.hidden, false, "Actuator section visible for a Spring project");
+  assert.equal(devtoolsSection.hidden, false, "DevTools section visible for a Spring project");
+});
+
+test("the Quarkus Register CTA sits above the MCP server panel (§7.5)", () => {
+  const desc = win.document.getElementById("quarkus-desc");
+  const btn = win.document.getElementById("quarkus-mcp-register");
+  const panel = win.document.getElementById("quarkus-mcp");
+  assert.ok(desc && btn && panel, "the Quarkus description, register button and MCP panel all exist");
+  // The CTA is a standalone sibling between the description and the MCP server
+  // panel — not nested inside the panel's "Quarkus Agent MCP server" switch-row.
+  assert.equal(
+    btn.parentElement,
+    panel.parentElement,
+    "the register button is a sibling of the MCP panel, not nested in it",
+  );
+  assert.ok(
+    desc.compareDocumentPosition(btn) & win.Node.DOCUMENT_POSITION_FOLLOWING,
+    "the register button comes after the description",
+  );
+  assert.ok(
+    btn.compareDocumentPosition(panel) & win.Node.DOCUMENT_POSITION_FOLLOWING,
+    "the register button comes above the Quarkus Agent MCP server panel",
+  );
 });
 
 test("the Settings tab is pinned to the top of the aside bar", () => {
-  win.updateAsideAvailability({ metrics: true, loggers: false, scans: false });
+  win.updateAsideAvailability({ jvm: true, loggers: false, bootui: false });
   const order = (name) => Number(win.document.querySelector(`.atab[data-atab="${name}"]`).style.order);
   // Available group sorts below the separator (order 50); within it Settings is
   // first (rank 0). Unavailable panels are offset by 100 so they sink to the bottom.
   assert.equal(order("settings"), 0, "Settings is pinned to the top of the bar");
-  assert.ok(order("metrics") > order("settings"), "an available panel sits below Settings");
-  assert.ok(order("scans") > 100, "an unavailable panel sinks below the separator");
+  assert.ok(order("jvm") > order("settings"), "an available panel sits below Settings");
+  assert.ok(order("bootui") > 100, "an unavailable panel sinks below the separator");
+});
+
+test("the aside bar keeps its canonical order in both the available and unavailable groups", () => {
+  // Make every gated tab available so the whole bar sits in the available group,
+  // then assert the canonical sequence the user expects:
+  // Settings, Live JVM, Loggers, Spring, Quarkus, BootUI, Upgrades.
+  win.updateAsideAvailability({ jvm: true, loggers: true, bootui: true, spring: true, quarkus: true });
+  const order = (name) => Number(win.document.querySelector(`.atab[data-atab="${name}"]`).style.order);
+  const canonical = ["settings", "jvm", "loggers", "spring", "quarkus", "bootui", "deps"];
+  for (let i = 1; i < canonical.length; i++) {
+    assert.ok(
+      order(canonical[i]) > order(canonical[i - 1]),
+      `${canonical[i]} sorts after ${canonical[i - 1]} when available`,
+    );
+  }
+
+  // Grey out the runtime tabs: they drop into the unavailable group (below the
+  // separator) but keep the same relative order among themselves, while the
+  // always-on Settings + Upgrades stay on top.
+  win.updateAsideAvailability({ jvm: false, loggers: false, bootui: false, spring: false, quarkus: false });
+  assert.equal(order("settings"), 0, "Settings still leads the available group");
+  assert.ok(order("deps") < 100 && order("deps") > 0, "Upgrades stays available, just after Settings");
+  const unavailable = ["jvm", "loggers", "spring", "quarkus", "bootui"];
+  for (const name of unavailable) assert.ok(order(name) > 100, `${name} sinks below the separator`);
+  for (let i = 1; i < unavailable.length; i++) {
+    assert.ok(
+      order(unavailable[i]) > order(unavailable[i - 1]),
+      `${unavailable[i]} keeps its canonical order after ${unavailable[i - 1]} when unavailable`,
+    );
+  }
+});
+
+test("renderMetrics maps the metrics tier to right-panel tab availability (\u00a74/\u00a75)", () => {
+  const avail = (name) => !win.document.querySelector(`.atab[data-atab="${name}"]`).classList.contains("unavailable");
+
+  // Tier bootui: Live JVM, Logs and the BootUI tab are all reachable.
+  win.renderMetrics({ appUp: true, metricsTier: "bootui" });
+  assert.ok(avail("jvm"), "bootui tier activates Live JVM");
+  assert.ok(avail("loggers"), "bootui tier activates Logs");
+  assert.ok(avail("bootui"), "bootui tier activates the BootUI tab");
+
+  // Tier actuator: Live JVM + Logs, but not BootUI (advisor scans need bootui).
+  win.renderMetrics({ appUp: true, metricsTier: "actuator" });
+  assert.ok(avail("jvm") && avail("loggers"), "actuator tier activates Live JVM + Logs");
+  assert.ok(!avail("bootui"), "actuator tier leaves the BootUI tab inactive");
+
+  // Tier quarkus: same three-way split as actuator.
+  win.renderMetrics({ appUp: true, metricsTier: "quarkus" });
+  assert.ok(avail("jvm") && avail("loggers"), "quarkus tier activates Live JVM + Logs");
+  assert.ok(!avail("bootui"), "quarkus tier leaves the BootUI tab inactive");
+
+  // Tier process (running but no endpoint): none of the three are reachable.
+  win.renderMetrics({ appUp: true, metricsTier: "process" });
+  assert.ok(!avail("jvm") && !avail("loggers") && !avail("bootui"), "process tier deactivates all three runtime tabs");
+
+  // App down: same, and the always-on tabs stay available.
+  win.renderMetrics({ appUp: false });
+  assert.ok(!avail("jvm") && !avail("loggers") && !avail("bootui"), "a down app deactivates all runtime tabs");
+  assert.ok(avail("settings") && avail("deps"), "Settings and Dependencies stay always-available");
+});
+
+test("renderDeps renders an outdated-library list", () => {
+  assert.equal(typeof win.renderDeps, "function", "renderDeps should be a global");
+  // A bad payload shows an error, not a throw.
+  assert.doesNotThrow(() => win.renderDeps(null));
+  assert.doesNotThrow(() => win.renderDeps({ error: "boom" }));
+
+  // Idle snapshot: scan not yet run.
+  assert.doesNotThrow(() =>
+    win.renderDeps({
+      ran: false,
+      buildTool: "maven",
+      available: true,
+      updatesSupported: true,
+      updates: [],
+      counts: { total: 0, direct: 0, transitive: 0 },
+    }),
+  );
+  let html = win.document.getElementById("deps-result").innerHTML;
+  assert.ok(html.includes("Outdated libraries"), "expected the outdated-libraries section");
+  assert.ok(html.includes("Check dependencies"), "expected the prompt to run a scan");
+
+  // A completed scan with a direct + a transitive outdated dependency.
+  assert.doesNotThrow(() =>
+    win.renderDeps({
+      ran: true,
+      buildTool: "maven",
+      available: true,
+      updatesSupported: true,
+      updates: [
+        {
+          group: "com.google.guava",
+          artifact: "guava",
+          current: "19.0",
+          latest: "33.6.0-jre",
+          scope: "compile",
+          direct: true,
+          via: null,
+          prerelease: false,
+          jump: "major",
+        },
+        {
+          group: "org.slf4j",
+          artifact: "slf4j-api",
+          current: "1.7.20",
+          latest: "2.1.0-alpha1",
+          scope: "compile",
+          direct: false,
+          via: "org.example:lib",
+          prerelease: true,
+          jump: "major",
+        },
+      ],
+      counts: { total: 2, direct: 1, transitive: 1 },
+    }),
+  );
+  html = win.document.getElementById("deps-result").innerHTML;
+  assert.ok(html.includes("guava"), "expected the outdated dependency in the rendered list");
+  assert.ok(html.includes("data-dep-fix"), "expected a Fix-with-Copilot button per dependency");
+
+  // Gradle: outdated scanning is now supported (same payload shape as Maven).
+  assert.doesNotThrow(() =>
+    win.renderDeps({
+      ran: true,
+      buildTool: "gradle",
+      available: true,
+      updatesSupported: true,
+      updates: [
+        {
+          group: "com.google.guava",
+          artifact: "guava",
+          current: "19.0",
+          latest: "33.6.0-jre",
+          scope: "runtime",
+          direct: true,
+          via: null,
+          prerelease: false,
+          jump: "major",
+        },
+      ],
+      counts: { total: 1, direct: 1, transitive: 0 },
+    }),
+  );
+  html = win.document.getElementById("deps-result").innerHTML;
+  assert.ok(html.includes("guava"), "expected the Gradle outdated dependency in the rendered list");
+});
+
+test("the Dependencies direct-only filter hides transitive updates (\u00a77.7)", () => {
+  const report = {
+    ran: true,
+    buildTool: "maven",
+    available: true,
+    updatesSupported: true,
+    updates: [
+      {
+        group: "com.google.guava",
+        artifact: "guava",
+        current: "19.0",
+        latest: "33.6.0-jre",
+        scope: "compile",
+        direct: true,
+        via: null,
+        prerelease: false,
+        jump: "major",
+      },
+      {
+        group: "org.slf4j",
+        artifact: "slf4j-api",
+        current: "1.7.20",
+        latest: "2.1.0-alpha1",
+        scope: "compile",
+        direct: false,
+        via: "org.example:lib",
+        prerelease: true,
+        jump: "major",
+      },
+    ],
+    counts: { total: 2, direct: 1, transitive: 1 },
+  };
+  const direct = win.document.getElementById("deps-direct");
+  const result = () => win.document.getElementById("deps-result").innerHTML;
+
+  // Filter off: both the direct and the transitive update are listed.
+  direct.checked = false;
+  win.renderDeps(report);
+  assert.match(result(), /guava/, "direct update shown");
+  assert.match(result(), /slf4j-api/, "transitive update shown when the filter is off");
+
+  // Direct only: the transitive update is hidden, the direct one remains.
+  direct.checked = true;
+  win.renderDeps(report);
+  assert.match(result(), /guava/, "direct update still shown when direct-only is on");
+  assert.doesNotMatch(result(), /slf4j-api/, "transitive update hidden when direct-only is on");
+});
+
+test("the Dependencies direct-only toggle stays interactive even with no transitive updates (\u00a77.7)", () => {
+  const direct = win.document.getElementById("deps-direct");
+  // An all-direct scan (counts.transitive === 0) must NOT disable the toggle: it's a
+  // view preference, usable whenever the build tool supports update scanning.
+  win.renderDeps({
+    ran: true,
+    buildTool: "maven",
+    updatesSupported: true,
+    updates: [
+      {
+        group: "com.google.guava",
+        artifact: "guava",
+        current: "19.0",
+        latest: "33.6.0-jre",
+        scope: "compile",
+        direct: true,
+        via: null,
+        prerelease: false,
+        jump: "major",
+      },
+    ],
+    counts: { total: 1, direct: 1, transitive: 0 },
+  });
+  assert.equal(direct.disabled, false, "direct-only toggle stays enabled when there are no transitive updates");
+
+  // Only a project whose build tool can't scan for updates disables it.
+  win.renderDeps({
+    ran: true,
+    buildTool: "ant",
+    updatesSupported: false,
+    updates: [],
+    counts: { total: 0, direct: 0, transitive: 0 },
+  });
+  assert.equal(direct.disabled, true, "direct-only toggle is disabled when update scanning is unsupported");
+});
+
+test("applySettingsState restores the view/preference toggles", () => {
+  assert.equal(typeof win.applySettingsState, "function", "applySettingsState should be a global");
+  const depsDirect = win.document.getElementById("deps-direct");
+  const failuresOnly = win.document.getElementById("in-failures-only");
+  const dbgSuspend = win.document.getElementById("in-dbg-suspend");
+
+  // Saved-on state restores each checkbox.
+  win.applySettingsState({ depsDirectOnly: true, testFailuresOnly: true, debugSuspend: true });
+  assert.equal(depsDirect.checked, true, "deps direct-only filter should restore checked");
+  assert.equal(failuresOnly.checked, true, "tests failures-only filter should restore checked");
+  assert.equal(dbgSuspend.checked, true, "debug suspend option should restore checked");
+
+  // Saved-off state clears them again.
+  win.applySettingsState({ depsDirectOnly: false, testFailuresOnly: false, debugSuspend: false });
+  assert.equal(depsDirect.checked, false, "deps direct-only filter should restore unchecked");
+  assert.equal(failuresOnly.checked, false, "tests failures-only filter should restore unchecked");
+  assert.equal(dbgSuspend.checked, false, "debug suspend option should restore unchecked");
 });
 
 test("renderTests renders a graphical report with a failure", () => {
@@ -286,10 +778,10 @@ test("a failed build shows the Fix button and replays the repaint pop", () => {
 test("the Spring Boot tab and its pane are present in the rail", () => {
   assert.ok(win.document.querySelector('.atab[data-atab="spring"]'), "Spring Boot rail button exists");
   assert.ok(win.document.getElementById("atab-spring"), "Spring Boot pane exists");
-  // It sits between Loggers and BootUI (scans).
+  // It sits between Loggers and BootUI (bootui).
   const order = [...win.document.querySelectorAll(".atab[data-atab]")].map((b) => b.dataset.atab);
   assert.ok(order.indexOf("spring") > order.indexOf("loggers"), "spring after loggers");
-  assert.ok(order.indexOf("spring") < order.indexOf("scans"), "spring before BootUI");
+  assert.ok(order.indexOf("spring") < order.indexOf("bootui"), "spring before BootUI");
 });
 
 test("renderSpringAdvisor reflects version status and gates the upgrade button", () => {
@@ -312,6 +804,7 @@ test("renderSpringAdvisor reflects version status and gates the upgrade button",
   });
   assert.equal(btn.hidden, false, "upgrade shown for an EOL line");
   assert.ok(box.querySelector(".spring-status.bad"), "EOL renders a 'bad' status chip");
+  assert.ok(btn.classList.contains("fix-copilot"), "the upgrade button uses the orange Copilot CTA color");
 
   // Latest line: no upgrade offered, an "ok" chip.
   win.renderSpringAdvisor({

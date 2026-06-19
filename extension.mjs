@@ -35,6 +35,7 @@ import {
   mkdirSync,
   writeFileSync,
   unlinkSync,
+  rmSync,
   watch as fsWatch,
 } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
@@ -1283,6 +1284,9 @@ const SETTINGS_KEYS = [
   "jdkHome",
   "asideTab",
   "asideOpen",
+  "depsDirectOnly",
+  "testFailuresOnly",
+  "debugSuspend",
 ];
 
 // Live-metrics polling cadence bounds (ms). Kept conservative so the UI stays
@@ -1340,6 +1344,12 @@ function defaultSettings() {
     // opened, then remembers whatever the user last did.
     asideTab: "settings",
     asideOpen: false,
+    // View/preference toggles restored across reloads/sessions: the Dependencies
+    // "Direct only" filter, the Tests "Failures only" filter, and the Debug
+    // "Suspend until debugger attaches" option. All off by default.
+    depsDirectOnly: false,
+    testFailuresOnly: false,
+    debugSuspend: false,
   };
 }
 
@@ -1514,6 +1524,28 @@ function pomMainClass(xml) {
   return null;
 }
 
+// Matches the BootUI Spring Boot starter dependency (any of its group/artifact
+// spellings). Shared by the per-pom capability flag and the dev-profile probe.
+const BOOTUI_DEP_RE = /bootui-spring-boot-starter|julien-dubois\.bootui|jdubois\.bootui/;
+
+// Maven profile id(s) whose <profile> block declares the BootUI starter. The
+// install-bootui fix scopes BootUI to a dev-only Maven profile, so when the
+// dependency lives only there, running the app must activate that profile (-P)
+// or the starter never reaches the classpath (and the BootUI metrics tier — the
+// Live JVM / Loggers panes — never comes up).
+function mavenBootuiProfiles(xml) {
+  const ids = [];
+  // Greedy outer match spans the whole top-level <profiles> section even when a
+  // profile nests a plugin-config <profiles> block (mirrors listMavenProfiles).
+  const block = (xml.match(/<profiles>([\s\S]*)<\/profiles>/) || [, ""])[1];
+  for (const p of block.matchAll(/<profile>([\s\S]*?)<\/profile>/g)) {
+    if (!BOOTUI_DEP_RE.test(p[1])) continue;
+    const id = (p[1].match(/<id>\s*([^<]+?)\s*<\/id>/) || [])[1];
+    if (id) ids.push(id);
+  }
+  return ids;
+}
+
 // Per-pom capability flags, derived purely from the pom text (cheap + offline).
 export function pomCaps(xml, name) {
   const quarkus = /quarkus-maven-plugin|io\.quarkus/.test(xml);
@@ -1526,7 +1558,10 @@ export function pomCaps(xml, name) {
     quarkus,
     actuator: xml.includes("spring-boot-starter-actuator"),
     devtools: xml.includes("spring-boot-devtools"),
-    bootui: /bootui-spring-boot-starter|julien-dubois\.bootui|jdubois\.bootui/.test(xml),
+    quarkusMetrics: /quarkus-micrometer/.test(xml),
+    loggingManager: /quarkus-logging-manager/.test(xml),
+    bootui: BOOTUI_DEP_RE.test(xml),
+    bootuiProfiles: mavenBootuiProfiles(xml),
     mainClass: pomMainClass(xml),
   };
 }
@@ -1569,6 +1604,8 @@ export function gradleCaps(text, name) {
     quarkus,
     actuator: text.includes("spring-boot-starter-actuator"),
     devtools: text.includes("spring-boot-devtools"),
+    quarkusMetrics: /quarkus-micrometer/.test(text),
+    loggingManager: /quarkus-logging-manager/.test(text),
     bootui: /bootui-spring-boot-starter|julien-dubois\.bootui|jdubois\.bootui/.test(text),
     application: gradleHasApplicationPlugin(text),
     mainClass: gradleMainClass(text),
@@ -1939,6 +1976,8 @@ function capabilitiesSnapshot() {
     runnable: mods.some((m) => m.runnable),
     actuator: mods.some((m) => m.actuator),
     devtools: mods.some((m) => m.devtools),
+    quarkusMetrics: mods.some((m) => m.quarkusMetrics),
+    loggingManager: mods.some((m) => m.loggingManager),
     bootui: mods.some((m) => m.bootui),
     quarkusAgentMcp: mods.some((m) => m.quarkus) ? detectQuarkusAgentMcp() : { available: false, runner: null },
   };
@@ -3265,6 +3304,22 @@ function withMavenProfiles(args, mavenProfiles) {
   return p ? [...args, "-P", p] : args;
 }
 
+// Merge the user-selected Maven profiles with the dev-only profile(s) that carry
+// the module's BootUI starter, so running a BootUI app activates its starter (and
+// with it the BootUI metrics tier) without the user having to remember -Pdev.
+// Returns a comma-separated, de-duplicated profile list (empty string for none).
+function withBootuiProfile(mavenProfiles, mod) {
+  const ids = new Set();
+  for (const p of String(mavenProfiles || "").split(",")) {
+    const t = p.trim();
+    if (t) ids.add(t);
+  }
+  if (mod && mod.bootui && Array.isArray(mod.bootuiProfiles)) {
+    for (const id of mod.bootuiProfiles) ids.add(id);
+  }
+  return [...ids].join(",");
+}
+
 // ---------------------------------------------------------------------------
 // Affected-test selection
 //
@@ -4091,7 +4146,17 @@ async function startApp({ module, profiles, mavenProfiles, mode, dbg = null } = 
 
     const args = ["-ntp"];
     if (module) args.push("-pl", module);
-    if (mavenProfiles && mavenProfiles.trim()) args.push("-P", mavenProfiles.trim());
+    // Activate any user-selected Maven profiles plus the dev-only profile that
+    // carries BootUI, so a profile-scoped BootUI starter reaches the classpath and
+    // its metrics tier (Live JVM / Loggers) comes up while running.
+    const runProfiles = withBootuiProfile(mavenProfiles, mod);
+    if (runProfiles) {
+      args.push("-P", runProfiles);
+      if (runProfiles !== (mavenProfiles || "").trim() && mod && mod.bootuiProfiles && mod.bootuiProfiles.length) {
+        pushConsole(`[coffilot] activating Maven profile(s) ${runProfiles} to enable BootUI.`, "stdout", op);
+      }
+    }
+    app.mavenProfiles = runProfiles || null;
     args.push("-Dmaven.test.skip=true", "spring-boot:run");
     if (profiles) args.push(`-Dspring-boot.run.profiles=${profiles}`);
     // Pass the native-access flag to the forked app JVM so its FFM-using
@@ -4122,7 +4187,7 @@ async function startApp({ module, profiles, mavenProfiles, mode, dbg = null } = 
     // and recompile on save to drive that loop automatically (off while debugging).
     if (!dbg && settings.devtools && mod && mod.devtools) {
       const lr = resolveRunner(true);
-      startLiveReload({ module: module || "", mavenProfiles, bin: lr.bin, label: lr.label });
+      startLiveReload({ module: module || "", mavenProfiles: runProfiles, bin: lr.bin, label: lr.label });
     }
     return { ok: true, started: true, mode: "spring", command: `${baseRunner().label} ${args.join(" ")}` };
   }
@@ -5476,6 +5541,20 @@ async function actuatorMetrics(base) {
 // Micrometer output, so we normalize them into the same shape as the BootUI /
 // Actuator tiers.
 
+// A Spring Boot app behind Spring Security redirects unknown paths (including
+// /q/health and /q/metrics) to its login page, and fetch() follows the redirect
+// to a 200 HTML body. Validate the response shapes so that login page is never
+// mistaken for the Quarkus tier: SmallRye Health is JSON with a string `status`
+// (Spring's error JSON uses a numeric status, so it's rejected), and Micrometer's
+// exposition carries `# HELP`/`# TYPE` comments or at least one parseable sample.
+export function looksLikeSmallryeHealth(health) {
+  return !!health && typeof health === "object" && typeof health.status === "string";
+}
+
+export function looksLikePrometheus(text) {
+  return typeof text === "string" && (/^#\s*(HELP|TYPE)\s/m.test(text) || parsePrometheus(text).size > 0);
+}
+
 /**
  * Normalize SmallRye Health (/q/health) into { status, checks }, where each check
  * is a MicroProfile Health entry ({ name, status }) — e.g. the datasource, Kafka or
@@ -5558,8 +5637,12 @@ async function refreshMetrics() {
     return finishMetrics();
   }
 
-  // Tier 3 — Quarkus: SmallRye Health + Micrometer/Prometheus under /q/*.
-  const [qHealth, qMetrics] = await Promise.all([fetchJson(base, "/q/health"), fetchText(base, "/q/metrics")]);
+  // Tier 3 — Quarkus: SmallRye Health + Micrometer/Prometheus under /q/*. Only
+  // accept responses that actually look like SmallRye Health / Micrometer output,
+  // so a Spring Security login page served from /q/* isn't read as Quarkus.
+  const [qHealthRaw, qMetricsRaw] = await Promise.all([fetchJson(base, "/q/health"), fetchText(base, "/q/metrics")]);
+  const qHealth = looksLikeSmallryeHealth(qHealthRaw) ? qHealthRaw : null;
+  const qMetrics = looksLikePrometheus(qMetricsRaw) ? qMetricsRaw : null;
   if (qHealth || qMetrics) {
     lastMetrics = quarkusMetrics(qMetrics, qHealth);
     return finishMetrics();
@@ -6485,35 +6568,36 @@ function buildFixPrompt(kind, extra = {}) {
         .filter(Boolean)
         .join("\n\n");
     }
-    case "install-actuator-loggers": {
+    case "install-actuator": {
       const moduleName = extra.module || "";
       const resDir = moduleName ? `${moduleName}/src/main/resources` : "src/main/resources";
+      const expose = "management.endpoints.web.exposure.include=health,info,metrics,prometheus,loggers";
       if (buildTool === "gradle") {
         const { rel, kts } = gradleModuleBuildFile(moduleName);
         const dep = kts
           ? `implementation("org.springframework.boot:spring-boot-starter-actuator")`
           : `implementation 'org.springframework.boot:spring-boot-starter-actuator'`;
         return [
-          "This is a Spring Boot application whose runtime log-level endpoint isn't reachable, so the canvas can't read or change loggers live. Add Spring Boot Actuator and expose its `/loggers` endpoint.",
+          "This is a Spring Boot application that doesn't use Spring Boot Actuator, so the canvas can't read live JVM metrics or change log levels at runtime. Add the Actuator starter and expose its HTTP endpoints.",
           `1. Edit \`${rel}\` and add the Actuator starter inside \`dependencies { }\`:`,
           codeBlock(`dependencies {\n  ${dep}\n}`, kts ? "kotlin" : "groovy"),
           "   Omit the version so it inherits from the Spring Boot plugin's dependency management. Don't duplicate the line if it's already present.",
-          `2. In \`${resDir}/application.properties\` (create it if it doesn't exist), expose the loggers endpoint over HTTP:`,
-          codeBlock("management.endpoints.web.exposure.include=health,loggers", "properties"),
-          "   If an `exposure.include` line already exists, add `loggers` to it rather than replacing it. The `/loggers` endpoint serves both reads and live level changes — no extra config needed.",
-          "After editing, tell me to run the app again (e.g. `./gradlew bootRun`); the Loggers tab then lists every logger and lets you change levels live.",
+          `2. In \`${resDir}/application.properties\` (create it if it doesn't exist), expose the endpoints the canvas reads:`,
+          codeBlock(expose, "properties"),
+          "   If an `exposure.include` line already exists, merge these endpoint ids into it rather than replacing it. (`/metrics` and `/prometheus` back the Live JVM tab; `/loggers` reads and changes levels live.)",
+          "After editing, tell me to run the app again (e.g. `./gradlew bootRun`); the Live JVM tab then shows heap/threads/health and the Loggers tab lists every logger.",
         ]
           .filter(Boolean)
           .join("\n\n");
       }
       const pomRel = moduleName ? `${moduleName}/pom.xml` : "pom.xml";
       return [
-        "This is a Spring Boot application whose runtime log-level endpoint isn't reachable, so the canvas can't read or change loggers live. Add Spring Boot Actuator and expose its `/loggers` endpoint.",
+        "This is a Spring Boot application that doesn't use Spring Boot Actuator, so the canvas can't read live JVM metrics or change log levels at runtime. Add the Actuator starter and expose its HTTP endpoints.",
         `1. Edit \`${pomRel}\` and add a dependency on \`org.springframework.boot:spring-boot-starter-actuator\` inside the \`<dependencies>\` block (omit the \`<version>\` so it inherits from the Spring Boot parent/BOM). Don't duplicate it if it's already present.`,
-        `2. In \`${resDir}/application.properties\` (create it if it doesn't exist), expose the loggers endpoint over HTTP:`,
-        codeBlock("management.endpoints.web.exposure.include=health,loggers", "properties"),
-        "   If an `exposure.include` line already exists, add `loggers` to it rather than replacing it. The `/loggers` endpoint serves both reads and live level changes — no extra config needed.",
-        "After editing, tell me to run the app again (e.g. `./mvnw spring-boot:run`); the Loggers tab then lists every logger and lets you change levels live.",
+        `2. In \`${resDir}/application.properties\` (create it if it doesn't exist), expose the endpoints the canvas reads:`,
+        codeBlock(expose, "properties"),
+        "   If an `exposure.include` line already exists, merge these endpoint ids into it rather than replacing it. (`/metrics` and `/prometheus` back the Live JVM tab; `/loggers` reads and changes levels live.)",
+        "After editing, tell me to run the app again (e.g. `./mvnw spring-boot:run`); the Live JVM tab then shows heap/threads/health and the Loggers tab lists every logger.",
       ]
         .filter(Boolean)
         .join("\n\n");
@@ -6551,6 +6635,41 @@ function buildFixPrompt(kind, extra = {}) {
           "- Use the latest released version of `io.quarkiverse.loggingmanager:quarkus-logging-manager` from Maven Central; pin a concrete version rather than a range (replace `VERSION`).",
         ].join("\n"),
         "After editing, tell me to run the app again (e.g. `./mvnw quarkus:dev`); the Loggers tab then lists every logger and lets you change levels live.",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
+    case "install-quarkus-metrics": {
+      const moduleName = extra.module || "";
+      const expose =
+        "By default Quarkus serves Prometheus metrics at `/q/metrics`; the canvas reads that endpoint, so no extra configuration is needed once the extension is present.";
+      if (buildTool === "gradle") {
+        const { rel, kts } = gradleModuleBuildFile(moduleName);
+        const dep = kts
+          ? `implementation("io.quarkus:quarkus-micrometer-registry-prometheus")`
+          : `implementation 'io.quarkus:quarkus-micrometer-registry-prometheus'`;
+        return [
+          "This is a Quarkus application that doesn't expose JVM metrics, so the canvas can't read live heap, threads and uptime. Add the Quarkus Micrometer Prometheus extension, which serves `/q/metrics`.",
+          `Edit \`${rel}\` and add the extension inside \`dependencies { }\`:`,
+          codeBlock(`dependencies {\n  ${dep}\n}`, kts ? "kotlin" : "groovy"),
+          "   Omit the version so it inherits from the Quarkus platform BOM. Don't duplicate the line if it's already present.",
+          expose,
+          "After editing, tell me to run the app again (e.g. `./gradlew quarkusDev`); the Live JVM tab then shows heap, threads and health.",
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+      }
+      const pomRel = moduleName ? `${moduleName}/pom.xml` : "pom.xml";
+      return [
+        "This is a Quarkus application that doesn't expose JVM metrics, so the canvas can't read live heap, threads and uptime. Add the Quarkus Micrometer Prometheus extension, which serves `/q/metrics`.",
+        `Edit \`${pomRel}\` and add this dependency inside the \`<dependencies>\` block (omit the \`<version>\` so it inherits from the Quarkus platform BOM):`,
+        codeBlock(
+          "<dependency>\n  <groupId>io.quarkus</groupId>\n  <artifactId>quarkus-micrometer-registry-prometheus</artifactId>\n</dependency>",
+          "xml",
+        ),
+        "   Don't duplicate it if it's already present.",
+        expose,
+        "After editing, tell me to run the app again (e.g. `./mvnw quarkus:dev`); the Live JVM tab then shows heap, threads and health.",
       ]
         .filter(Boolean)
         .join("\n\n");
@@ -6617,6 +6736,20 @@ function buildFixPrompt(kind, extra = {}) {
         .filter(Boolean)
         .join("\n\n");
     }
+    case "fix-dependency": {
+      const coord = `${extra.group}:${extra.artifact}`;
+      const transitive = extra.direct === false || extra.scope === "transitive";
+      const scopeNote = transitive
+        ? `\`${coord}\` is a **transitive** dependency${extra.via ? ` pulled in by \`${extra.via}\`` : ""}, so you usually can't bump it directly: prefer upgrading the dependency that brings it in, or — if that isn't possible — pin the newer version explicitly (Maven: a \`<dependency>\` or a \`<dependencyManagement>\` entry; Gradle: a dependency constraint).`
+        : `\`${coord}\` is a **direct** dependency declared in the build.`;
+      return [
+        `Upgrade the ${TOOL_LABEL} dependency \`${coord}\` from \`${extra.current}\` to \`${extra.latest}\` in this project.`,
+        scopeNote,
+        `Find where it is declared or managed, update the version, then verify the build still compiles and the tests pass. If the upgrade introduces breaking API changes, fix the affected code. Check the release notes for \`${coord}\` ${extra.current} → ${extra.latest} for any required migration.`,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
     case "quarkus-skills":
       return [
         `Use the \`quarkus-agent\` MCP server's \`quarkus_skills\` tool (projectDir = \`${workspacePath}\`) to load the coding patterns, testing guidelines, and common pitfalls for this project's Quarkus extensions.`,
@@ -6632,9 +6765,10 @@ function buildFixPrompt(kind, extra = {}) {
         `Use the \`quarkus-agent\` MCP server's \`devui-exceptions_getLastException\` tool (projectDir = \`${workspacePath}\`) to fetch the last compilation, deployment, or runtime exception from the running Quarkus dev-mode app — the structured class, message, stack trace, and offending user-code location.`,
         "Then diagnose the root cause and fix it in the codebase. Use `quarkus_logs` for broader context if needed. If the `quarkus-agent` MCP server isn't registered, or the app isn't running in dev mode, tell me what's missing.",
       ].join("\n\n");
+    default:
+      return null;
   }
 }
-
 async function sendFix(kind, extra) {
   const raw = buildFixPrompt(kind, extra);
   if (!raw) return { ok: false, error: `Unknown fix kind: ${kind}` };
@@ -6806,6 +6940,489 @@ async function runScanRest(key) {
 }
 
 // ---------------------------------------------------------------------------
+// Dependencies — an on-demand "outdated libraries" scan. Read-only: it shells
+// out to the build tool (the same loopback-only "shell out and parse" model the
+// rest of Coffilot uses) and lets the build tool's own plugins resolve the latest
+// available versions, so we never add a direct HTTP client to a package registry.
+// Both Maven and Gradle are wired here: Maven uses the dependency + versions
+// plugins; Gradle uses its built-in `dependencies` report plus the ben-manes
+// gradle-versions-plugin, injected through a throwaway `--init-script` so the
+// target project's own build files are never touched.
+// ---------------------------------------------------------------------------
+
+// Pinned plugin coordinates so the scan is reproducible and doesn't silently
+// pick up a different plugin major on a fresh machine.
+const DEP_TREE_PLUGIN = "org.apache.maven.plugins:maven-dependency-plugin:3.7.1";
+const VERSIONS_PLUGIN = "org.codehaus.mojo:versions-maven-plugin:2.18.0";
+const GRADLE_VERSIONS_PLUGIN = "com.github.ben-manes:gradle-versions-plugin:0.54.0";
+
+let lastDependencyReport = null;
+
+/**
+ * Parse `mvn dependency:tree -DoutputType=text` output into a deduplicated list
+ * of dependency nodes. The leading tree art encodes depth (3 chars per level), so
+ * depth 1 is a direct dependency and anything deeper is transitive; `via` records
+ * the direct dependency that pulls a transitive one in. Pure (exported for tests).
+ */
+export function parseDependencyTree(out) {
+  const byKey = new Map();
+  const stack = []; // stack[depth] = "group:artifact"
+  for (const rawLine of String(out || "").split(/\r?\n/)) {
+    // Strip the Maven log prefix ("[INFO] ", "[WARNING] ", …).
+    const line = rawLine.replace(/^\[[A-Z]+\]\s?/, "");
+    const m = line.match(/^([| ]*)([+\\]-) (.+)$/);
+    if (!m) {
+      // A bare coordinate with no tree connector is a reactor root; reset the
+      // ancestor stack so the next module's tree is depth-counted independently.
+      if (/^[\w.\-]+:[\w.\-]+:[\w.\-]+:/.test(line.trim())) stack.length = 0;
+      continue;
+    }
+    const depth = m[1].length / 3 + 1;
+    // The coordinate is the first whitespace-delimited token (drop trailing
+    // annotations like "(optional)").
+    const coord = m[3].trim().split(/\s+/)[0];
+    const parts = coord.split(":");
+    if (parts.length < 4) continue;
+    // group:artifact:type:version:scope  OR  group:artifact:type:classifier:version:scope
+    const group = parts[0];
+    const artifact = parts[1];
+    const version = parts.length >= 6 ? parts[4] : parts[3];
+    const scope = parts.length >= 6 ? parts[5] : parts[4] || "compile";
+    const key = `${group}:${artifact}`;
+    stack[depth] = key;
+    stack.length = depth + 1;
+    const via = depth > 1 ? stack[1] || null : null;
+    const node = { key, group, artifact, version, scope, depth, direct: depth === 1, via };
+    const prev = byKey.get(key);
+    // Keep the shallowest occurrence so a dependency that is both direct and
+    // transitive is classified as direct.
+    if (!prev || node.depth < prev.depth) byKey.set(key, node);
+  }
+  return [...byKey.values()];
+}
+
+/**
+ * Parse `versions:display-dependency-updates` output into a map of
+ * "group:artifact" -> { current, latest }. Pure (exported for tests).
+ */
+export function parseDependencyUpdates(out) {
+  const map = new Map();
+  for (const rawLine of String(out || "").split(/\r?\n/)) {
+    const line = rawLine.replace(/^\[[A-Z]+\]\s?/, "");
+    // e.g. "  com.google.guava:guava ........... 19.0 -> 33.6.0-jre"
+    const m = line.match(/^\s*([\w.\-]+:[\w.\-]+)\s+\.{2,}\s+(\S+)\s+->\s+(\S+)\s*$/);
+    if (!m) continue;
+    map.set(m[1], { current: m[2], latest: m[3] });
+  }
+  return map;
+}
+
+/** Normalise a Gradle configuration name to a Maven-like scope word for display. */
+function gradleScopeLabel(config) {
+  const c = String(config || "");
+  if (/test/i.test(c)) return "test";
+  if (/annotationProcessor/i.test(c)) return "annotationProcessor";
+  if (/compileOnly|compileClasspath/i.test(c)) return "compile";
+  if (/runtime/i.test(c)) return "runtime";
+  return c;
+}
+
+/**
+ * Whether a Gradle configuration name represents a real user dependency classpath
+ * (compile / runtime / test / annotation-processor / development) rather than an
+ * internal plugin, metadata or publication configuration — e.g. the `kotlin*`
+ * compiler classpaths, `*DependenciesMetadata`, or `*Elements`. The `dependencies`
+ * report lists all of these, but only the former describe what the project actually
+ * declares, so direct/transitive classification is restricted to them. Pure
+ * (exported for tests). */
+export function gradleDepConfigFilter(name) {
+  const n = String(name || "");
+  if (/^kotlin/i.test(n)) return false; // kotlinCompilerPluginClasspath, kotlinBuildToolsApiClasspath, …
+  if (/(?:compile|runtime)classpath$/i.test(n)) return true; // compile/runtime/test (+ custom source set) classpaths
+  return /^(?:annotationProcessor|testAnnotationProcessor|developmentOnly|testAndDevelopmentOnly)$/.test(n);
+}
+
+/**
+ * Parse `gradle dependencies` report output into a deduplicated list of nodes with
+ * the same shape as parseDependencyTree. Gradle indents 5 characters per level
+ * (`|    ` or five spaces), so depth 0 is a direct dependency and anything deeper
+ * is transitive; `via` records the direct dependency that pulls a transitive one
+ * in. Version coercion (`a:b:1 -> 2`) resolves to the right-hand side, and the
+ * `(*)`/`(c)`/`(n)`/`FAILED` annotations are stripped. When `configFilter` is
+ * supplied, only rows under configurations it accepts are counted (used to skip
+ * internal plugin/metadata configs); without it every configuration is parsed.
+ * Pure (exported for tests).
+ */
+export function parseGradleDependencyTree(out, { configFilter = null } = {}) {
+  const byKey = new Map();
+  const stack = []; // stack[depth] = "group:artifact"
+  let scope = "";
+  let included = !configFilter; // whether the current configuration's rows count
+  for (const rawLine of String(out || "").split(/\r?\n/)) {
+    const m = rawLine.match(/^([\s|]*)[+\\]--- (.+)$/);
+    if (!m) {
+      // Any non-connector line ends the current subtree: reset the ancestor stack
+      // so the next configuration/project is depth-counted independently. A
+      // configuration header ("runtimeClasspath - Runtime classpath …") also
+      // records the scope applied to its rows and, with a configFilter, whether the
+      // configuration counts toward direct/transitive classification at all.
+      stack.length = 0;
+      const header = rawLine.match(/^([A-Za-z][A-Za-z0-9]*)\s+-\s+/);
+      if (header) {
+        scope = gradleScopeLabel(header[1]);
+        included = configFilter ? !!configFilter(header[1]) : true;
+      } else if (configFilter) {
+        included = false;
+      }
+      continue;
+    }
+    if (!included) continue;
+    const depth = Math.floor(m[1].length / 5);
+    let coord = m[2].trim();
+    coord = coord
+      .replace(/\s+\((?:\*|c|n)\)\s*$/, "")
+      .replace(/\s+FAILED\s*$/, "")
+      .trim();
+    let resolved = null;
+    const arrow = coord.indexOf(" -> ");
+    if (arrow !== -1) {
+      resolved = coord.slice(arrow + 4).trim();
+      coord = coord.slice(0, arrow).trim();
+    }
+    const parts = coord.split(":");
+    let group, artifact, version;
+    if (parts.length >= 3) {
+      [group, artifact] = parts;
+      version = resolved || parts[2];
+    } else if (parts.length === 2) {
+      [group, artifact] = parts;
+      version = resolved; // constraint/platform line with no requested version
+    } else {
+      continue;
+    }
+    if (!group || !artifact || !version) continue;
+    const key = `${group}:${artifact}`;
+    stack[depth] = key;
+    stack.length = depth + 1;
+    const via = depth > 0 ? stack[0] || null : null;
+    const node = { key, group, artifact, version, scope, depth, direct: depth === 0, via };
+    const prev = byKey.get(key);
+    // Keep the shallowest occurrence so a dependency that is both direct and
+    // transitive is classified as direct.
+    if (!prev || node.depth < prev.depth) byKey.set(key, node);
+  }
+  return [...byKey.values()];
+}
+
+/**
+ * Parse a ben-manes gradle-versions-plugin JSON report into a map of
+ * "group:name" -> { current, latest }. The plugin lists only outdated
+ * dependencies under `outdated.dependencies`, each exposing the newest available
+ * release/milestone/integration version. Pure (exported for tests).
+ */
+export function parseGradleDependencyUpdates(jsonText) {
+  const map = new Map();
+  let data;
+  try {
+    data = JSON.parse(jsonText);
+  } catch {
+    return map;
+  }
+  const deps = data && data.outdated && Array.isArray(data.outdated.dependencies) ? data.outdated.dependencies : [];
+  for (const d of deps) {
+    if (!d || !d.group || !d.name) continue;
+    const avail = d.available || {};
+    const latest = avail.release || avail.milestone || avail.integration;
+    if (!latest) continue;
+    map.set(`${d.group}:${d.name}`, { current: d.version, latest });
+  }
+  return map;
+}
+
+/** Whether a version string looks like a pre-release (alpha/beta/rc/milestone/…). */
+export function isPrerelease(v) {
+  return /[-._](alpha|beta|rc|m\d+|cr\d+|snapshot|milestone|preview|ea|dev|pre)\d*/i.test(String(v || ""));
+}
+
+/** Numeric [major, minor, patch] prefix of a version, ignoring any qualifier. */
+function versionParts(v) {
+  const m = String(v || "").match(/^\d+(?:\.\d+){0,3}/);
+  return m ? m[0].split(".").map(Number) : null;
+}
+
+/** Classify the size of an upgrade as major / minor / patch (else "other"). */
+export function classifyVersionJump(current, latest) {
+  const a = versionParts(current);
+  const b = versionParts(latest);
+  if (!a || !b) return "other";
+  if ((a[0] || 0) !== (b[0] || 0)) return "major";
+  if ((a[1] || 0) !== (b[1] || 0)) return "minor";
+  if ((a[2] || 0) !== (b[2] || 0)) return "patch";
+  return "other";
+}
+
+const JUMP_RANK = { major: 0, minor: 1, patch: 2, other: 3 };
+
+/**
+ * Merge a parsed dependency tree with the available-updates map into a sorted
+ * list of outdated libraries. The tree is authoritative for the resolved (current)
+ * version and for direct/transitive classification; the updates map supplies the
+ * latest available version. Pure (exported for tests).
+ */
+export function mergeDependencyUpdates(treeNodes, updatesMap) {
+  const out = [];
+  for (const node of treeNodes) {
+    const upd = updatesMap.get(node.key);
+    if (!upd) continue;
+    const current = node.version || upd.current;
+    const latest = upd.latest;
+    if (!latest || current === latest) continue;
+    out.push({
+      group: node.group,
+      artifact: node.artifact,
+      current,
+      latest,
+      scope: node.scope,
+      direct: node.direct,
+      via: node.via,
+      prerelease: isPrerelease(latest) && !isPrerelease(current),
+      jump: classifyVersionJump(current, latest),
+    });
+  }
+  out.sort(
+    (a, b) =>
+      Number(b.direct) - Number(a.direct) ||
+      JUMP_RANK[a.jump] - JUMP_RANK[b.jump] ||
+      `${a.group}:${a.artifact}`.localeCompare(`${b.group}:${b.artifact}`),
+  );
+  return out;
+}
+
+/**
+ * Run a build-tool command and capture its combined output without blocking the
+ * event loop. Mirrors spawnTool's spawn config (cwd / env / Windows shell) but is
+ * a one-shot capture rather than a streamed lane.
+ */
+function captureBuildTool(args, timeoutMs = 180000) {
+  const base = baseRunner();
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(base.bin, quoteWinShellArgs(withJLineDumbFlag(args, base.bin)), {
+        cwd: workspacePath,
+        env: toolEnv(),
+        shell: isWindows,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e) {
+      resolve({ ok: false, error: e.message, out: "" });
+      return;
+    }
+    let out = "";
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(val);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+      finish({ ok: false, error: "Timed out", out });
+    }, timeoutMs);
+    child.stdout.on("data", (c) => (out += c.toString()));
+    child.stderr.on("data", (c) => (out += c.toString()));
+    child.on("error", (e) => finish({ ok: false, error: e.message, out }));
+    child.on("close", (code) => finish({ ok: code === 0, code, out }));
+  });
+}
+
+const emptyDepCounts = () => ({ total: 0, direct: 0, transitive: 0 });
+
+/** Whether the active build tool can run an outdated-libraries scan. */
+function updatesSupportedFor(tool) {
+  return tool === "maven" || tool === "gradle";
+}
+
+// Dependency-scan command vectors, exported so the e2e harness drives exactly
+// what the scan runs (no hand-maintained copy), mirroring testArgsFor/buildArgsFor.
+/** Maven: `dependency:tree` in text form (current versions + direct/transitive). */
+export function mavenDepTreeArgs() {
+  return ["-ntp", "-B", `${DEP_TREE_PLUGIN}:tree`, "-DoutputType=text"];
+}
+/** Maven: `versions:display-dependency-updates` (latest available versions). */
+export function mavenDepUpdatesArgs() {
+  return ["-ntp", "-B", `${VERSIONS_PLUGIN}:display-dependency-updates`];
+}
+/** Gradle: the built-in `dependencies` report. All configurations are requested
+ * (the task only accepts one `--configuration` at a time, so we resolve them all in
+ * a single pass) and `parseGradleDependencyTree` is given a filter that keeps only
+ * the real compile/runtime/test classpaths, so direct/transitive classification
+ * reflects what the project declares rather than internal plugin classpaths. */
+export function gradleDepTreeArgs() {
+  return ["dependencies", "-q"];
+}
+/** Gradle: the ben-manes `dependencyUpdates` task, injected via an init script.
+ * `--no-parallel` is required on Gradle 9+ (the task fails under parallel project
+ * execution there) and is a harmless no-op on Gradle 7/8, where parallel builds
+ * are opt-in. */
+export function gradleDepUpdatesArgs(initScript) {
+  return ["--init-script", initScript, "dependencyUpdates", "-q", "--no-parallel"];
+}
+
+/** Maven outdated-libraries scan: dependency:tree + display-dependency-updates. */
+async function runMavenDependencyScan() {
+  const treeRes = await captureBuildTool(mavenDepTreeArgs());
+  const updRes = await captureBuildTool(mavenDepUpdatesArgs());
+  const nodes = parseDependencyTree(treeRes.out || "");
+  const updMap = parseDependencyUpdates(updRes.out || "");
+  const updates = mergeDependencyUpdates(nodes, updMap);
+  // Distinguish "everything is up to date" from a command that actually failed
+  // (offline, missing plugin, broken pom): only the latter sets an error.
+  let error = null;
+  if (!nodes.length && treeRes.ok === false) error = treeRes.error || "dependency:tree failed.";
+  else if (!updMap.size && updRes.ok === false) error = updRes.error || "Could not resolve dependency updates.";
+  return { updates, error };
+}
+
+/** Body of the throwaway Gradle init script that injects the ben-manes
+ * gradle-versions-plugin and points its JSON report at our temp dir, one file per
+ * project so subprojects don't overwrite each other. Exported for the e2e harness. */
+export function gradleDependencyUpdatesInitBody(outDir) {
+  const dir = outDir.replace(/\\/g, "/"); // forward slashes are safe in a Groovy string on every OS
+  return [
+    "// Coffilot: inject the ben-manes versions plugin to list outdated libraries (read-only).",
+    "initscript {",
+    "  repositories { gradlePluginPortal() }",
+    `  dependencies { classpath '${GRADLE_VERSIONS_PLUGIN}' }`,
+    "}",
+    "allprojects {",
+    "  apply plugin: com.github.benmanes.gradle.versions.VersionsPlugin",
+    "  tasks.named('dependencyUpdates') {",
+    "    outputFormatter = 'json'",
+    `    outputDir = '${dir}'`,
+    "    reportfileName = 'coffilot-deps-' + project.path.replaceAll(':', '_')",
+    "    checkForGradleUpdate = false",
+    "    revision = 'release'",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+}
+
+/** Gradle outdated-libraries scan: the built-in `dependencies` report (for the
+ * direct/transitive tree) plus the ben-manes plugin's JSON report (for the latest
+ * available versions), injected through a throwaway init script. */
+async function runGradleDependencyScan() {
+  const stamp = `${process.pid}-${Date.now()}`;
+  const outDir = path.join(os.tmpdir(), `coffilot-deps-${stamp}`);
+  const initScript = path.join(os.tmpdir(), `coffilot-deps-${stamp}.gradle`);
+  try {
+    mkdirSync(outDir, { recursive: true });
+    writeFileSync(initScript, gradleDependencyUpdatesInitBody(outDir));
+    const treeRes = await captureBuildTool(gradleDepTreeArgs());
+    const updRes = await captureBuildTool(gradleDepUpdatesArgs(initScript));
+    const nodes = parseGradleDependencyTree(treeRes.out || "", { configFilter: gradleDepConfigFilter });
+    const updMap = new Map();
+    try {
+      for (const f of readdirSync(outDir)) {
+        if (!f.endsWith(".json")) continue;
+        const part = parseGradleDependencyUpdates(readFileSync(path.join(outDir, f), "utf8"));
+        for (const [k, v] of part) if (!updMap.has(k)) updMap.set(k, v);
+      }
+    } catch {
+      /* no report file written */
+    }
+    // Any outdated dependency missing from the project's compile/runtime/test
+    // classpaths comes from the buildscript or a plugin (a Gradle plugin marker, a
+    // Kotlin compiler artifact, …), not something the project declares directly, so
+    // surface it as transitive — "Direct only" then hides this plugin/build noise.
+    const known = new Set(nodes.map((n) => n.key));
+    for (const [key, upd] of updMap) {
+      if (known.has(key)) continue;
+      const [group, artifact] = key.split(":");
+      nodes.push({ key, group, artifact, version: upd.current, scope: "", depth: 1, direct: false, via: null });
+    }
+    const updates = mergeDependencyUpdates(nodes, updMap);
+    const error = !updMap.size && updRes.ok === false ? updRes.error || "Could not resolve dependency updates." : null;
+    return { updates, error };
+  } finally {
+    try {
+      if (existsSync(initScript)) unlinkSync(initScript);
+      rmSync(outDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+}
+
+/**
+ * On-demand scan: the list of outdated libraries (direct + transitive) for Maven
+ * or Gradle. Caches the result so the panel can re-render it after a tab switch or
+ * reload without re-running the build tool.
+ */
+async function runDependencyScan() {
+  const startedAt = Date.now();
+  if (!toolAvailable()) {
+    lastDependencyReport = {
+      ran: true,
+      buildTool,
+      available: false,
+      updatesSupported: false,
+      updates: [],
+      counts: emptyDepCounts(),
+      ranAt: startedAt,
+      durationMs: 0,
+      error: `No ${TOOL_LABEL || "build"} tool is available.`,
+    };
+    return lastDependencyReport;
+  }
+  let updates = [];
+  let error = null;
+  const updatesSupported = updatesSupportedFor(buildTool);
+  if (updatesSupported) {
+    const res = buildTool === "gradle" ? await runGradleDependencyScan() : await runMavenDependencyScan();
+    updates = res.updates;
+    error = res.error;
+  }
+  lastDependencyReport = {
+    ran: true,
+    buildTool,
+    available: true,
+    updatesSupported,
+    updates,
+    counts: {
+      total: updates.length,
+      direct: updates.filter((u) => u.direct).length,
+      transitive: updates.filter((u) => !u.direct).length,
+    },
+    ranAt: startedAt,
+    durationMs: Date.now() - startedAt,
+    error,
+  };
+  return lastDependencyReport;
+}
+
+/** GET /api/deps payload: the cached scan if any, else an idle snapshot. */
+function dependencySnapshot() {
+  if (lastDependencyReport) return lastDependencyReport;
+  return {
+    ran: false,
+    buildTool,
+    available: toolAvailable(),
+    updatesSupported: updatesSupportedFor(buildTool),
+    updates: [],
+    counts: emptyDepCounts(),
+    ranAt: null,
+    error: null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Runtime log levels — Spring Boot Actuator /loggers + Quarkus logging-manager
 // ---------------------------------------------------------------------------
 // A runtime-logger endpoint lists every logger with its configured/effective level
@@ -6887,12 +7504,30 @@ async function appPostCsrf(base, seedPath, postPath, body) {
 async function loggersStatus() {
   const base = appBase();
   if (!base) return { available: false };
-  // The framework is already known from how the app was launched (app.runMode), so go
-  // straight to the matching backend instead of probing both: Quarkus serves
-  // logging-manager under /q, everything else (Spring Boot or the generic runner) uses
-  // Actuator /loggers.
-  const status = app.runMode === "quarkus" ? await quarkusLoggersStatus(base) : await actuatorLoggersStatus(base);
+  // The framework is already known from how the app was launched (app.runMode): Quarkus
+  // serves logging-manager under /q. Everything else (Spring Boot or the generic runner)
+  // prefers BootUI's /bootui/api/loggers — it bundles Actuator's LoggersEndpoint, so it's
+  // the top tier whenever BootUI is on the classpath — then falls back to Actuator /loggers.
+  if (app.runMode === "quarkus") {
+    return (await quarkusLoggersStatus(base)) || { available: false };
+  }
+  const status = (await bootuiLoggersStatus(base)) || (await actuatorLoggersStatus(base));
   return status || { available: false };
+}
+
+/**
+ * Read loggers from BootUI's /bootui/api/loggers. BootUI bundles Spring Boot Actuator's
+ * LoggersEndpoint and re-exposes it (as availableLevels + a loggers array), so it's the
+ * preferred source whenever BootUI is on the classpath. Returns the normalized status, or
+ * null when BootUI isn't present.
+ */
+async function bootuiLoggersStatus(base) {
+  const report = await fetchJson(base, "/bootui/api/loggers");
+  const status = normalizeBootuiLoggers(report);
+  if (!status) return null;
+  app.loggersSource = "bootui";
+  app.loggersPrefix = "/bootui/api/loggers";
+  return status;
 }
 
 /**
@@ -6958,6 +7593,30 @@ export function normalizeQuarkusLoggers(list, levelsRaw) {
 }
 
 /**
+ * Normalize BootUI's /bootui/api/loggers report into the shared loggers shape (ROOT first,
+ * then alphabetical). BootUI returns { availableLevels, loggers: [{ name, configuredLevel,
+ * effectiveLevel }], page } — the levels and per-logger shape mirror Spring Boot Actuator
+ * (BootUI re-exposes Actuator's LoggersEndpoint). Returns null when the input isn't a BootUI
+ * loggers report (i.e. BootUI isn't present).
+ */
+export function normalizeBootuiLoggers(report) {
+  if (!report || !Array.isArray(report.loggers)) return null;
+  const levels =
+    Array.isArray(report.availableLevels) && report.availableLevels.length
+      ? report.availableLevels
+      : DEFAULT_LOG_LEVELS;
+  const loggers = report.loggers
+    .filter((l) => l && typeof l.name === "string")
+    .map((l) => ({
+      name: l.name === "" ? "ROOT" : l.name,
+      configuredLevel: l.configuredLevel || null,
+      effectiveLevel: l.effectiveLevel || null,
+    }));
+  loggers.sort((a, b) => (a.name === "ROOT" ? -1 : b.name === "ROOT" ? 1 : a.name.localeCompare(b.name)));
+  return { available: true, source: "bootui", levels, loggers };
+}
+
+/**
  * Change one logger's level on the Quarkus logging-manager extension: a form-encoded
  * POST to /q/logging-manager (ROOT maps back to JBoss's empty-string root name, an empty
  * level resets the logger to its inherited level). Returns the raw response.
@@ -6993,18 +7652,24 @@ async function setLoggerLevel(name, level) {
     };
   }
   const quarkus = app.loggersSource === "quarkus";
+  const bootui = app.loggersSource === "bootui";
   const validLevels = quarkus ? QUARKUS_LOG_LEVELS : DEFAULT_LOG_LEVELS;
   if (lvl && !validLevels.includes(lvl)) return { ok: false, error: `Unknown level "${level}".` };
   const prefix = app.loggersPrefix;
   try {
+    // BootUI re-exposes Actuator's LoggersEndpoint at /bootui/api/loggers/{name} with a
+    // { level } body (its prefix already ends in /loggers), so it has its own write path
+    // distinct from Actuator's ${prefix}/loggers/{name} + { configuredLevel }.
     const res = quarkus
       ? await quarkusSetLevel(base, name, lvl)
-      : await appPostCsrf(base, `${prefix}/loggers`, `${prefix}/loggers/${encodeURIComponent(name)}`, {
-          configuredLevel: lvl,
-        });
+      : bootui
+        ? await appPostCsrf(base, prefix, `${prefix}/${encodeURIComponent(name)}`, { level: lvl })
+        : await appPostCsrf(base, `${prefix}/loggers`, `${prefix}/loggers/${encodeURIComponent(name)}`, {
+            configuredLevel: lvl,
+          });
     await res.text().catch(() => null);
     if (!res.ok) {
-      const backend = quarkus ? "Logging Manager" : "Actuator";
+      const backend = quarkus ? "Logging Manager" : bootui ? "BootUI" : "Actuator";
       const why =
         res.status === 404
           ? "The app's logger endpoint isn't exposed (or is read-only)."
@@ -7600,6 +8265,17 @@ async function handleRequest(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/deps") {
+    await workspaceReady;
+    sendJson(res, 200, dependencySnapshot());
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/deps/scan") {
+    await workspaceReady;
+    sendJson(res, 200, await runDependencyScan());
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/loggers") {
     const status = await loggersStatus();
     // runMode lets the UI tailor the "no logger endpoint" hint (and its fix button)
@@ -8088,6 +8764,13 @@ function makeCanvas() {
           required: ["tool"],
         },
         handler: async (ctx) => runScanRest(ctx.input?.tool),
+      },
+      {
+        name: "check_dependencies",
+        description:
+          "Scan the project for outdated libraries (Maven or Gradle). Shells out to the build tool to resolve the latest available versions and returns the findings (current → latest, direct vs transitive, version-jump size). Findings can be handed to fix_issue with kind 'fix-dependency'.",
+        inputSchema: { type: "object", properties: {} },
+        handler: async () => runDependencyScan(),
       },
       {
         name: "set_log_level",
