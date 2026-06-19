@@ -2503,7 +2503,7 @@ function updateDevSetup() {
 
 // --- Spring Boot version + EOL/upgrade advisor (Spring Boot tab) -------------
 // The backend (springBootAdvisor) reports the detected version, its release line
-// and a support status; we render it and gate the "Upgrade with Copilot" button.
+// and a support status; we render it and gate the "Update with Copilot" button.
 const SPRING_STATUS = {
   current: { label: "Latest release line", cls: "ok" },
   supported: { label: "Supported — a newer release line is available", cls: "warn" },
@@ -2545,8 +2545,8 @@ function renderSpringAdvisor(adv) {
   btnUpgradeSpring.hidden = !showUpgrade;
   if (showUpgrade) {
     btnUpgradeSpring.disabled = false;
-    btnUpgradeSpring.textContent = "Upgrade with Copilot";
-    btnUpgradeSpring.title = `Ask Copilot to upgrade from Spring Boot ${adv.version} to the latest stable release.`;
+    btnUpgradeSpring.textContent = "Update with Copilot";
+    btnUpgradeSpring.title = `Ask Copilot to update from Spring Boot ${adv.version} to the latest stable release.`;
   }
 }
 

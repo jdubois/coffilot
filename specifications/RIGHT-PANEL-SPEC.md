@@ -25,7 +25,7 @@ Internal `data-atab` keys vs. the labels users see:
 |     4 | `spring`    | **Spring**        | Spring Boot version advisor + Actuator / BootUI / DevTools setup |
 |     5 | `quarkus`   | **Quarkus**       | Quarkus MCP register + metrics/logging setup                     |
 |     6 | `bootui`    | **BootUI**        | BootUI advisor scans                                             |
-|     7 | `deps`      | **Dependencies**  | Outdated libraries upgrades                                      |
+|     7 | `deps`      | **Updates**       | Outdated library updates                                         |
 
 Canonical order is `ASIDE_ORDER = ["settings", "jvm", "loggers", "spring",
 "quarkus", "bootui", "deps"]` (`public/app.js`).
@@ -182,7 +182,7 @@ Inactive → `renderSpringAdvisor` shows the “not a Spring Boot project” rea
 active, four stacked sections (`updateDevSetup`):
 
 1. **Version advisor** — detected Spring Boot version + support status (`current` /
-   `supported` / `eol` / `unknown` / `unreadable`) and an **Upgrade with Copilot** button
+   `supported` / `eol` / `unknown` / `unreadable`) and an **Update with Copilot** button
    (`#btn-upgrade-spring`, styled `fix-copilot` to match the other Copilot buttons).
 
 2. **Actuator section** (`#spring-actuator-section`) — _hidden when BootUI is
@@ -231,11 +231,11 @@ Active only at metrics tier `bootui` (app running). Pane shows scan controls
   - Not Spring Boot → “Advisor scans need a BootUI‑enabled Spring Boot app.”
   - Greyed placeholder scan buttons render so the pane isn’t empty.
 
-### 7.7 Dependencies (`deps`) — always active
+### 7.7 Updates (`deps`) — always active
 
-Outdated library list with “Direct dependencies only” filter and per‑finding
-**Fix with Copilot**. (Specified in `PLAN.md`; behaviour rules to be folded in here as it
-lands.). This needs to work both with Maven and Gradle.
+Outdated library list (heading **“Dependencies updates”**) with “Direct dependencies
+only” filter and per‑finding **Fix with Copilot**. (Specified in `PLAN.md`; behaviour
+rules to be folded in here as it lands.). This needs to work both with Maven and Gradle.
 
 ---
 
@@ -254,7 +254,7 @@ For Gradle Spring Boot projects, there is a similar mechanism.
 
 - Every Copilot fix/CTA button reads **“… with Copilot”** and uses the orange
   **`fix fix-copilot`** style (Add Actuator, Add BootUI, Add logging‑manager, Add Quarkus
-  metrics, Upgrade Spring Boot, etc.).
+  metrics, Update Spring Boot, etc.).
 - After a fix is requested, the button disables and reads “Asked Copilot ✓”.
 
 ---
