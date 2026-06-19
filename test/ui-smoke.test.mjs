@@ -398,6 +398,35 @@ test("the aside bar keeps its canonical order in both the available and unavaila
   }
 });
 
+test("renderMetrics maps the metrics tier to right-panel tab availability (\u00a74/\u00a75)", () => {
+  const avail = (name) => !win.document.querySelector(`.atab[data-atab="${name}"]`).classList.contains("unavailable");
+
+  // Tier bootui: Live JVM, Logs and the BootUI tab are all reachable.
+  win.renderMetrics({ appUp: true, metricsTier: "bootui" });
+  assert.ok(avail("jvm"), "bootui tier activates Live JVM");
+  assert.ok(avail("loggers"), "bootui tier activates Logs");
+  assert.ok(avail("bootui"), "bootui tier activates the BootUI tab");
+
+  // Tier actuator: Live JVM + Logs, but not BootUI (advisor scans need bootui).
+  win.renderMetrics({ appUp: true, metricsTier: "actuator" });
+  assert.ok(avail("jvm") && avail("loggers"), "actuator tier activates Live JVM + Logs");
+  assert.ok(!avail("bootui"), "actuator tier leaves the BootUI tab inactive");
+
+  // Tier quarkus: same three-way split as actuator.
+  win.renderMetrics({ appUp: true, metricsTier: "quarkus" });
+  assert.ok(avail("jvm") && avail("loggers"), "quarkus tier activates Live JVM + Logs");
+  assert.ok(!avail("bootui"), "quarkus tier leaves the BootUI tab inactive");
+
+  // Tier process (running but no endpoint): none of the three are reachable.
+  win.renderMetrics({ appUp: true, metricsTier: "process" });
+  assert.ok(!avail("jvm") && !avail("loggers") && !avail("bootui"), "process tier deactivates all three runtime tabs");
+
+  // App down: same, and the always-on tabs stay available.
+  win.renderMetrics({ appUp: false });
+  assert.ok(!avail("jvm") && !avail("loggers") && !avail("bootui"), "a down app deactivates all runtime tabs");
+  assert.ok(avail("settings") && avail("deps"), "Settings and Dependencies stay always-available");
+});
+
 test("renderDeps renders an outdated-library list", () => {
   assert.equal(typeof win.renderDeps, "function", "renderDeps should be a global");
   // A bad payload shows an error, not a throw.
@@ -482,6 +511,54 @@ test("renderDeps renders an outdated-library list", () => {
   );
   html = win.document.getElementById("deps-result").innerHTML;
   assert.ok(html.includes("guava"), "expected the Gradle outdated dependency in the rendered list");
+});
+
+test("the Dependencies direct-only filter hides transitive updates (\u00a77.7)", () => {
+  const report = {
+    ran: true,
+    buildTool: "maven",
+    available: true,
+    updatesSupported: true,
+    updates: [
+      {
+        group: "com.google.guava",
+        artifact: "guava",
+        current: "19.0",
+        latest: "33.6.0-jre",
+        scope: "compile",
+        direct: true,
+        via: null,
+        prerelease: false,
+        jump: "major",
+      },
+      {
+        group: "org.slf4j",
+        artifact: "slf4j-api",
+        current: "1.7.20",
+        latest: "2.1.0-alpha1",
+        scope: "compile",
+        direct: false,
+        via: "org.example:lib",
+        prerelease: true,
+        jump: "major",
+      },
+    ],
+    counts: { total: 2, direct: 1, transitive: 1 },
+  };
+  const direct = win.document.getElementById("deps-direct");
+  const result = () => win.document.getElementById("deps-result").innerHTML;
+
+  // Filter off: both the direct and the transitive update are listed.
+  direct.checked = false;
+  win.renderDeps(report);
+  assert.match(result(), /guava/, "direct update shown");
+  assert.match(result(), /slf4j-api/, "transitive update shown when the filter is off");
+
+  // Direct only: the transitive update is hidden, the direct one remains.
+  direct.checked = true;
+  win.renderDeps(report);
+  assert.match(result(), /guava/, "direct update still shown when direct-only is on");
+  assert.doesNotMatch(result(), /slf4j-api/, "transitive update hidden when direct-only is on");
 });
 
 test("applySettingsState restores the view/preference toggles", () => {
