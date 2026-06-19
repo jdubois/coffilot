@@ -6836,7 +6836,7 @@ async function runScanRest(key) {
 // pick up a different plugin major on a fresh machine.
 const DEP_TREE_PLUGIN = "org.apache.maven.plugins:maven-dependency-plugin:3.7.1";
 const VERSIONS_PLUGIN = "org.codehaus.mojo:versions-maven-plugin:2.18.0";
-const GRADLE_VERSIONS_PLUGIN = "com.github.ben-manes:gradle-versions-plugin:0.51.0";
+const GRADLE_VERSIONS_PLUGIN = "com.github.ben-manes:gradle-versions-plugin:0.54.0";
 
 let lastDependencyReport = null;
 
@@ -7118,9 +7118,12 @@ export function mavenDepUpdatesArgs() {
 export function gradleDepTreeArgs() {
   return ["dependencies", "--configuration", "runtimeClasspath", "-q"];
 }
-/** Gradle: the ben-manes `dependencyUpdates` task, injected via an init script. */
+/** Gradle: the ben-manes `dependencyUpdates` task, injected via an init script.
+ * `--no-parallel` is required on Gradle 9+ (the task fails under parallel project
+ * execution there) and is a harmless no-op on Gradle 7/8, where parallel builds
+ * are opt-in. */
 export function gradleDepUpdatesArgs(initScript) {
-  return ["--init-script", initScript, "dependencyUpdates", "-q"];
+  return ["--init-script", initScript, "dependencyUpdates", "-q", "--no-parallel"];
 }
 
 /** Maven outdated-libraries scan: dependency:tree + display-dependency-updates. */
