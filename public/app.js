@@ -1210,66 +1210,125 @@ async function refreshVars() {
 // on every SSE push, so we replay the previous fill width and bump it to the new
 // value on the next frame, letting the CSS width transition animate smoothly.
 let lastHeapPct = 0;
-// The Live JVM tab is greyed when the app is down or exposes no metrics endpoint.
-// Its pane then explains why and, when the project is a Spring Boot app without
-// Actuator (or a Quarkus app without Micrometer), offers a one-click Copilot fix to
-// add the dependency. metricsInactiveKey skips rebuilding an identical view on every
-// SSE push (which would otherwise reset a just-pressed button); metricsFixAsked
-// keeps the "Asked Copilot ✓" state until the app comes up with real metrics.
+// The Live JVM and Loggers tabs are greyed when the app is down or exposes no
+// diagnostic endpoint. Both panes share diagnosticInactiveBody / paintDiagnosticInactive
+// so they tell one consistent story: for the selected module, either confirm the
+// required dependency is already in the build ("\u2026 is set up") or offer an orange
+// "Add \u2026 with Copilot" fix to add it. The *AskedKinds sets remember which fixes were
+// pressed so the SSE/poll re-render keeps them disabled, and the *InactiveKey guards
+// skip rebuilding an identical view (which would otherwise reset a just-pressed button).
 let metricsInactiveKey = null;
-let metricsFixAsked = false;
-// Render the Live JVM pane's "why it's inactive" message (+ optional dependency
-// fix) for a down or metrics-less app. appDown distinguishes "not running" from
-// "running but no endpoint". Mirrors renderLoggersUnavailable's fix-button pattern.
-function renderMetricsInactive(appDown) {
-  const mod =
-    moduleList.find((m) => m.name === moduleSelect.value) ||
-    moduleList.find((m) => m.runnable) ||
-    moduleList[0] ||
-    null;
-  const springNoActuator = !!caps.springBoot && !(mod && mod.actuator);
-  const quarkusNoMetrics = !!caps.quarkus && !(mod && mod.quarkusMetrics);
-  let msg;
-  let fix = null;
-  let fixLabel = null;
-  if (springNoActuator) {
-    msg = appDown
-      ? "The app isn\u2019t running, and this Spring Boot app doesn\u2019t include Spring Boot Actuator \u2014 the Live JVM tab needs it to read metrics."
-      : "This Spring Boot app doesn\u2019t expose Spring Boot Actuator, so the Live JVM tab can\u2019t read metrics.";
-    fix = "install-actuator";
-    fixLabel = "Add Actuator with Copilot";
-  } else if (quarkusNoMetrics) {
-    msg = appDown
-      ? "The app isn\u2019t running, and this Quarkus app doesn\u2019t include Micrometer metrics \u2014 the Live JVM tab needs them."
-      : "This Quarkus app doesn\u2019t expose Micrometer metrics, so the Live JVM tab can\u2019t read metrics.";
-    fix = "install-quarkus-metrics";
-    fixLabel = "Add Quarkus metrics with Copilot";
-  } else if (appDown) {
-    msg = "The app isn\u2019t running. Run a module to see its live JVM metrics.";
+const metricsAskedKinds = new Set();
+
+// The selected module the run lane would launch \u2014 its build file is where we read
+// which diagnostic dependencies (Actuator, BootUI, Micrometer, logging-manager) live.
+function selectedRunModule() {
+  return (
+    moduleList.find((m) => m.name === moduleSelect.value) || moduleList.find((m) => m.runnable) || moduleList[0] || null
+  );
+}
+
+// Build the dependency status/fix block for a diagnostic pane. Spring Boot is layered \u2014
+// Actuator is the base and BootUI the richer tier \u2014 so: BootUI present => just say it's
+// set up (no Actuator offer, since BootUI already includes it); Actuator present but no
+// BootUI => say Actuator is set up and still offer BootUI; neither => offer Add Actuator
+// then Add BootUI, in that order. Quarkus uses the feature-specific dependency
+// ("metrics" => Micrometer, "loggers" => logging-manager): present => say so, else offer
+// its fix. appDown tailors "run the app" vs. "expose its endpoints and restart". Returns
+// { lines, fixes } consumed by paintDiagnosticInactive.
+function diagnosticInactiveBody(feature, appDown) {
+  const mod = selectedRunModule();
+  const next = appDown ? "run the app to use this tab" : "expose its endpoints and restart to use this tab";
+  const lines = [];
+  const fixes = [];
+  if (mod && mod.springBoot) {
+    if (mod.bootui) {
+      lines.push(`<p class="muted ok">\u2713 BootUI is set up \u2014 ${next}.</p>`);
+    } else if (mod.actuator) {
+      lines.push(`<p class="muted ok">\u2713 Spring Boot Actuator is set up \u2014 ${next}.</p>`);
+      lines.push('<p class="hint">Add BootUI for its developer console, richer metrics and advisor scans.</p>');
+      fixes.push({ id: "diag-fix-bootui", kind: "install-bootui", label: "Add BootUI with Copilot" });
+    } else {
+      lines.push(
+        feature === "loggers"
+          ? '<p class="muted">This Spring Boot app doesn\u2019t include Spring Boot Actuator, so log levels can\u2019t be changed live.</p>'
+          : '<p class="muted">This Spring Boot app doesn\u2019t include Spring Boot Actuator, so the Live JVM tab can\u2019t read metrics.</p>',
+      );
+      fixes.push({ id: "diag-fix-actuator", kind: "install-actuator", label: "Add Actuator with Copilot" });
+      fixes.push({ id: "diag-fix-bootui", kind: "install-bootui", label: "Add BootUI with Copilot" });
+    }
+  } else if (mod && mod.quarkus) {
+    if (feature === "loggers") {
+      if (mod.loggingManager) {
+        lines.push(`<p class="muted ok">\u2713 Quarkus logging-manager is set up \u2014 ${next}.</p>`);
+      } else {
+        lines.push(
+          '<p class="muted">This Quarkus app doesn\u2019t include the logging-manager extension, so log levels can\u2019t be changed live.</p>',
+        );
+        fixes.push({ id: "diag-fix-lm", kind: "install-logging-manager", label: "Add logging-manager with Copilot" });
+      }
+    } else if (mod.quarkusMetrics) {
+      lines.push(`<p class="muted ok">\u2713 Quarkus Micrometer is set up \u2014 ${next}.</p>`);
+    } else {
+      lines.push(
+        '<p class="muted">This Quarkus app doesn\u2019t include Micrometer metrics, so the Live JVM tab can\u2019t read metrics.</p>',
+      );
+      fixes.push({ id: "diag-fix-qm", kind: "install-quarkus-metrics", label: "Add Quarkus metrics with Copilot" });
+    }
   } else {
-    msg = "The running app doesn\u2019t expose a metrics endpoint, so there are no live JVM metrics to show.";
+    lines.push(
+      feature === "loggers"
+        ? '<p class="hint">Live log-level control works only for Spring Boot apps (Actuator <code>/loggers</code>) or Quarkus apps (the <code>quarkus-logging-manager</code> extension).</p>'
+        : '<p class="hint">Live JVM metrics need a Spring Boot app (Actuator or BootUI) or a Quarkus app (Micrometer).</p>',
+    );
   }
-  const key = (appDown ? "down" : "noendpoint") + ":" + (fix || "none") + ":" + (metricsFixAsked ? "asked" : "open");
-  if (key === metricsInactiveKey) return;
-  metricsInactiveKey = key;
-  let html = `<p class="muted">${msg}</p>`;
-  if (fix) {
-    html += metricsFixAsked
-      ? '<button class="fix fix-copilot tiny" style="margin-top: 0.4rem" disabled>Asked Copilot \u2713</button>'
-      : `<button id="metrics-fix" class="fix fix-copilot tiny" style="margin-top: 0.4rem">${fixLabel}</button>`;
+  return { lines, fixes };
+}
+
+// Stable signature of an inactive view, so an identical re-render is skipped.
+function diagnosticInactiveKey(lead, body, asked) {
+  return [lead, body.lines.join("|"), body.fixes.map((f) => f.kind).join(","), [...asked].sort().join(",")].join("::");
+}
+
+// Paint an inactive diagnostic pane: a lead line (why it's greyed right now) then the
+// dependency status/fix block. Each pending fix becomes an orange button that posts its
+// Copilot fix and flips to "Asked Copilot \u2713"; already-asked fixes render disabled.
+function paintDiagnosticInactive(targetEl, lead, body, asked) {
+  let html = lead ? `<p class="muted">${lead}</p>` : "";
+  html += body.lines.join("");
+  if (body.fixes.length) {
+    html += '<div class="set-proposals" style="margin-top: 0.5rem">';
+    for (const f of body.fixes) {
+      html += asked.has(f.kind)
+        ? '<button class="fix fix-copilot tiny" disabled>Asked Copilot \u2713</button>'
+        : `<button id="${f.id}" class="fix fix-copilot tiny">${f.label}</button>`;
+    }
+    html += "</div>";
   }
-  metricsEl.innerHTML = html;
-  metricsHint.hidden = true;
-  const btn = fix && document.getElementById("metrics-fix");
-  if (btn) {
+  targetEl.innerHTML = html;
+  for (const f of body.fixes) {
+    if (asked.has(f.kind)) continue;
+    const btn = document.getElementById(f.id);
+    if (!btn) continue;
     btn.onclick = () => {
-      metricsFixAsked = true;
-      metricsInactiveKey = null;
+      asked.add(f.kind);
       btn.disabled = true;
       btn.textContent = "Asked Copilot \u2713";
-      post("/api/fix", { kind: fix, module: moduleSelect.value });
+      post("/api/fix", { kind: f.kind, module: moduleSelect.value });
     };
   }
+}
+
+// Render the Live JVM pane's inactive view (app down, or running without a metrics
+// endpoint).
+function renderMetricsInactive(appDown) {
+  const body = diagnosticInactiveBody("metrics", appDown);
+  const lead = appDown ? "The app isn\u2019t running." : "The running app exposes no metrics endpoint.";
+  const key = diagnosticInactiveKey(lead, body, metricsAskedKinds);
+  if (key === metricsInactiveKey) return;
+  metricsInactiveKey = key;
+  paintDiagnosticInactive(metricsEl, lead, body, metricsAskedKinds);
+  metricsHint.hidden = true;
 }
 function renderMetrics(m) {
   const nowUp = !!(m && m.appUp);
@@ -1310,7 +1369,7 @@ function renderMetrics(m) {
   // Real metrics: the tab is active again, so clear the inactive-view guard and
   // restore the contextual hint that the active tiers populate below.
   metricsInactiveKey = null;
-  metricsFixAsked = false;
+  metricsAskedKinds.clear();
   metricsHint.hidden = false;
 
   const o = m.overview || {};
@@ -1918,11 +1977,11 @@ const LOGGER_LEVELS = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
 let appRunning = false;
 let loggersData = null;
 let loggersTimer = null;
-// Tracks whether the user already pressed "Fix with Copilot" on the current
-// no-endpoint view, so the 5s poll re-render doesn't reset the button. Cleared when
-// the app goes down or loggers become available. loggersUnavailKey guards against
-// rebuilding an identical unavailable view on every poll.
-let loggersFixAsked = false;
+// loggersAskedKinds remembers which "Add … with Copilot" fixes were pressed on the
+// current inactive view so the 5s poll re-render doesn't reset them; cleared when the
+// app goes down or loggers become available. loggersUnavailKey guards against
+// rebuilding an identical inactive view on every poll.
+const loggersAskedKinds = new Set();
 let loggersUnavailKey = null;
 
 function loggersTabActive() {
@@ -1957,23 +2016,15 @@ async function loadLoggers() {
 
 function renderLoggers(data, force) {
   if (!data || data.appDown) {
-    loggersSrc.hidden = true;
-    loggersControls.hidden = true;
-    loggersListEl.innerHTML =
-      '<p class="muted">The app isn\u2019t running.</p>' +
-      '<p class="hint">Run a Spring Boot app (Actuator <code>/loggers</code>) or a Quarkus app with the ' +
-      "logging-manager extension to change its log levels here live, no restart.</p>";
-    loggersData = null;
-    loggersFixAsked = false;
-    loggersUnavailKey = null;
+    renderLoggersInactive(true);
     return;
   }
   if (!data.available) {
-    renderLoggersUnavailable(data.runMode);
+    renderLoggersInactive(false);
     return;
   }
   loggersData = data;
-  loggersFixAsked = false;
+  loggersAskedKinds.clear();
   loggersUnavailKey = null;
   loggersSrc.hidden = false;
   const quarkus = data.source === "quarkus";
@@ -1986,51 +2037,19 @@ function renderLoggers(data, force) {
   renderLoggersList();
 }
 
-// The app is up but exposes no runtime-logger endpoint. Tailor the hint to the
-// framework: Spring Boot and Quarkus each get a one-click "Fix with Copilot" that
-// asks the agent to add the missing dependency; anything else just explains the
-// feature only works for those two.
-function renderLoggersUnavailable(runMode) {
+// Render the Loggers pane's inactive view (app down, or running without a runtime
+// logger endpoint), sharing the dependency status/fix block with Live JVM so the two
+// diagnostic panes stay consistent.
+function renderLoggersInactive(appDown) {
   loggersSrc.hidden = true;
   loggersControls.hidden = true;
   loggersData = null;
-  const key = (runMode || "other") + ":" + (loggersFixAsked ? "asked" : "open");
+  const body = diagnosticInactiveBody("loggers", appDown);
+  const lead = appDown ? "The app isn\u2019t running." : "The running app exposes no runtime-logger endpoint.";
+  const key = diagnosticInactiveKey(lead, body, loggersAskedKinds);
   if (key === loggersUnavailKey) return;
   loggersUnavailKey = key;
-  let html;
-  let fix = null;
-  if (runMode === "spring") {
-    html =
-      '<p class="muted">No Spring Boot Actuator <code>/loggers</code> endpoint is exposed on the running app, ' +
-      "so log levels can\u2019t be changed here.</p>" +
-      '<p class="hint">Add Spring Boot Actuator from the <strong>Spring</strong> tab, then expose it ' +
-      "(<code>management.endpoints.web.exposure.include=loggers</code>) and run the app again.</p>";
-  } else if (runMode === "quarkus") {
-    html =
-      '<p class="muted">No Quarkus logging-manager endpoint is exposed on the running app, so log levels ' +
-      "can\u2019t be changed here. Add the <code>quarkus-logging-manager</code> extension.</p>";
-    fix = "install-logging-manager";
-  } else {
-    html =
-      '<p class="muted">Live log-level control works only for Spring Boot apps (via the Actuator ' +
-      "<code>/loggers</code> endpoint) or Quarkus apps (via the <code>quarkus-logging-manager</code> extension).</p>";
-  }
-  if (fix) {
-    html += loggersFixAsked
-      ? '<button class="fix fix-copilot tiny" style="margin-top: 0.4rem" disabled>Asked Copilot \u2713</button>'
-      : '<button id="loggers-fix" class="fix fix-copilot tiny" style="margin-top: 0.4rem">Fix with Copilot</button>';
-  }
-  loggersListEl.innerHTML = html;
-  const btn = fix && document.getElementById("loggers-fix");
-  if (btn) {
-    btn.onclick = () => {
-      loggersFixAsked = true;
-      loggersUnavailKey = null;
-      btn.disabled = true;
-      btn.textContent = "Asked Copilot \u2713";
-      post("/api/fix", { kind: fix, module: moduleSelect.value });
-    };
-  }
+  paintDiagnosticInactive(loggersListEl, lead, body, loggersAskedKinds);
 }
 
 function renderLoggersList() {

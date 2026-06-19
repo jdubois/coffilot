@@ -120,31 +120,41 @@ test("renderMcp tolerates an unavailable MCP server", () => {
   assert.doesNotThrow(() => win.renderMcp({ available: false }));
 });
 
-test("renderLoggers tailors the no-endpoint message per framework", () => {
+test("the Loggers tab shares the inactive dependency story with Live JVM", () => {
   const list = () => win.document.getElementById("loggers-list").innerHTML;
 
-  // App down: a Live-JVM-style "not running" message, no fix button.
-  assert.doesNotThrow(() => win.renderLoggers({ available: false, appDown: true }));
-  assert.ok(/isn.t running/i.test(list()), "expected an app-not-running message like Live JVM");
-  assert.equal(win.document.getElementById("loggers-fix"), null, "no fix button when the app is down");
+  // App down on a plain Java project: a "not running" lead, no dependency fix.
+  win.applyEnv({ modules: [{ name: "lib", artifactId: "lib", runnable: true }], capabilities: { maven: true } });
+  win.renderLoggers({ available: false, appDown: true });
+  assert.match(list(), /isn.t running/i, "expected an app-not-running lead like Live JVM");
+  assert.equal(win.document.getElementById("diag-fix-lm"), null, "no fix button for a plain Java app");
 
-  // Spring Boot, app up, no /loggers: points at the Spring tab, no inline fix button
-  // (Actuator setup now lives in the Spring tab).
-  assert.doesNotThrow(() => win.renderLoggers({ available: false, runMode: "spring" }));
-  assert.ok(list().includes("Actuator"), "expected the Spring Boot Actuator hint");
-  assert.ok(/Spring<\/strong> tab/.test(list()), "points the user at the Spring tab");
-  assert.equal(win.document.getElementById("loggers-fix"), null, "no inline fix button for a Spring app");
+  // Spring Boot without Actuator, app up but no /loggers: Add Actuator then Add BootUI.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: false }],
+    capabilities: { springBoot: true, maven: true },
+  });
+  win.renderLoggers({ available: false });
+  assert.ok(win.document.getElementById("diag-fix-actuator"), "Spring w/o Actuator offers Add Actuator");
+  assert.ok(win.document.getElementById("diag-fix-bootui"), "and Add BootUI alongside it");
 
-  // Quarkus: logging-manager hint + a Fix button, no Actuator copy.
-  assert.doesNotThrow(() => win.renderLoggers({ available: false, runMode: "quarkus" }));
-  assert.ok(list().includes("quarkus-logging-manager"), "expected the Quarkus logging-manager hint");
+  // Quarkus without logging-manager: a single Add logging-manager fix, no Spring copy.
+  win.applyEnv({
+    modules: [{ name: "svc", artifactId: "svc", runnable: true, quarkus: true, loggingManager: false }],
+    capabilities: { quarkus: true, maven: true },
+  });
+  win.renderLoggers({ available: false });
+  assert.ok(win.document.getElementById("diag-fix-lm"), "Quarkus w/o logging-manager offers its fix");
   assert.ok(!/Actuator/.test(list()), "no Spring Boot copy for a Quarkus app");
-  assert.ok(win.document.getElementById("loggers-fix"), "expected a Fix with Copilot button for Quarkus");
 
-  // Plain Java (or unknown): generic message, no fix button.
-  assert.doesNotThrow(() => win.renderLoggers({ available: false, runMode: "java" }));
-  assert.ok(list().includes("only"), "expected the generic 'only Spring Boot or Quarkus' message");
-  assert.equal(win.document.getElementById("loggers-fix"), null, "no fix button for a non-framework app");
+  // Quarkus with logging-manager present: confirm it's set up, no fix button.
+  win.applyEnv({
+    modules: [{ name: "svc", artifactId: "svc", runnable: true, quarkus: true, loggingManager: true }],
+    capabilities: { quarkus: true, loggingManager: true, maven: true },
+  });
+  win.renderLoggers({ available: false, appDown: true });
+  assert.match(list(), /logging-manager is set up/i, "confirms logging-manager is set up");
+  assert.equal(win.document.getElementById("diag-fix-lm"), null, "no fix once logging-manager is present");
 });
 
 test("the Spring tab offers to add Actuator only when the module lacks it", () => {
@@ -186,16 +196,17 @@ test("the Spring tab offers to add Actuator only when the module lacks it", () =
 test("the Live JVM tab explains why it's inactive and offers the dependency fix", () => {
   const metrics = () => win.document.getElementById("metrics").innerHTML;
 
-  // Spring Boot app without Actuator, not running: reason + Add Actuator with Copilot.
+  // Spring Boot app without Actuator, not running: Add Actuator then Add BootUI.
   win.applyEnv({
     modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: false }],
     capabilities: { springBoot: true, maven: true },
   });
   win.renderMetrics({ appUp: false });
-  let fix = win.document.getElementById("metrics-fix");
-  assert.ok(fix, "a Spring app without Actuator offers a metrics fix");
-  assert.match(fix.textContent, /Add Actuator with Copilot/);
-  assert.ok(fix.classList.contains("fix-copilot"), "the metrics fix uses the orange Copilot CTA color");
+  let actuator = win.document.getElementById("diag-fix-actuator");
+  assert.ok(actuator, "a Spring app without Actuator offers Add Actuator");
+  assert.match(actuator.textContent, /Add Actuator with Copilot/);
+  assert.ok(actuator.classList.contains("fix-copilot"), "the metrics fix uses the orange Copilot CTA color");
+  assert.ok(win.document.getElementById("diag-fix-bootui"), "and offers Add BootUI alongside it");
 
   // Quarkus app without Micrometer, running but no endpoint (process tier).
   win.applyEnv({
@@ -203,9 +214,9 @@ test("the Live JVM tab explains why it's inactive and offers the dependency fix"
     capabilities: { quarkus: true, maven: true },
   });
   win.renderMetrics({ appUp: true, metricsTier: "process" });
-  fix = win.document.getElementById("metrics-fix");
-  assert.ok(fix, "a Quarkus app without Micrometer offers a metrics fix");
-  assert.match(fix.textContent, /Add Quarkus metrics with Copilot/);
+  const qm = win.document.getElementById("diag-fix-qm");
+  assert.ok(qm, "a Quarkus app without Micrometer offers a metrics fix");
+  assert.match(qm.textContent, /Add Quarkus metrics with Copilot/);
 
   // Plain Java app, down: a reason, but no dependency fix to offer.
   win.applyEnv({
@@ -213,8 +224,33 @@ test("the Live JVM tab explains why it's inactive and offers the dependency fix"
     capabilities: { maven: true },
   });
   win.renderMetrics(null);
-  assert.equal(win.document.getElementById("metrics-fix"), null, "no dependency fix for a plain Java app");
+  assert.equal(win.document.getElementById("diag-fix-actuator"), null, "no dependency fix for a plain Java app");
   assert.match(metrics(), /isn.t running/i, "explains that the app isn't running");
+});
+
+test("the Live JVM tab layers the Spring Actuator and BootUI offers", () => {
+  // Actuator already on the classpath but no BootUI: confirm Actuator is set up,
+  // drop the Actuator offer, and keep the BootUI offer.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: true, bootui: false }],
+    capabilities: { springBoot: true, actuator: true, maven: true },
+  });
+  win.renderMetrics({ appUp: false });
+  let html = win.document.getElementById("metrics").innerHTML;
+  assert.match(html, /Actuator is set up/i, "tells the user Actuator is set up");
+  assert.equal(win.document.getElementById("diag-fix-actuator"), null, "no Actuator offer once it's present");
+  assert.ok(win.document.getElementById("diag-fix-bootui"), "still offers BootUI for richer metrics");
+
+  // BootUI present: it covers everything, so no Actuator offer at all.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: true, bootui: true }],
+    capabilities: { springBoot: true, actuator: true, bootui: true, maven: true },
+  });
+  win.renderMetrics({ appUp: false });
+  html = win.document.getElementById("metrics").innerHTML;
+  assert.match(html, /BootUI is set up/i, "tells the user BootUI is set up");
+  assert.equal(win.document.getElementById("diag-fix-actuator"), null, "no Actuator offer when BootUI is present");
+  assert.equal(win.document.getElementById("diag-fix-bootui"), null, "no BootUI offer when BootUI is present");
 });
 
 test("the Spring and Quarkus tabs explain why they're inactive", () => {

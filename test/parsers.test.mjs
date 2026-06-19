@@ -297,6 +297,22 @@ test("pomCaps / gradleCaps detect the Quarkus Micrometer metrics dependency", ()
   );
 });
 
+test("pomCaps / gradleCaps detect the Quarkus logging-manager extension", () => {
+  const withLm =
+    "<project><dependencies><dependency><groupId>io.quarkiverse.loggingmanager</groupId>" +
+    "<artifactId>quarkus-logging-manager</artifactId></dependency></dependencies></project>";
+  assert.equal(pomCaps(withLm, "app").loggingManager, true, "Maven: logging-manager detected");
+  assert.equal(pomCaps("<project/>", "app").loggingManager, false, "Maven: absent when no logging-manager dep");
+
+  const gradleWith = 'dependencies { runtimeOnly("io.quarkiverse.loggingmanager:quarkus-logging-manager") }';
+  assert.equal(gradleCaps(gradleWith, "app").loggingManager, true, "Gradle: logging-manager detected");
+  assert.equal(
+    gradleCaps("plugins { id 'java' }", "app").loggingManager,
+    false,
+    "Gradle: absent when no logging-manager dep",
+  );
+});
+
 test("normalizeQuarkusLoggers maps the listing to the shared shape (ROOT first)", () => {
   const out = normalizeQuarkusLoggers(
     [

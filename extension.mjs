@@ -1528,6 +1528,7 @@ export function pomCaps(xml, name) {
     actuator: xml.includes("spring-boot-starter-actuator"),
     devtools: xml.includes("spring-boot-devtools"),
     quarkusMetrics: /quarkus-micrometer/.test(xml),
+    loggingManager: /quarkus-logging-manager/.test(xml),
     bootui: /bootui-spring-boot-starter|julien-dubois\.bootui|jdubois\.bootui/.test(xml),
     mainClass: pomMainClass(xml),
   };
@@ -1572,6 +1573,7 @@ export function gradleCaps(text, name) {
     actuator: text.includes("spring-boot-starter-actuator"),
     devtools: text.includes("spring-boot-devtools"),
     quarkusMetrics: /quarkus-micrometer/.test(text),
+    loggingManager: /quarkus-logging-manager/.test(text),
     bootui: /bootui-spring-boot-starter|julien-dubois\.bootui|jdubois\.bootui/.test(text),
     application: gradleHasApplicationPlugin(text),
     mainClass: gradleMainClass(text),
@@ -1943,6 +1945,7 @@ function capabilitiesSnapshot() {
     actuator: mods.some((m) => m.actuator),
     devtools: mods.some((m) => m.devtools),
     quarkusMetrics: mods.some((m) => m.quarkusMetrics),
+    loggingManager: mods.some((m) => m.loggingManager),
     bootui: mods.some((m) => m.bootui),
     quarkusAgentMcp: mods.some((m) => m.quarkus) ? detectQuarkusAgentMcp() : { available: false, runner: null },
   };
