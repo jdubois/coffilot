@@ -2056,9 +2056,9 @@ function renderLoggers(data, force) {
   loggersAskedKinds.clear();
   loggersUnavailKey = null;
   loggersSrc.hidden = false;
-  const quarkus = data.source === "quarkus";
-  loggersSrc.className = quarkus ? "src quarkus" : "src actuator";
-  loggersSrc.textContent = quarkus ? "Quarkus" : "Actuator";
+  loggersSrc.className =
+    "src " + (data.source === "quarkus" ? "quarkus" : data.source === "bootui" ? "bootui" : "actuator");
+  loggersSrc.textContent = data.source === "quarkus" ? "Quarkus" : data.source === "bootui" ? "BootUI" : "Actuator";
   loggersControls.hidden = false;
   // Don't rebuild the list out from under the user while they're using it
   // (an open select or focused search box) unless explicitly forced.

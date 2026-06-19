@@ -149,8 +149,16 @@ read “Asked Copilot ✓” (tracked in `metricsAskedKinds`).
 
 ### 7.3 Logs (`loggers`)
 
-**Active:** live logger list + level controls; source badge reads “Actuator” or
+**Active:** live logger list + level controls; source badge reads “BootUI”, “Actuator” or
 “Quarkus”.
+
+- Spring Boot + **BootUI** (whether Actuator is also present or not) → reads/writes via
+  BootUI’s `/bootui/api/loggers` (it bundles Actuator’s `LoggersEndpoint`, so it is the top
+  tier). Badge reads “BootUI”.
+- Spring Boot + **Actuator** (no BootUI) → reads/writes via Actuator’s `/loggers`. Badge
+  reads “Actuator”.
+- Quarkus + **logging‑manager** → reads/writes via the Quarkus logging‑manager endpoint.
+  Badge reads “Quarkus”.
 
 **Inactive** (`renderLoggersInactive` → `diagnosticInactiveBody("loggers", appDown)`):
 same structure as Live JVM, with logger‑specific wording:
@@ -209,7 +217,8 @@ above the "Quarkus Agent MCP server" subtitle.
 ### 7.6 BootUI / advisor scans (`bootui`)
 
 Active only at metrics tier `bootui` (app running). Pane shows scan controls
-(`Scan all` + per‑panel scans).
+(`Scan all` + per‑panel scans). Inactive handling is described below
+(`scansInactiveHtml`), including the “not a Spring Boot project” case.
 
 - Title is followed by `#bootui-configured` (“✓ BootUI is set up”, shown when BootUI is
   on the classpath) or `#bootui-desc` (the “add the starter” description, shown

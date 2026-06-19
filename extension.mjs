@@ -7504,12 +7504,30 @@ async function appPostCsrf(base, seedPath, postPath, body) {
 async function loggersStatus() {
   const base = appBase();
   if (!base) return { available: false };
-  // The framework is already known from how the app was launched (app.runMode), so go
-  // straight to the matching backend instead of probing both: Quarkus serves
-  // logging-manager under /q, everything else (Spring Boot or the generic runner) uses
-  // Actuator /loggers.
-  const status = app.runMode === "quarkus" ? await quarkusLoggersStatus(base) : await actuatorLoggersStatus(base);
+  // The framework is already known from how the app was launched (app.runMode): Quarkus
+  // serves logging-manager under /q. Everything else (Spring Boot or the generic runner)
+  // prefers BootUI's /bootui/api/loggers — it bundles Actuator's LoggersEndpoint, so it's
+  // the top tier whenever BootUI is on the classpath — then falls back to Actuator /loggers.
+  if (app.runMode === "quarkus") {
+    return (await quarkusLoggersStatus(base)) || { available: false };
+  }
+  const status = (await bootuiLoggersStatus(base)) || (await actuatorLoggersStatus(base));
   return status || { available: false };
+}
+
+/**
+ * Read loggers from BootUI's /bootui/api/loggers. BootUI bundles Spring Boot Actuator's
+ * LoggersEndpoint and re-exposes it (as availableLevels + a loggers array), so it's the
+ * preferred source whenever BootUI is on the classpath. Returns the normalized status, or
+ * null when BootUI isn't present.
+ */
+async function bootuiLoggersStatus(base) {
+  const report = await fetchJson(base, "/bootui/api/loggers");
+  const status = normalizeBootuiLoggers(report);
+  if (!status) return null;
+  app.loggersSource = "bootui";
+  app.loggersPrefix = "/bootui/api/loggers";
+  return status;
 }
 
 /**
@@ -7575,6 +7593,30 @@ export function normalizeQuarkusLoggers(list, levelsRaw) {
 }
 
 /**
+ * Normalize BootUI's /bootui/api/loggers report into the shared loggers shape (ROOT first,
+ * then alphabetical). BootUI returns { availableLevels, loggers: [{ name, configuredLevel,
+ * effectiveLevel }], page } — the levels and per-logger shape mirror Spring Boot Actuator
+ * (BootUI re-exposes Actuator's LoggersEndpoint). Returns null when the input isn't a BootUI
+ * loggers report (i.e. BootUI isn't present).
+ */
+export function normalizeBootuiLoggers(report) {
+  if (!report || !Array.isArray(report.loggers)) return null;
+  const levels =
+    Array.isArray(report.availableLevels) && report.availableLevels.length
+      ? report.availableLevels
+      : DEFAULT_LOG_LEVELS;
+  const loggers = report.loggers
+    .filter((l) => l && typeof l.name === "string")
+    .map((l) => ({
+      name: l.name === "" ? "ROOT" : l.name,
+      configuredLevel: l.configuredLevel || null,
+      effectiveLevel: l.effectiveLevel || null,
+    }));
+  loggers.sort((a, b) => (a.name === "ROOT" ? -1 : b.name === "ROOT" ? 1 : a.name.localeCompare(b.name)));
+  return { available: true, source: "bootui", levels, loggers };
+}
+
+/**
  * Change one logger's level on the Quarkus logging-manager extension: a form-encoded
  * POST to /q/logging-manager (ROOT maps back to JBoss's empty-string root name, an empty
  * level resets the logger to its inherited level). Returns the raw response.
@@ -7610,18 +7652,24 @@ async function setLoggerLevel(name, level) {
     };
   }
   const quarkus = app.loggersSource === "quarkus";
+  const bootui = app.loggersSource === "bootui";
   const validLevels = quarkus ? QUARKUS_LOG_LEVELS : DEFAULT_LOG_LEVELS;
   if (lvl && !validLevels.includes(lvl)) return { ok: false, error: `Unknown level "${level}".` };
   const prefix = app.loggersPrefix;
   try {
+    // BootUI re-exposes Actuator's LoggersEndpoint at /bootui/api/loggers/{name} with a
+    // { level } body (its prefix already ends in /loggers), so it has its own write path
+    // distinct from Actuator's ${prefix}/loggers/{name} + { configuredLevel }.
     const res = quarkus
       ? await quarkusSetLevel(base, name, lvl)
-      : await appPostCsrf(base, `${prefix}/loggers`, `${prefix}/loggers/${encodeURIComponent(name)}`, {
-          configuredLevel: lvl,
-        });
+      : bootui
+        ? await appPostCsrf(base, prefix, `${prefix}/${encodeURIComponent(name)}`, { level: lvl })
+        : await appPostCsrf(base, `${prefix}/loggers`, `${prefix}/loggers/${encodeURIComponent(name)}`, {
+            configuredLevel: lvl,
+          });
     await res.text().catch(() => null);
     if (!res.ok) {
-      const backend = quarkus ? "Logging Manager" : "Actuator";
+      const backend = quarkus ? "Logging Manager" : bootui ? "BootUI" : "Actuator";
       const why =
         res.status === 404
           ? "The app's logger endpoint isn't exposed (or is read-only)."

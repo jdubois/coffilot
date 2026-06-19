@@ -18,6 +18,7 @@ const {
   promFirstLabel,
   quarkusMetrics,
   normalizeQuarkusLoggers,
+  normalizeBootuiLoggers,
   maskSecrets,
   buildHistoryEntry,
   clampHistory,
@@ -398,6 +399,34 @@ test("normalizeQuarkusLoggers falls back to JBoss levels and rejects non-arrays"
   const out = normalizeQuarkusLoggers([{ name: "ROOT", configuredLevel: "INFO", effectiveLevel: "INFO" }], null);
   assert.ok(out.levels.includes("TRACE") && out.levels.includes("FINEST"));
   assert.equal(normalizeQuarkusLoggers(null, ["INFO"]), null);
+});
+
+test("normalizeBootuiLoggers maps the /bootui/api/loggers report to the shared shape (ROOT first)", () => {
+  const out = normalizeBootuiLoggers({
+    availableLevels: ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"],
+    loggers: [
+      { name: "org.acme.Svc", configuredLevel: "DEBUG", effectiveLevel: "DEBUG" },
+      { name: "ROOT", configuredLevel: "INFO", effectiveLevel: "INFO" },
+      { name: "io.github", configuredLevel: null, effectiveLevel: "INFO" },
+    ],
+    page: { total: 3 },
+  });
+  assert.equal(out.available, true);
+  assert.equal(out.source, "bootui");
+  assert.deepEqual(
+    out.loggers.map((l) => l.name),
+    ["ROOT", "io.github", "org.acme.Svc"],
+  );
+  // A null configuredLevel normalizes to null (the UI's "inherit" state).
+  assert.equal(out.loggers[1].configuredLevel, null);
+  assert.deepEqual(out.levels, ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"]);
+});
+
+test("normalizeBootuiLoggers falls back to default levels and rejects non-reports", () => {
+  const out = normalizeBootuiLoggers({ loggers: [{ name: "ROOT", configuredLevel: "INFO", effectiveLevel: "INFO" }] });
+  assert.deepEqual(out.levels, ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"]);
+  assert.equal(normalizeBootuiLoggers(null), null, "no report");
+  assert.equal(normalizeBootuiLoggers({ availableLevels: ["INFO"] }), null, "a report without a loggers array");
 });
 
 // ---------------------------------------------------------------------------
