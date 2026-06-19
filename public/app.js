@@ -397,10 +397,10 @@ function setAsideOpen(open) {
 }
 function showAsideTab(name) {
   document.querySelectorAll(".atab").forEach((t) => t.classList.toggle("active", t.dataset.atab === name));
-  document.getElementById("atab-metrics").classList.toggle("active", name === "metrics");
+  document.getElementById("atab-jvm").classList.toggle("active", name === "jvm");
   document.getElementById("atab-loggers").classList.toggle("active", name === "loggers");
   document.getElementById("atab-spring").classList.toggle("active", name === "spring");
-  document.getElementById("atab-scans").classList.toggle("active", name === "scans");
+  document.getElementById("atab-bootui").classList.toggle("active", name === "bootui");
   document.getElementById("atab-quarkus").classList.toggle("active", name === "quarkus");
   document.getElementById("atab-settings").classList.toggle("active", name === "settings");
   document.getElementById("atab-deps").classList.toggle("active", name === "deps");
@@ -415,7 +415,10 @@ let hasScanResults = false;
 let hasDepsResults = false;
 function syncAsideWide() {
   const tab = activeAsideTab();
-  workspaceEl.classList.toggle("aside-wide", (tab === "scans" && hasScanResults) || (tab === "deps" && hasDepsResults));
+  workspaceEl.classList.toggle(
+    "aside-wide",
+    (tab === "bootui" && hasScanResults) || (tab === "deps" && hasDepsResults),
+  );
 }
 function markScanResults(on) {
   hasScanResults = on;
@@ -438,7 +441,7 @@ function rememberAsideState() {
 function applyAsideState(s) {
   if (asideStateApplied || !s) return;
   asideStateApplied = true;
-  asideTabPref = ["metrics", "loggers", "spring", "scans", "quarkus", "settings", "deps"].includes(s.asideTab)
+  asideTabPref = ["jvm", "loggers", "spring", "bootui", "quarkus", "settings", "deps"].includes(s.asideTab)
     ? s.asideTab
     : "settings";
   asideOpenPref = s.asideOpen === true;
@@ -502,26 +505,25 @@ const ASIDE_ALWAYS = new Set(["settings", "deps"]);
 // never unavailable); Quarkus precedes BootUI and Upgrades (deps) trails. The same
 // sequence is used whether a tab is active or greyed — only the group it sits in
 // changes, with unavailable tabs pushed to the bottom.
-const ASIDE_ORDER = ["settings", "metrics", "loggers", "spring", "quarkus", "scans", "deps"];
+const ASIDE_ORDER = ["settings", "jvm", "loggers", "spring", "quarkus", "bootui", "deps"];
 const ASIDE_REASON = {
-  metrics:
-    "Live JVM metrics need a running app that exposes metrics — Spring Boot Actuator/BootUI or Quarkus Micrometer. Click to learn more.",
+  jvm: "Live JVM metrics need a running app that exposes metrics — Spring Boot Actuator/BootUI or Quarkus Micrometer. Click to learn more.",
   loggers:
     "Live log levels need a running Spring Boot app (Actuator /loggers) or a Quarkus app with the logging-manager extension. Click to learn more.",
   spring:
     "The Spring Boot tab needs a Spring Boot module — version advisor and DevTools live reload. Click to learn more.",
-  scans: "The BootUI panel needs a running BootUI app — Run a module with the BootUI starter. Click to learn more.",
+  bootui: "The BootUI panel needs a running BootUI app — Run a module with the BootUI starter. Click to learn more.",
   quarkus:
     "The Quarkus panel needs a Quarkus module — open a Quarkus project to register its Agent MCP server with Copilot. Click to learn more.",
 };
-// metrics / loggers / scans are each gated on the running app exposing the right
-// capability (see updateAsideAvailability callers); the BootUI (scans) tab is
+// jvm / loggers / bootui are each gated on the running app exposing the right
+// capability (see updateAsideAvailability callers); the BootUI (bootui) tab is
 // available only while a BootUI app is actually up, exactly like the other two.
 // quarkus and spring are gated on the project (a Quarkus / Spring Boot module),
 // not the running app, so they come from caps rather than the metrics snapshot.
 // Each source updates only its own keys, so availabilities are merged rather than
 // replaced wholesale.
-const asideAvail = { metrics: false, loggers: false, scans: false, spring: false, quarkus: false };
+const asideAvail = { jvm: false, loggers: false, bootui: false, spring: false, quarkus: false };
 const asideTabsEl = document.querySelector(".aside-tabs");
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 // Skip the open animation: the first layout (and the test environment) should snap
@@ -1342,9 +1344,9 @@ function renderMetrics(m) {
   // reachable, so refresh the bar's availability on every snapshot.
   const tier = nowUp ? m.metricsTier || "process" : null;
   updateAsideAvailability({
-    metrics: nowUp && tier !== "process",
+    jvm: nowUp && tier !== "process",
     loggers: nowUp && (tier === "bootui" || tier === "actuator" || tier === "quarkus"),
-    scans: nowUp && tier === "bootui",
+    bootui: nowUp && tier === "bootui",
   });
   if (nowUp !== appRunning) {
     appRunning = nowUp;

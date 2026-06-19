@@ -407,7 +407,7 @@
       </div>
       <aside id="aside">
         <div class="aside-tabs">
-          <button class="atab" data-atab="metrics" title="Live JVM metrics of the running app">
+          <button class="atab" data-atab="jvm" title="Live JVM metrics of the running app">
             <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
               <path
                 d="M8 4a.5.5 0 0 1 .5.5V6a.5.5 0 0 1-1 0V4.5A.5.5 0 0 1 8 4M3.732 5.732a.5.5 0 0 1 .707 0l.915.914a.5.5 0 1 1-.708.708l-.914-.915a.5.5 0 0 1 0-.707M2 10a.5.5 0 0 1 .5-.5h1.586a.5.5 0 0 1 0 1H2.5A.5.5 0 0 1 2 10m9.5 0a.5.5 0 0 1 .5-.5H14a.5.5 0 0 1 0 1h-2a.5.5 0 0 1-.5-.5m.754-4.246a.39.39 0 0 0-.527-.02L7.547 9.31a.91.91 0 1 0 1.302 1.258l3.434-4.297a.39.39 0 0 0-.029-.518z"
@@ -443,7 +443,7 @@
           </button>
           <button
             class="atab"
-            data-atab="scans"
+            data-atab="bootui"
             title="BootUI: add it to your project, run advisor scans against the live app, and bridge its MCP server to Copilot"
           >
             <!-- BootUI brand mark (the "hot cup"), drawn monochrome via
@@ -506,7 +506,7 @@
         </div>
 
         <div class="aside-body">
-          <div id="atab-metrics" class="apane">
+          <div id="atab-jvm" class="apane">
             <h2>Live JVM metrics<span id="metrics-src" class="src" hidden></span></h2>
             <div id="metrics">
               <p class="muted">Application isn&rsquo;t running or doesn&rsquo;t expose metrics.</p>
@@ -622,7 +622,7 @@
             </div>
           </div>
 
-          <div id="atab-scans" class="apane">
+          <div id="atab-bootui" class="apane">
             <h2>BootUI Spring Boot Starter<span id="scans-src" class="src bootui" hidden>live</span></h2>
             <p class="hint" id="bootui-configured" hidden>
               BootUI is configured for this module — its advisor scans and richer live metrics are available.

@@ -359,22 +359,22 @@ test("the Spring and Quarkus tabs explain why they're inactive", () => {
 });
 
 test("the Settings tab is pinned to the top of the aside bar", () => {
-  win.updateAsideAvailability({ metrics: true, loggers: false, scans: false });
+  win.updateAsideAvailability({ jvm: true, loggers: false, bootui: false });
   const order = (name) => Number(win.document.querySelector(`.atab[data-atab="${name}"]`).style.order);
   // Available group sorts below the separator (order 50); within it Settings is
   // first (rank 0). Unavailable panels are offset by 100 so they sink to the bottom.
   assert.equal(order("settings"), 0, "Settings is pinned to the top of the bar");
-  assert.ok(order("metrics") > order("settings"), "an available panel sits below Settings");
-  assert.ok(order("scans") > 100, "an unavailable panel sinks below the separator");
+  assert.ok(order("jvm") > order("settings"), "an available panel sits below Settings");
+  assert.ok(order("bootui") > 100, "an unavailable panel sinks below the separator");
 });
 
 test("the aside bar keeps its canonical order in both the available and unavailable groups", () => {
   // Make every gated tab available so the whole bar sits in the available group,
   // then assert the canonical sequence the user expects:
   // Settings, Live JVM, Loggers, Spring, Quarkus, BootUI, Upgrades.
-  win.updateAsideAvailability({ metrics: true, loggers: true, scans: true, spring: true, quarkus: true });
+  win.updateAsideAvailability({ jvm: true, loggers: true, bootui: true, spring: true, quarkus: true });
   const order = (name) => Number(win.document.querySelector(`.atab[data-atab="${name}"]`).style.order);
-  const canonical = ["settings", "metrics", "loggers", "spring", "quarkus", "scans", "deps"];
+  const canonical = ["settings", "jvm", "loggers", "spring", "quarkus", "bootui", "deps"];
   for (let i = 1; i < canonical.length; i++) {
     assert.ok(
       order(canonical[i]) > order(canonical[i - 1]),
@@ -385,10 +385,10 @@ test("the aside bar keeps its canonical order in both the available and unavaila
   // Grey out the runtime tabs: they drop into the unavailable group (below the
   // separator) but keep the same relative order among themselves, while the
   // always-on Settings + Upgrades stay on top.
-  win.updateAsideAvailability({ metrics: false, loggers: false, scans: false, spring: false, quarkus: false });
+  win.updateAsideAvailability({ jvm: false, loggers: false, bootui: false, spring: false, quarkus: false });
   assert.equal(order("settings"), 0, "Settings still leads the available group");
   assert.ok(order("deps") < 100 && order("deps") > 0, "Upgrades stays available, just after Settings");
-  const unavailable = ["metrics", "loggers", "spring", "quarkus", "scans"];
+  const unavailable = ["jvm", "loggers", "spring", "quarkus", "bootui"];
   for (const name of unavailable) assert.ok(order(name) > 100, `${name} sinks below the separator`);
   for (let i = 1; i < unavailable.length; i++) {
     assert.ok(
@@ -638,10 +638,10 @@ test("a failed build shows the Fix button and replays the repaint pop", () => {
 test("the Spring Boot tab and its pane are present in the rail", () => {
   assert.ok(win.document.querySelector('.atab[data-atab="spring"]'), "Spring Boot rail button exists");
   assert.ok(win.document.getElementById("atab-spring"), "Spring Boot pane exists");
-  // It sits between Loggers and BootUI (scans).
+  // It sits between Loggers and BootUI (bootui).
   const order = [...win.document.querySelectorAll(".atab[data-atab]")].map((b) => b.dataset.atab);
   assert.ok(order.indexOf("spring") > order.indexOf("loggers"), "spring after loggers");
-  assert.ok(order.indexOf("spring") < order.indexOf("scans"), "spring before BootUI");
+  assert.ok(order.indexOf("spring") < order.indexOf("bootui"), "spring before BootUI");
 });
 
 test("renderSpringAdvisor reflects version status and gates the upgrade button", () => {
