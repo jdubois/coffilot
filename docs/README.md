@@ -34,8 +34,6 @@ footer: Apache-2.0 Licensed | Coffilot
 | Install the extension and open the console      | [Get started](GETTING-STARTED.md) |
 | Explore every lane and panel                    | [Features](FEATURES.md)           |
 | See how Coffilot fits with BootUI and Dr JSkill | [Ecosystem](WORKS-WITH.md)        |
-| Set up a development environment and contribute | [Contributing](CONTRIBUTING.md)   |
-| Understand the loopback-only safety model       | [Security](SECURITY.md)           |
 
 ## How Coffilot works
 

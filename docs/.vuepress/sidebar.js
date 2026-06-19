@@ -5,7 +5,7 @@ import { toDocLink } from "./doc-links.js";
 
 const docsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const hiddenDocs = ["README.md"];
-const coreDocs = ["GETTING-STARTED.md", "FEATURES.md", "WORKS-WITH.md", "CONTRIBUTING.md", "SECURITY.md"];
+const coreDocs = ["GETTING-STARTED.md", "FEATURES.md", "WORKS-WITH.md"];
 
 export function createDocsSidebar() {
   const markdownFiles = fs

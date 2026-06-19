@@ -75,4 +75,3 @@ The agent can drive the same flow with the `build_app`, `run_tests`, `run_affect
 
 - Read the full [Features](FEATURES.md) tour.
 - See how Coffilot pairs with BootUI and Dr JSkill in the [Ecosystem](WORKS-WITH.md) page.
-- Review the loopback-only [Security](SECURITY.md) model before pointing it at a project.
