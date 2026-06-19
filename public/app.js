@@ -486,11 +486,12 @@ syncAsideMode();
 // shuffle relative to one another. Clicking a greyed tab still opens it so its
 // in-panel text explains what's missing.
 const ASIDE_ALWAYS = new Set(["settings", "deps"]);
-// Canonical left-to-right order, applied within both the available and the
-// unavailable group. Settings always leads the available group (it's never
-// unavailable); Upgrades (deps) is always available and trails the runtime tabs;
-// "quarkus" takes the trailing slot for the Quarkus Agent MCP tab.
-const ASIDE_ORDER = ["settings", "metrics", "loggers", "spring", "scans", "deps", "quarkus"];
+// Canonical order, applied within both the available and the unavailable group so
+// the tabs never shuffle relative to one another. Settings always leads (it's
+// never unavailable); Quarkus precedes BootUI and Upgrades (deps) trails. The same
+// sequence is used whether a tab is active or greyed — only the group it sits in
+// changes, with unavailable tabs pushed to the bottom.
+const ASIDE_ORDER = ["settings", "metrics", "loggers", "spring", "quarkus", "scans", "deps"];
 const ASIDE_REASON = {
   metrics:
     "Live JVM metrics need a running app that exposes metrics — Spring Boot Actuator/BootUI or Quarkus Micrometer. Click to learn more.",
@@ -510,27 +511,77 @@ const ASIDE_REASON = {
 // Each source updates only its own keys, so availabilities are merged rather than
 // replaced wholesale.
 const asideAvail = { metrics: false, loggers: false, scans: false, spring: false, quarkus: false };
+const asideTabsEl = document.querySelector(".aside-tabs");
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+// Skip the open animation: the first layout (and the test environment) should snap
+// into place; only later availability changes glide.
+let asideOrderApplied = false;
+// The flex `order` for a tab: the available group (0+) sorts before the separator
+// (order 50), the unavailable group (100+) sinks below it. Within each group the
+// canonical ASIDE_ORDER index keeps the sequence fixed.
+function computeAsideOrder(name, ok) {
+  const rank = ASIDE_ORDER.indexOf(name);
+  return (ok ? 0 : 100) + (rank === -1 ? ASIDE_ORDER.length : rank);
+}
+// FLIP: flex `order` changes can't be CSS-animated, so when a tab crosses between
+// the available and unavailable group we measure its old slot, let it jump to the
+// new one, then translate it back and transition the translate away so it appears
+// to glide. `first` holds the pre-change rects in `tabs` order.
+function flipAsideTabs(tabs, first) {
+  const movers = [];
+  tabs.forEach((btn, i) => {
+    const last = btn.getBoundingClientRect();
+    const dx = first[i].left - last.left;
+    const dy = first[i].top - last.top;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+    btn.style.transition = "none";
+    btn.style.transform = `translate(${dx}px, ${dy}px)`;
+    movers.push(btn);
+  });
+  if (!movers.length) return;
+  // Commit the inverted positions, then release them so each tab animates to its
+  // real slot (the forced reflow matches the pattern used elsewhere in this file).
+  if (asideTabsEl) void asideTabsEl.offsetWidth;
+  movers.forEach((btn) => {
+    btn.style.transition = "transform 200ms var(--ease-out)";
+    btn.style.transform = "";
+    const done = (e) => {
+      if (e.propertyName !== "transform") return;
+      btn.style.transition = "";
+      btn.removeEventListener("transitionend", done);
+    };
+    btn.addEventListener("transitionend", done);
+  });
+}
 function updateAsideAvailability(avail) {
   if (avail) Object.assign(asideAvail, avail);
-  let anyUnavailable = false;
-  document.querySelectorAll(".atab").forEach((btn) => {
+  const tabs = Array.from(document.querySelectorAll(".atab"));
+  const plan = tabs.map((btn) => {
     const name = btn.dataset.atab;
     const ok = ASIDE_ALWAYS.has(name) || !!asideAvail[name];
+    return { btn, name, ok, order: String(computeAsideOrder(name, ok)) };
+  });
+  // Only measure/animate when a tab actually moves group, and never on the first
+  // layout or when the user prefers reduced motion. Keeping the hot path (repeated
+  // metrics pushes with no change) free of layout reads avoids thrash.
+  const animate = asideOrderApplied && !reduceMotion.matches && plan.some((p) => p.btn.style.order !== p.order);
+  const first = animate ? tabs.map((b) => b.getBoundingClientRect()) : null;
+
+  let anyUnavailable = false;
+  plan.forEach(({ btn, name, ok, order }) => {
     if (!ok) anyUnavailable = true;
     btn.classList.toggle("unavailable", !ok);
     btn.setAttribute("aria-disabled", ok ? "false" : "true");
-    // Available group sorts before the unavailable group; the canonical index
-    // fixes the order within each group regardless of DOM order. The separator
-    // (.atab-sep, order 50) sits between the two ranges. Settings is first in
-    // ASIDE_ORDER, so it stays pinned to the top of the bar.
-    const rank = ASIDE_ORDER.indexOf(name);
-    btn.style.order = String((ok ? 0 : 100) + (rank === -1 ? ASIDE_ORDER.length : rank));
+    btn.style.order = order;
     if (!btn.dataset.titleAvail) btn.dataset.titleAvail = btn.getAttribute("title") || "";
     btn.title = ok ? btn.dataset.titleAvail : ASIDE_REASON[name] || btn.dataset.titleAvail;
   });
   // The divider only makes sense when there's actually a disabled group below it.
   const sep = document.querySelector(".atab-sep");
   if (sep) sep.hidden = !anyUnavailable;
+
+  if (first) flipAsideTabs(tabs, first);
+  asideOrderApplied = true;
 }
 // Nothing is reachable until the first metrics snapshot lands, so start with only
 // Settings enabled (renderMetrics refines this on every push).

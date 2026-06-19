@@ -151,6 +151,36 @@ test("the Settings tab is pinned to the top of the aside bar", () => {
   assert.ok(order("scans") > 100, "an unavailable panel sinks below the separator");
 });
 
+test("the aside bar keeps its canonical order in both the available and unavailable groups", () => {
+  // Make every gated tab available so the whole bar sits in the available group,
+  // then assert the canonical sequence the user expects:
+  // Settings, Live JVM, Loggers, Spring, Quarkus, BootUI, Upgrades.
+  win.updateAsideAvailability({ metrics: true, loggers: true, scans: true, spring: true, quarkus: true });
+  const order = (name) => Number(win.document.querySelector(`.atab[data-atab="${name}"]`).style.order);
+  const canonical = ["settings", "metrics", "loggers", "spring", "quarkus", "scans", "deps"];
+  for (let i = 1; i < canonical.length; i++) {
+    assert.ok(
+      order(canonical[i]) > order(canonical[i - 1]),
+      `${canonical[i]} sorts after ${canonical[i - 1]} when available`,
+    );
+  }
+
+  // Grey out the runtime tabs: they drop into the unavailable group (below the
+  // separator) but keep the same relative order among themselves, while the
+  // always-on Settings + Upgrades stay on top.
+  win.updateAsideAvailability({ metrics: false, loggers: false, scans: false, spring: false, quarkus: false });
+  assert.equal(order("settings"), 0, "Settings still leads the available group");
+  assert.ok(order("deps") < 100 && order("deps") > 0, "Upgrades stays available, just after Settings");
+  const unavailable = ["metrics", "loggers", "spring", "quarkus", "scans"];
+  for (const name of unavailable) assert.ok(order(name) > 100, `${name} sinks below the separator`);
+  for (let i = 1; i < unavailable.length; i++) {
+    assert.ok(
+      order(unavailable[i]) > order(unavailable[i - 1]),
+      `${unavailable[i]} keeps its canonical order after ${unavailable[i - 1]} when unavailable`,
+    );
+  }
+});
+
 test("renderDeps renders an outdated-library list", () => {
   assert.equal(typeof win.renderDeps, "function", "renderDeps should be a global");
   // A bad payload shows an error, not a throw.
