@@ -1527,6 +1527,7 @@ export function pomCaps(xml, name) {
     quarkus,
     actuator: xml.includes("spring-boot-starter-actuator"),
     devtools: xml.includes("spring-boot-devtools"),
+    quarkusMetrics: /quarkus-micrometer/.test(xml),
     bootui: /bootui-spring-boot-starter|julien-dubois\.bootui|jdubois\.bootui/.test(xml),
     mainClass: pomMainClass(xml),
   };
@@ -1570,6 +1571,7 @@ export function gradleCaps(text, name) {
     quarkus,
     actuator: text.includes("spring-boot-starter-actuator"),
     devtools: text.includes("spring-boot-devtools"),
+    quarkusMetrics: /quarkus-micrometer/.test(text),
     bootui: /bootui-spring-boot-starter|julien-dubois\.bootui|jdubois\.bootui/.test(text),
     application: gradleHasApplicationPlugin(text),
     mainClass: gradleMainClass(text),
@@ -1940,6 +1942,7 @@ function capabilitiesSnapshot() {
     runnable: mods.some((m) => m.runnable),
     actuator: mods.some((m) => m.actuator),
     devtools: mods.some((m) => m.devtools),
+    quarkusMetrics: mods.some((m) => m.quarkusMetrics),
     bootui: mods.some((m) => m.bootui),
     quarkusAgentMcp: mods.some((m) => m.quarkus) ? detectQuarkusAgentMcp() : { available: false, runner: null },
   };
@@ -6553,6 +6556,41 @@ function buildFixPrompt(kind, extra = {}) {
           "- Use the latest released version of `io.quarkiverse.loggingmanager:quarkus-logging-manager` from Maven Central; pin a concrete version rather than a range (replace `VERSION`).",
         ].join("\n"),
         "After editing, tell me to run the app again (e.g. `./mvnw quarkus:dev`); the Loggers tab then lists every logger and lets you change levels live.",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
+    case "install-quarkus-metrics": {
+      const moduleName = extra.module || "";
+      const expose =
+        "By default Quarkus serves Prometheus metrics at `/q/metrics`; the canvas reads that endpoint, so no extra configuration is needed once the extension is present.";
+      if (buildTool === "gradle") {
+        const { rel, kts } = gradleModuleBuildFile(moduleName);
+        const dep = kts
+          ? `implementation("io.quarkus:quarkus-micrometer-registry-prometheus")`
+          : `implementation 'io.quarkus:quarkus-micrometer-registry-prometheus'`;
+        return [
+          "This is a Quarkus application that doesn't expose JVM metrics, so the canvas can't read live heap, threads and uptime. Add the Quarkus Micrometer Prometheus extension, which serves `/q/metrics`.",
+          `Edit \`${rel}\` and add the extension inside \`dependencies { }\`:`,
+          codeBlock(`dependencies {\n  ${dep}\n}`, kts ? "kotlin" : "groovy"),
+          "   Omit the version so it inherits from the Quarkus platform BOM. Don't duplicate the line if it's already present.",
+          expose,
+          "After editing, tell me to run the app again (e.g. `./gradlew quarkusDev`); the Live JVM tab then shows heap, threads and health.",
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+      }
+      const pomRel = moduleName ? `${moduleName}/pom.xml` : "pom.xml";
+      return [
+        "This is a Quarkus application that doesn't expose JVM metrics, so the canvas can't read live heap, threads and uptime. Add the Quarkus Micrometer Prometheus extension, which serves `/q/metrics`.",
+        `Edit \`${pomRel}\` and add this dependency inside the \`<dependencies>\` block (omit the \`<version>\` so it inherits from the Quarkus platform BOM):`,
+        codeBlock(
+          "<dependency>\n  <groupId>io.quarkus</groupId>\n  <artifactId>quarkus-micrometer-registry-prometheus</artifactId>\n</dependency>",
+          "xml",
+        ),
+        "   Don't duplicate it if it's already present.",
+        expose,
+        "After editing, tell me to run the app again (e.g. `./mvnw quarkus:dev`); the Live JVM tab then shows heap, threads and health.",
       ]
         .filter(Boolean)
         .join("\n\n");

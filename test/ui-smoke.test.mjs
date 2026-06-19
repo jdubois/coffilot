@@ -183,6 +183,68 @@ test("the Spring tab offers to add Actuator only when the module lacks it", () =
   assert.equal(status.hidden, true, "no Actuator status for a non-Spring module");
 });
 
+test("the Live JVM tab explains why it's inactive and offers the dependency fix", () => {
+  const metrics = () => win.document.getElementById("metrics").innerHTML;
+
+  // Spring Boot app without Actuator, not running: reason + Add Actuator with Copilot.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: false }],
+    capabilities: { springBoot: true, maven: true },
+  });
+  win.renderMetrics({ appUp: false });
+  let fix = win.document.getElementById("metrics-fix");
+  assert.ok(fix, "a Spring app without Actuator offers a metrics fix");
+  assert.match(fix.textContent, /Add Actuator with Copilot/);
+  assert.ok(fix.classList.contains("fix-copilot"), "the metrics fix uses the orange Copilot CTA color");
+
+  // Quarkus app without Micrometer, running but no endpoint (process tier).
+  win.applyEnv({
+    modules: [{ name: "svc", artifactId: "svc", runnable: true, quarkus: true, quarkusMetrics: false }],
+    capabilities: { quarkus: true, maven: true },
+  });
+  win.renderMetrics({ appUp: true, metricsTier: "process" });
+  fix = win.document.getElementById("metrics-fix");
+  assert.ok(fix, "a Quarkus app without Micrometer offers a metrics fix");
+  assert.match(fix.textContent, /Add Quarkus metrics with Copilot/);
+
+  // Plain Java app, down: a reason, but no dependency fix to offer.
+  win.applyEnv({
+    modules: [{ name: "lib", artifactId: "lib", runnable: true }],
+    capabilities: { maven: true },
+  });
+  win.renderMetrics(null);
+  assert.equal(win.document.getElementById("metrics-fix"), null, "no dependency fix for a plain Java app");
+  assert.match(metrics(), /isn.t running/i, "explains that the app isn't running");
+});
+
+test("the Spring and Quarkus tabs explain why they're inactive", () => {
+  const actuatorSection = win.document.getElementById("spring-actuator-section");
+  const devtoolsSection = win.document.getElementById("spring-devtools-section");
+  const quarkusEmpty = win.document.getElementById("quarkus-empty");
+
+  // Neither a Spring nor a Quarkus project: Spring sub-sections hidden with a
+  // reason, Quarkus tab shows its "not a Quarkus app" reason.
+  win.applyEnv({
+    modules: [{ name: "lib", artifactId: "lib", runnable: true }],
+    capabilities: { maven: true },
+    spring: { detected: false },
+  });
+  assert.equal(actuatorSection.hidden, true, "Actuator section hidden without a Spring module");
+  assert.equal(devtoolsSection.hidden, true, "DevTools section hidden without a Spring module");
+  assert.match(win.document.getElementById("spring-version").innerHTML, /isn.t a Spring Boot/i);
+  assert.equal(quarkusEmpty.hidden, false, "Quarkus reason shown when it isn't a Quarkus app");
+  assert.match(quarkusEmpty.textContent, /isn.t a Quarkus app/i);
+
+  // A Spring Boot project: the sub-sections come back.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true }],
+    capabilities: { springBoot: true, maven: true },
+    spring: { detected: true, version: "3.3.0", status: "current" },
+  });
+  assert.equal(actuatorSection.hidden, false, "Actuator section visible for a Spring project");
+  assert.equal(devtoolsSection.hidden, false, "DevTools section visible for a Spring project");
+});
+
 test("the Settings tab is pinned to the top of the aside bar", () => {
   win.updateAsideAvailability({ metrics: true, loggers: false, scans: false });
   const order = (name) => Number(win.document.querySelector(`.atab[data-atab="${name}"]`).style.order);

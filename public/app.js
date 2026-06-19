@@ -94,6 +94,8 @@ const devtoolsToggle = document.getElementById("devtools-toggle");
 const devtoolsInput = document.getElementById("in-devtools");
 const devtoolsActions = document.getElementById("devtools-actions");
 const springVersionEl = document.getElementById("spring-version");
+const springActuatorSection = document.getElementById("spring-actuator-section");
+const springDevtoolsSection = document.getElementById("spring-devtools-section");
 const btnUpgradeSpring = document.getElementById("btn-upgrade-spring");
 const btnReload = document.getElementById("btn-reload");
 const btnRestartApp = document.getElementById("btn-restart-app");
@@ -192,6 +194,7 @@ const quarkusMcpState = document.getElementById("quarkus-mcp-state");
 const quarkusMcpScansEl = document.getElementById("quarkus-mcp-scans");
 const quarkusMcpRegisterBtn = document.getElementById("quarkus-mcp-register");
 const quarkusEmptyEl = document.getElementById("quarkus-empty");
+const quarkusDescEl = document.getElementById("quarkus-desc");
 const scansSrc = document.getElementById("scans-src");
 const scansHint = document.getElementById("scans-hint");
 const scansListEl = document.getElementById("scans-list");
@@ -1207,6 +1210,67 @@ async function refreshVars() {
 // on every SSE push, so we replay the previous fill width and bump it to the new
 // value on the next frame, letting the CSS width transition animate smoothly.
 let lastHeapPct = 0;
+// The Live JVM tab is greyed when the app is down or exposes no metrics endpoint.
+// Its pane then explains why and, when the project is a Spring Boot app without
+// Actuator (or a Quarkus app without Micrometer), offers a one-click Copilot fix to
+// add the dependency. metricsInactiveKey skips rebuilding an identical view on every
+// SSE push (which would otherwise reset a just-pressed button); metricsFixAsked
+// keeps the "Asked Copilot ✓" state until the app comes up with real metrics.
+let metricsInactiveKey = null;
+let metricsFixAsked = false;
+// Render the Live JVM pane's "why it's inactive" message (+ optional dependency
+// fix) for a down or metrics-less app. appDown distinguishes "not running" from
+// "running but no endpoint". Mirrors renderLoggersUnavailable's fix-button pattern.
+function renderMetricsInactive(appDown) {
+  const mod =
+    moduleList.find((m) => m.name === moduleSelect.value) ||
+    moduleList.find((m) => m.runnable) ||
+    moduleList[0] ||
+    null;
+  const springNoActuator = !!caps.springBoot && !(mod && mod.actuator);
+  const quarkusNoMetrics = !!caps.quarkus && !(mod && mod.quarkusMetrics);
+  let msg;
+  let fix = null;
+  let fixLabel = null;
+  if (springNoActuator) {
+    msg = appDown
+      ? "The app isn\u2019t running, and this Spring Boot app doesn\u2019t include Spring Boot Actuator \u2014 the Live JVM tab needs it to read metrics."
+      : "This Spring Boot app doesn\u2019t expose Spring Boot Actuator, so the Live JVM tab can\u2019t read metrics.";
+    fix = "install-actuator";
+    fixLabel = "Add Actuator with Copilot";
+  } else if (quarkusNoMetrics) {
+    msg = appDown
+      ? "The app isn\u2019t running, and this Quarkus app doesn\u2019t include Micrometer metrics \u2014 the Live JVM tab needs them."
+      : "This Quarkus app doesn\u2019t expose Micrometer metrics, so the Live JVM tab can\u2019t read metrics.";
+    fix = "install-quarkus-metrics";
+    fixLabel = "Add Quarkus metrics with Copilot";
+  } else if (appDown) {
+    msg = "The app isn\u2019t running. Run a module to see its live JVM metrics.";
+  } else {
+    msg = "The running app doesn\u2019t expose a metrics endpoint, so there are no live JVM metrics to show.";
+  }
+  const key = (appDown ? "down" : "noendpoint") + ":" + (fix || "none") + ":" + (metricsFixAsked ? "asked" : "open");
+  if (key === metricsInactiveKey) return;
+  metricsInactiveKey = key;
+  let html = `<p class="muted">${msg}</p>`;
+  if (fix) {
+    html += metricsFixAsked
+      ? '<button class="fix fix-copilot tiny" style="margin-top: 0.4rem" disabled>Asked Copilot \u2713</button>'
+      : `<button id="metrics-fix" class="fix fix-copilot tiny" style="margin-top: 0.4rem">${fixLabel}</button>`;
+  }
+  metricsEl.innerHTML = html;
+  metricsHint.hidden = true;
+  const btn = fix && document.getElementById("metrics-fix");
+  if (btn) {
+    btn.onclick = () => {
+      metricsFixAsked = true;
+      metricsInactiveKey = null;
+      btn.disabled = true;
+      btn.textContent = "Asked Copilot \u2713";
+      post("/api/fix", { kind: fix, module: moduleSelect.value });
+    };
+  }
+}
 function renderMetrics(m) {
   const nowUp = !!(m && m.appUp);
   // The metrics tier is the single source of truth for which tool panels are
@@ -1227,9 +1291,7 @@ function renderMetrics(m) {
     metricsSrc.hidden = true;
     renderMcp(null);
     renderScans(false);
-    metricsEl.innerHTML = '<p class="muted">Application isn\u2019t running or doesn\u2019t expose metrics.</p>';
-    metricsHint.innerHTML =
-      'To get metrics, add <strong>Spring Boot Actuator</strong> or <strong>Quarkus Micrometer/health</strong>. For even richer metrics with Spring Boot, add <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a>.';
+    renderMetricsInactive(true);
     return;
   }
   metricsSrc.hidden = false;
@@ -1239,14 +1301,17 @@ function renderMetrics(m) {
 
   if (tier === "process") {
     lastHeapPct = 0;
-    metricsEl.innerHTML =
-      '<p class="muted">App is running, but no <code>/bootui/api</code>, <code>/actuator</code> or <code>/q/metrics</code> endpoint answered, so live JVM metrics aren\u2019t available.</p>';
-    metricsHint.innerHTML =
-      "Add <code>spring-boot-starter-actuator</code> / BootUI (Spring) or <code>quarkus-micrometer-registry-prometheus</code> (Quarkus) to surface heap, threads and health here.";
     renderMcp(null);
     renderScans(false);
+    renderMetricsInactive(false);
     return;
   }
+
+  // Real metrics: the tab is active again, so clear the inactive-view guard and
+  // restore the contextual hint that the active tiers populate below.
+  metricsInactiveKey = null;
+  metricsFixAsked = false;
+  metricsHint.hidden = false;
 
   const o = m.overview || {};
   const heap = (m.memory && m.memory.heap) || {};
@@ -1664,6 +1729,7 @@ function renderQuarkusMcp() {
   updateAsideAvailability({ quarkus: isQuarkus });
   quarkusMcpPanel.hidden = !isQuarkus;
   quarkusEmptyEl.hidden = isQuarkus;
+  if (quarkusDescEl) quarkusDescEl.hidden = !isQuarkus;
   if (!isQuarkus) {
     quarkusMcpState.textContent = "";
     return;
@@ -1894,9 +1960,9 @@ function renderLoggers(data, force) {
     loggersSrc.hidden = true;
     loggersControls.hidden = true;
     loggersListEl.innerHTML =
-      '<p class="muted">Application isn\u2019t running or doesn\u2019t expose a runtime-logger endpoint.</p>' +
-      '<p class="hint">Live log levels need a running Spring Boot app (Actuator <code>/loggers</code>) or a Quarkus ' +
-      "app with the logging-manager extension. Click <strong>Run</strong> to start it.</p>";
+      '<p class="muted">The app isn\u2019t running.</p>' +
+      '<p class="hint">Run a Spring Boot app (Actuator <code>/loggers</code>) or a Quarkus app with the ' +
+      "logging-manager extension to change its log levels here live, no restart.</p>";
     loggersData = null;
     loggersFixAsked = false;
     loggersUnavailKey = null;
@@ -2316,6 +2382,13 @@ function updateDevSetup() {
   if (lblProfiles) lblProfiles.textContent = quarkus ? "Quarkus profile" : "Spring Boot profiles";
   profileItems = quarkus ? quarkusItems : springItems;
 
+  // The Spring Boot tab is greyed (inactive) when the project has no Spring Boot
+  // module at all; its Actuator/DevTools sections are meaningless then, so hide
+  // them and let renderSpringAdvisor show the "not a Spring Boot project" reason.
+  const springProject = !!(caps && caps.springBoot);
+  if (springActuatorSection) springActuatorSection.hidden = !springProject;
+  if (springDevtoolsSection) springDevtoolsSection.hidden = !springProject;
+
   // Activate-BootUI CTA: only available — shown and enabled — for a Spring Boot
   // module that doesn't depend on BootUI yet. Hidden for non-Spring apps and once
   // the module already has BootUI (since it's then active).
@@ -2380,7 +2453,7 @@ function renderSpringAdvisor(adv) {
   springAdvisor = adv || null;
   if (!springVersionEl) return;
   if (!adv || !adv.detected) {
-    springVersionEl.innerHTML = '<p class="muted">No Spring Boot module detected.</p>';
+    springVersionEl.innerHTML = '<p class="muted">This isn\u2019t a Spring Boot project.</p>';
     btnUpgradeSpring.hidden = true;
     return;
   }

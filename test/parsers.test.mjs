@@ -36,6 +36,8 @@ const {
   gradleDepConfigFilter,
   classifyVersionJump,
   isPrerelease,
+  pomCaps,
+  gradleCaps,
 } = await import("../extension.mjs");
 
 // ---------------------------------------------------------------------------
@@ -277,6 +279,22 @@ test("quarkusMetrics surfaces the SmallRye health checks breakdown", () => {
 test("quarkusMetrics defaults the health checks to an empty list", () => {
   const out = quarkusMetrics(null, { status: "UP" });
   assert.deepEqual(out.health, { status: "UP", checks: [] });
+});
+
+test("pomCaps / gradleCaps detect the Quarkus Micrometer metrics dependency", () => {
+  const withMetrics =
+    "<project><dependencies><dependency><groupId>io.quarkus</groupId>" +
+    "<artifactId>quarkus-micrometer-registry-prometheus</artifactId></dependency></dependencies></project>";
+  assert.equal(pomCaps(withMetrics, "app").quarkusMetrics, true, "Maven: micrometer registry detected");
+  assert.equal(pomCaps("<project/>", "app").quarkusMetrics, false, "Maven: absent when no micrometer dep");
+
+  const gradleWith = 'dependencies { implementation("io.quarkus:quarkus-micrometer-registry-prometheus") }';
+  assert.equal(gradleCaps(gradleWith, "app").quarkusMetrics, true, "Gradle: micrometer registry detected");
+  assert.equal(
+    gradleCaps("plugins { id 'java' }", "app").quarkusMetrics,
+    false,
+    "Gradle: absent when no micrometer dep",
+  );
 });
 
 test("normalizeQuarkusLoggers maps the listing to the shared shape (ROOT first)", () => {

@@ -541,62 +541,66 @@
               <button id="btn-upgrade-spring" class="fix tiny" hidden>Upgrade with Copilot</button>
             </div>
 
-            <h2 class="spring-h2">Actuator</h2>
-            <p class="hint" id="actuator-hint">
-              Spring Boot Actuator exposes runtime endpoints — the canvas reads live JVM metrics in the Live JVM tab and
-              changes log levels without a restart in the Loggers tab.
-            </p>
-            <!-- Confirmation that Actuator is on the classpath (mirrors the DevTools
+            <div id="spring-actuator-section">
+              <h2 class="spring-h2">Actuator</h2>
+              <p class="hint" id="actuator-hint">
+                Spring Boot Actuator exposes runtime endpoints — the canvas reads live JVM metrics in the Live JVM tab
+                and changes log levels without a restart in the Loggers tab.
+              </p>
+              <!-- Confirmation that Actuator is on the classpath (mirrors the DevTools
                toggle row: a status line once the dependency is present). -->
-            <div class="set-row" id="actuator-status" hidden>
-              <span class="muted">Spring Boot Actuator is on the classpath.</span>
-            </div>
-            <!-- Add Actuator: shown only for a Spring Boot module that doesn't depend
+              <div class="set-row" id="actuator-status" hidden>
+                <span class="muted">Spring Boot Actuator is on the classpath.</span>
+              </div>
+              <!-- Add Actuator: shown only for a Spring Boot module that doesn't depend
                on Actuator yet. -->
-            <div class="set-row set-proposals">
-              <button id="btn-add-actuator" class="fix fix-copilot tiny" hidden>Add Actuator with Copilot</button>
+              <div class="set-row set-proposals">
+                <button id="btn-add-actuator" class="fix fix-copilot tiny" hidden>Add Actuator with Copilot</button>
+              </div>
             </div>
 
-            <h2 class="spring-h2">DevTools</h2>
-            <p class="hint" id="devtools-hint">
-              Spring Boot DevTools recompiles on save and restarts the app in place — the canvas plays the IDE's
-              recompile role, so the dev loop works without an editor.
-            </p>
-            <!-- DevTools live-reload toggle (only meaningful once DevTools is on the
+            <div id="spring-devtools-section">
+              <h2 class="spring-h2">DevTools</h2>
+              <p class="hint" id="devtools-hint">
+                Spring Boot DevTools recompiles on save and restarts the app in place — the canvas plays the IDE's
+                recompile role, so the dev loop works without an editor.
+              </p>
+              <!-- DevTools live-reload toggle (only meaningful once DevTools is on the
                classpath). Moved here from Settings so the whole DevTools story lives
                in one Spring-only place. -->
-            <div class="set-row switch-row" id="set-devtools" hidden>
-              <label class="switch" id="devtools-toggle">
-                <input type="checkbox" id="in-devtools" />
-                <span class="track"><span class="thumb"></span></span>
-                <span class="switch-label">Enable live reload</span>
-              </label>
-              <span
-                class="info"
-                id="devtools-info"
-                tabindex="0"
-                data-tip="Watch the running module's sources and recompile on save so DevTools restarts the app in place."
-                >&#9432;</span
-              >
-            </div>
-            <!-- Manual dev-loop actions, enabled while the app is running. -->
-            <div class="spring-actions" id="devtools-actions" hidden>
-              <button
-                id="btn-reload"
-                class="fix tiny"
-                disabled
-                title="Recompile now so DevTools restarts the running app in place."
-              >
-                Live reload
-              </button>
-              <button id="btn-restart-app" class="fix tiny" disabled title="Stop and relaunch the running app.">
-                Restart app
-              </button>
-            </div>
-            <!-- Add DevTools (dev profile): shown only for a Spring Boot module that
+              <div class="set-row switch-row" id="set-devtools" hidden>
+                <label class="switch" id="devtools-toggle">
+                  <input type="checkbox" id="in-devtools" />
+                  <span class="track"><span class="thumb"></span></span>
+                  <span class="switch-label">Enable live reload</span>
+                </label>
+                <span
+                  class="info"
+                  id="devtools-info"
+                  tabindex="0"
+                  data-tip="Watch the running module's sources and recompile on save so DevTools restarts the app in place."
+                  >&#9432;</span
+                >
+              </div>
+              <!-- Manual dev-loop actions, enabled while the app is running. -->
+              <div class="spring-actions" id="devtools-actions" hidden>
+                <button
+                  id="btn-reload"
+                  class="fix tiny"
+                  disabled
+                  title="Recompile now so DevTools restarts the running app in place."
+                >
+                  Live reload
+                </button>
+                <button id="btn-restart-app" class="fix tiny" disabled title="Stop and relaunch the running app.">
+                  Restart app
+                </button>
+              </div>
+              <!-- Add DevTools (dev profile): shown only for a Spring Boot module that
                doesn't depend on DevTools yet. -->
-            <div class="set-row set-proposals">
-              <button id="btn-add-devtools" class="fix fix-copilot tiny" hidden>Add DevTools with Copilot</button>
+              <div class="set-row set-proposals">
+                <button id="btn-add-devtools" class="fix fix-copilot tiny" hidden>Add DevTools with Copilot</button>
+              </div>
             </div>
           </div>
 
@@ -653,6 +657,11 @@
 
           <div id="atab-quarkus" class="apane">
             <h2>Quarkus Agent MCP<span id="quarkus-mcp-state" class="mcp-state"></span></h2>
+            <!-- Inactive-tab reason: shown right after the title when the project
+               has no Quarkus module (the rail tab is greyed in that case). -->
+            <p class="hint" id="quarkus-empty" hidden>
+              This isn&rsquo;t a Quarkus app. Open a Quarkus project to register its Agent MCP server with Copilot.
+            </p>
             <p class="hint" id="quarkus-desc">
               Register the standalone
               <a href="https://github.com/quarkusio/quarkus-agent-mcp" target="_blank" rel="noopener"
@@ -675,9 +684,6 @@
               </div>
               <div id="quarkus-mcp-scans" class="scans"></div>
             </div>
-            <p class="hint" id="quarkus-empty" hidden>
-              No Quarkus module detected. Open a Quarkus project to register its Agent MCP server with Copilot.
-            </p>
           </div>
 
           <div id="atab-settings" class="apane active">
