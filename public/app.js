@@ -1353,7 +1353,7 @@ function renderMetrics(m) {
     lastHeapPct = 0;
     metricsSrc.hidden = true;
     renderMcp(null);
-    renderScans(false);
+    renderScans(false, true);
     renderMetricsInactive(true);
     return;
   }
@@ -1365,7 +1365,7 @@ function renderMetrics(m) {
   if (tier === "process") {
     lastHeapPct = 0;
     renderMcp(null);
-    renderScans(false);
+    renderScans(false, false);
     renderMetricsInactive(false);
     return;
   }
@@ -1425,12 +1425,12 @@ function renderMetrics(m) {
       ? "Metrics read from Quarkus Micrometer (<code>/q/metrics</code>) and SmallRye Health (<code>/q/health</code>)."
       : "Health read from Quarkus SmallRye Health (<code>/q/health</code>). Add <code>quarkus-micrometer-registry-prometheus</code> to surface heap, threads and uptime here.";
     renderMcp(null);
-    renderScans(false);
+    renderScans(false, false);
   } else {
     metricsHint.innerHTML =
       "Metrics normalized from Spring Boot <code>/actuator/**</code>. Add BootUI for advisor scans and richer detail.";
     renderMcp(null);
-    renderScans(false);
+    renderScans(false, false);
   }
 }
 
@@ -1520,12 +1520,28 @@ function renderScanPlaceholders() {
     ).join("");
 }
 
-function renderScans(available) {
+// Inactive Advisor-scans message, consistent with the Live JVM / Loggers panes:
+// a lead line (why the tab is greyed right now) then the BootUI dependency story.
+// Advisor scans are BootUI-only, so when BootUI is set up we just say so; otherwise
+// we point at the "Add BootUI with Copilot" CTA above (Spring) or explain the gap.
+function scansInactiveHtml(appDown) {
+  const mod = selectedRunModule();
+  const lead = `<p class="muted">${appDown ? "The app isn\u2019t running." : "The running app has no BootUI endpoint."}</p>`;
+  if (mod && mod.springBoot) {
+    if (mod.bootui) {
+      const next = appDown ? "run the app to use this tab" : "expose its endpoints and restart to use this tab";
+      return `${lead}<p class="muted ok">\u2713 BootUI is set up \u2014 ${next}.</p>`;
+    }
+    return `${lead}<p class="hint">Advisor scans need BootUI \u2014 add it above, then run the app.</p>`;
+  }
+  return `${lead}<p class="hint">Advisor scans need a <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a>-enabled Spring Boot app.</p>`;
+}
+
+function renderScans(available, appDown = true) {
   if (!available) {
     scansLoaded = false;
     scansSrc.hidden = true;
-    scansHint.innerHTML =
-      'Start a <a href="https://github.com/jdubois/boot-ui" target="_blank" rel="noopener">BootUI</a> app (dev profile) with <strong>Run</strong> to run its advisor scans against the live app.';
+    scansHint.innerHTML = scansInactiveHtml(appDown);
     renderScanPlaceholders();
     scansResultEl.innerHTML = "";
     markScanResults(false);

@@ -293,6 +293,28 @@ test("the Live JVM tab layers the Spring Actuator and BootUI offers", () => {
   assert.equal(win.document.getElementById("diag-fix-bootui"), null, "no BootUI offer when BootUI is present");
 });
 
+test("the Advisor scans tab shares the inactive BootUI story with Live JVM", () => {
+  const scansHint = () => win.document.getElementById("scans-hint").innerHTML;
+
+  // BootUI set up but the app is down: same two-part message as Live JVM/Loggers.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: true, bootui: true }],
+    capabilities: { springBoot: true, actuator: true, bootui: true, maven: true },
+  });
+  win.renderMetrics({ appUp: false });
+  assert.match(scansHint(), /isn.t running/i, "scans tab explains the app isn't running");
+  assert.match(scansHint(), /BootUI is set up/i, "scans tab confirms BootUI is set up");
+  assert.match(scansHint(), /run the app to use this tab/i, "scans tab tells the user to run the app");
+
+  // Spring app without BootUI: point at the Add BootUI CTA above instead.
+  win.applyEnv({
+    modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: true, bootui: false }],
+    capabilities: { springBoot: true, actuator: true, maven: true },
+  });
+  win.renderMetrics({ appUp: false });
+  assert.match(scansHint(), /need BootUI/i, "scans tab says advisor scans need BootUI when it's absent");
+});
+
 test("the Spring and Quarkus tabs explain why they're inactive", () => {
   const actuatorSection = win.document.getElementById("spring-actuator-section");
   const devtoolsSection = win.document.getElementById("spring-devtools-section");
