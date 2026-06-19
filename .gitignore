@@ -14,6 +14,11 @@ npm-debug.log*
 # Misc
 *.tmp
 
+# VuePress documentation site
+**/.vuepress/.cache/
+**/.vuepress/.temp/
+docs/.vuepress/dist/
+
 # Runtime state written by the extension when run from this clone
 # (e.g. via a ~/.copilot/extensions/coffilot symlink).
 artifacts/
