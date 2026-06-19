@@ -25,6 +25,12 @@ stays disabled until one is added.
 - **Parallel lanes** — Build / Test / Package share one build lane while Run is independent, so you
   can keep the app running while you re-test.
 
+![Coffilot Build panel](./images/coffilot-build.webp)
+
+![Coffilot Test panel](./images/coffilot-test.webp)
+
+![Coffilot Package panel](./images/coffilot-package.webp)
+
 ## Run and debug
 
 - **Run** — `spring-boot:run` (Maven) / `bootRun` (Gradle) for a Spring Boot module (+ Spring
@@ -42,6 +48,10 @@ stays disabled until one is added.
 - **Profiles** — the toolbar scans the project for available run profiles — **Spring Boot**
   profiles (`application-<profile>.*`) or **Quarkus** profiles — and, for Maven, the reactor's
   **Maven profiles**, offering each as an editable dropdown.
+
+![Coffilot Run panel](./images/coffilot-run.webp)
+
+![Coffilot Debug panel](./images/coffilot-debug.webp)
 
 ## Live observability
 

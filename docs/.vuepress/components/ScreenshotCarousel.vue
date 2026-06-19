@@ -1,10 +1,10 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import buildImage from "../../images/coffilot-build.png";
-import testImage from "../../images/coffilot-test.png";
-import packageImage from "../../images/coffilot-package.png";
-import runImage from "../../images/coffilot-run.png";
-import debugImage from "../../images/coffilot-debug.png";
+import buildImage from "../../images/coffilot-build.webp";
+import testImage from "../../images/coffilot-test.webp";
+import packageImage from "../../images/coffilot-package.webp";
+import runImage from "../../images/coffilot-run.webp";
+import debugImage from "../../images/coffilot-debug.webp";
 
 const slides = [
   {
