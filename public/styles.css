@@ -1048,7 +1048,7 @@ aside h2 {
 }
 /* Caret that rotates when the row is open. */
 .scan-finding > summary::before {
-  content: "\u203A";
+  content: "\203A";
   flex: 0 0 auto;
   color: var(--text-color-muted, #656d76);
   transition: transform var(--dur-fast, 0.12s) var(--ease-out, ease);
@@ -1193,7 +1193,7 @@ aside h2 {
   display: none;
 }
 .dep-item > summary::before {
-  content: "\u203A";
+  content: "\203A";
   flex: 0 0 auto;
   color: var(--text-color-muted, #656d76);
   transition: transform var(--dur-fast, 0.12s) var(--ease-out, ease);
