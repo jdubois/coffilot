@@ -2323,9 +2323,10 @@ function updateDevSetup() {
   const canAddBootui = spring && !hasBootui;
   btnAddBootui.hidden = !canAddBootui;
   btnAddBootui.disabled = !canAddBootui;
-  btnAddBootui.textContent = caps.gradle ? "Add BootUI (developmentOnly)" : "Add BootUI to dev profile";
-  btnAddBootui.title =
-    "Add the BootUI starter to this module's dev profile to unlock its console, richer metrics and advisor scans.";
+  btnAddBootui.textContent = "Add BootUI with Copilot";
+  btnAddBootui.title = caps.gradle
+    ? "Ask Copilot to add the BootUI starter to this module's developmentOnly configuration to unlock its console, richer metrics and advisor scans."
+    : "Ask Copilot to add the BootUI starter to this module's dev profile to unlock its console, richer metrics and advisor scans.";
 
   // Actuator section (Spring Boot tab): offer to add Actuator for a Spring Boot
   // module that doesn't depend on it yet (it backs both the Live JVM metrics and
@@ -2336,7 +2337,9 @@ function updateDevSetup() {
   btnAddActuator.hidden = !showAddActuator;
   if (showAddActuator) {
     btnAddActuator.disabled = false;
-    btnAddActuator.textContent = "Add Actuator";
+    btnAddActuator.textContent = "Add Actuator with Copilot";
+    btnAddActuator.title =
+      "Ask Copilot to add the Spring Boot Actuator starter and expose its endpoints so the Live JVM and Loggers tabs work.";
   }
 
   // DevTools section (Spring Boot tab): show the live-reload toggle + manual
@@ -2350,7 +2353,10 @@ function updateDevSetup() {
   btnAddDevtools.hidden = !showAddDevtools;
   if (showAddDevtools) {
     btnAddDevtools.disabled = false;
-    btnAddDevtools.textContent = caps.gradle ? "Add DevTools (developmentOnly)" : "Add DevTools to dev profile";
+    btnAddDevtools.textContent = "Add DevTools with Copilot";
+    btnAddDevtools.title = caps.gradle
+      ? "Ask Copilot to add Spring Boot DevTools to this module's developmentOnly configuration and enable live reload."
+      : "Ask Copilot to add Spring Boot DevTools to a dev-only Maven profile and enable live reload.";
   }
 
   // Keep the Spring Boot tab's availability in step with the build files (it's

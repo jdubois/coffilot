@@ -158,6 +158,13 @@ test("the Spring tab offers to add Actuator only when the module lacks it", () =
   });
   assert.equal(btn.hidden, false, "Add Actuator shown when the module lacks Actuator");
   assert.equal(status.hidden, true, "no 'on the classpath' status without Actuator");
+  assert.match(btn.textContent, /with Copilot$/, "Add Actuator label ends with 'with Copilot'");
+  assert.ok(btn.classList.contains("fix-copilot"), "Add Actuator uses the orange fix-copilot CTA color");
+  for (const id of ["btn-add-actuator", "btn-add-devtools", "btn-add-bootui"]) {
+    const el = win.document.getElementById(id);
+    assert.match(el.textContent.trim(), /with Copilot$/, `${id} label ends with 'with Copilot'`);
+    assert.ok(el.classList.contains("fix-copilot"), `${id} uses the orange fix-copilot CTA color`);
+  }
 
   // Spring Boot module with Actuator: button hidden, status shown.
   win.applyEnv({
