@@ -220,8 +220,8 @@ test("BootUI configured suppresses the Actuator part and confirms BootUI", () =>
   assert.equal(bootuiSpringHint.hidden, true, "the BootUI pitch hides once it's configured");
   assert.equal(addBootuiSpring.hidden, true, "no Add BootUI (Spring tab) once configured");
   assert.equal(addBootui.hidden, true, "no Add BootUI (scans tab) once configured");
-  assert.equal(bootuiConfigured.hidden, false, "scans tab confirms BootUI is configured");
-  assert.match(bootuiConfigured.textContent, /BootUI is configured/i);
+  assert.equal(bootuiConfigured.hidden, false, "scans tab confirms BootUI is set up");
+  assert.match(bootuiConfigured.textContent, /BootUI is set up/i);
   assert.equal(bootuiDesc.hidden, true, "the add-the-starter description is hidden once BootUI is configured");
 
   // Neither Actuator nor BootUI: both parts show, each with its Add … with Copilot CTA.
@@ -308,17 +308,22 @@ test("the Live JVM tab layers the Spring Actuator and BootUI offers", () => {
   assert.equal(win.document.getElementById("diag-fix-bootui"), null, "no BootUI offer when BootUI is present");
 });
 
-test("the Advisor scans tab shares the inactive BootUI story with Live JVM", () => {
+test("the Advisor scans inactive body gives the next step without repeating the title (§7.6)", () => {
   const scansHint = () => win.document.getElementById("scans-hint").innerHTML;
 
-  // BootUI set up but the app is down: same two-part message as Live JVM/Loggers.
+  // BootUI set up but the app is down: the pane title already says "BootUI is set
+  // up", so the inactive body just gives the next step (no redundant confirmation).
   win.applyEnv({
     modules: [{ name: "app", artifactId: "app", runnable: true, springBoot: true, actuator: true, bootui: true }],
     capabilities: { springBoot: true, actuator: true, bootui: true, maven: true },
   });
   win.renderMetrics({ appUp: false });
   assert.match(scansHint(), /isn.t running/i, "scans tab explains the app isn't running");
-  assert.match(scansHint(), /BootUI is set up/i, "scans tab confirms BootUI is set up");
+  assert.doesNotMatch(
+    scansHint(),
+    /BootUI is set up/i,
+    "inactive body no longer repeats the title's set-up confirmation",
+  );
   assert.match(scansHint(), /run the app to use this tab/i, "scans tab tells the user to run the app");
 
   // Spring app without BootUI: point at the Add BootUI CTA above instead.
@@ -356,6 +361,28 @@ test("the Spring and Quarkus tabs explain why they're inactive", () => {
   });
   assert.equal(actuatorSection.hidden, false, "Actuator section visible for a Spring project");
   assert.equal(devtoolsSection.hidden, false, "DevTools section visible for a Spring project");
+});
+
+test("the Quarkus Register CTA sits above the MCP server panel (§7.5)", () => {
+  const desc = win.document.getElementById("quarkus-desc");
+  const btn = win.document.getElementById("quarkus-mcp-register");
+  const panel = win.document.getElementById("quarkus-mcp");
+  assert.ok(desc && btn && panel, "the Quarkus description, register button and MCP panel all exist");
+  // The CTA is a standalone sibling between the description and the MCP server
+  // panel — not nested inside the panel's "Quarkus Agent MCP server" switch-row.
+  assert.equal(
+    btn.parentElement,
+    panel.parentElement,
+    "the register button is a sibling of the MCP panel, not nested in it",
+  );
+  assert.ok(
+    desc.compareDocumentPosition(btn) & win.Node.DOCUMENT_POSITION_FOLLOWING,
+    "the register button comes after the description",
+  );
+  assert.ok(
+    btn.compareDocumentPosition(panel) & win.Node.DOCUMENT_POSITION_FOLLOWING,
+    "the register button comes above the Quarkus Agent MCP server panel",
+  );
 });
 
 test("the Settings tab is pinned to the top of the aside bar", () => {

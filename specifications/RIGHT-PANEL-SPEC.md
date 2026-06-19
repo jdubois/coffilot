@@ -203,18 +203,21 @@ Active when `caps.quarkus`. Inactive → `#quarkus-empty` shows the “not a Qua
 reason. When active: Quarkus MCP register panel + (in the Live JVM/Logs inactive bodies)
 the Micrometer / logging‑manager CTAs described above.
 
+The "Register with Copilot" button is just after Quarkus Agent MCP register panel, and
+above the "Quarkus Agent MCP server" subtitle.
+
 ### 7.6 BootUI / advisor scans (`bootui`)
 
 Active only at metrics tier `bootui` (app running). Pane shows scan controls
 (`Scan all` + per‑panel scans).
 
-- Title is followed by `#bootui-configured` (“BootUI is configured”, shown when BootUI is
+- Title is followed by `#bootui-configured` (“✓ BootUI is set up”, shown when BootUI is
   on the classpath) or `#bootui-desc` (the “add the starter” description, shown
   otherwise).
 - **Inactive** (`scansInactiveHtml(appDown)`), consistent with Live JVM/Logs:
   - Lead: app down → “The app isn’t running.” Otherwise → “The running app has no BootUI
     endpoint.”
-  - Spring Boot + BootUI → ✓ BootUI is set up — _{next}_.
+  - Spring Boot + BootUI → _{next}_.
   - Spring Boot, no BootUI → “Advisor scans need BootUI — add it above, then run the app.”
   - Not Spring Boot → “Advisor scans need a BootUI‑enabled Spring Boot app.”
   - Greyed placeholder scan buttons render so the pane isn’t empty.

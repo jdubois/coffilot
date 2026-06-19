@@ -624,8 +624,8 @@
 
           <div id="atab-bootui" class="apane">
             <h2>BootUI Spring Boot Starter<span id="scans-src" class="src bootui" hidden>live</span></h2>
-            <p class="hint" id="bootui-configured" hidden>
-              BootUI is configured for this module — its advisor scans and richer live metrics are available.
+            <p class="hint ok" id="bootui-configured" hidden>
+              &#10003; BootUI is set up for this module — its advisor scans and richer live metrics are available.
             </p>
             <p class="hint" id="bootui-desc">
               An embedded, local-only developer console for Spring Boot. Add the starter to a Spring Boot module to
@@ -692,6 +692,11 @@
               proxy and structured exceptions. Coffilot only detects and registers it &mdash; the server runs as a
               separate process. Needs JBang or Java 21+; docs search also needs Docker/Podman.
             </p>
+            <!-- Register CTA: the primary action for this tab, placed above the
+               "Quarkus Agent MCP server" subtitle to match the BootUI tab layout. -->
+            <button id="quarkus-mcp-register" class="fix fix-copilot tiny" style="margin-top: 0.4rem" hidden>
+              Register with Copilot
+            </button>
             <!-- Quarkus Agent MCP: register the standalone quarkus-agent MCP
                server with the Copilot CLI and trigger its capabilities. The
                server is external (JBang / java), so this panel doesn't depend on
@@ -699,9 +704,6 @@
             <div id="quarkus-mcp" class="mcp-settings">
               <div class="switch-row">
                 <span class="switch-label">Quarkus Agent MCP server</span>
-                <button id="quarkus-mcp-register" class="fix fix-copilot tiny" style="margin-left: auto" hidden>
-                  Register with Copilot
-                </button>
               </div>
               <div id="quarkus-mcp-scans" class="scans"></div>
             </div>

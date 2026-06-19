@@ -2354,7 +2354,8 @@ button.fix.cof-pop-in {
   color: var(--text-color-muted, #656d76);
   gap: 0.35rem;
 }
-.muted.ok {
+.muted.ok,
+.hint.ok {
   color: var(--true-color-green, #1a7f37);
 }
 .muted.err {

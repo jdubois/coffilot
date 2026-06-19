@@ -1526,15 +1526,16 @@ function renderScanPlaceholders() {
 
 // Inactive Advisor-scans message, consistent with the Live JVM / Loggers panes:
 // a lead line (why the tab is greyed right now) then the BootUI dependency story.
-// Advisor scans are BootUI-only, so when BootUI is set up we just say so; otherwise
-// we point at the "Add BootUI with Copilot" CTA above (Spring) or explain the gap.
+// When BootUI is set up the pane title already confirms it, so the inactive body
+// just gives the next step; otherwise we point at the "Add BootUI with Copilot"
+// CTA above (Spring) or explain the gap.
 function scansInactiveHtml(appDown) {
   const mod = selectedRunModule();
   const lead = `<p class="muted">${appDown ? "The app isn\u2019t running." : "The running app has no BootUI endpoint."}</p>`;
   if (mod && mod.springBoot) {
     if (mod.bootui) {
-      const next = appDown ? "run the app to use this tab" : "expose its endpoints and restart to use this tab";
-      return `${lead}<p class="muted ok">\u2713 BootUI is set up \u2014 ${next}.</p>`;
+      const next = appDown ? "Run the app to use this tab" : "Expose its endpoints and restart to use this tab";
+      return `${lead}<p class="muted">${next}.</p>`;
     }
     return `${lead}<p class="hint">Advisor scans need BootUI \u2014 add it above, then run the app.</p>`;
   }
