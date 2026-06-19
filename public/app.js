@@ -1984,7 +1984,11 @@ async function fixDep(i, btn) {
 }
 
 if (depsScanBtn) depsScanBtn.onclick = runDepsScan;
-if (depsDirectInput) depsDirectInput.onchange = () => renderDeps(depsState);
+if (depsDirectInput)
+  depsDirectInput.onchange = () => {
+    renderDeps(depsState);
+    saveSettings();
+  };
 
 // ---- Runtime log levels (Loggers aside tab) ----------------------------
 // Lists the running app's loggers from Spring Boot Actuator /loggers or the Quarkus
@@ -2656,6 +2660,23 @@ function applySettingsState(s) {
     // JDK doesn't leave the control on a phantom value.
     jdkSelect.value = [...jdkSelect.options].some((o) => o.value === want) ? want : "";
   }
+  // View/preference toggles: restore the saved checkbox state, then re-render the
+  // dependent view so the filter takes effect immediately.
+  if (dbgSuspendInput) dbgSuspendInput.checked = s.debugSuspend === true;
+  if (failuresOnlyInput) {
+    const want = s.testFailuresOnly === true;
+    if (failuresOnlyInput.checked !== want) {
+      failuresOnlyInput.checked = want;
+      rerenderTestFilter();
+    }
+  }
+  if (depsDirectInput) {
+    const want = s.depsDirectOnly === true;
+    if (depsDirectInput.checked !== want) {
+      depsDirectInput.checked = want;
+      if (depsState) renderDeps(depsState);
+    }
+  }
   applyAsideState(s);
 }
 
@@ -3204,6 +3225,9 @@ function saveSettings() {
     jdkHome: jdkSelect ? jdkSelect.value : "",
     asideTab: asideTabPref,
     asideOpen: asideOpenPref,
+    depsDirectOnly: !!(depsDirectInput && depsDirectInput.checked),
+    testFailuresOnly: !!(failuresOnlyInput && failuresOnlyInput.checked),
+    debugSuspend: !!(dbgSuspendInput && dbgSuspendInput.checked),
   });
 }
 warmInput.addEventListener("change", saveSettings);
@@ -3226,8 +3250,13 @@ if (flameDuration) flameDuration.addEventListener("change", saveSettings);
 function rerenderTestFilter() {
   if (lastTestReportData) renderTests(lastTestReportData, lastTestRenderOpts);
 }
-if (failuresOnlyInput) failuresOnlyInput.addEventListener("change", rerenderTestFilter);
+if (failuresOnlyInput)
+  failuresOnlyInput.addEventListener("change", () => {
+    rerenderTestFilter();
+    saveSettings();
+  });
 if (testSearchEl) testSearchEl.addEventListener("input", rerenderTestFilter);
+if (dbgSuspendInput) dbgSuspendInput.addEventListener("change", saveSettings);
 
 // "Full build" persists the affected-vs-full-suite preference for the Test button.
 fullbuildInput.addEventListener("change", () => {

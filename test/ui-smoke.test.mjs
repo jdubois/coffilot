@@ -484,6 +484,25 @@ test("renderDeps renders an outdated-library list", () => {
   assert.ok(html.includes("guava"), "expected the Gradle outdated dependency in the rendered list");
 });
 
+test("applySettingsState restores the view/preference toggles", () => {
+  assert.equal(typeof win.applySettingsState, "function", "applySettingsState should be a global");
+  const depsDirect = win.document.getElementById("deps-direct");
+  const failuresOnly = win.document.getElementById("in-failures-only");
+  const dbgSuspend = win.document.getElementById("in-dbg-suspend");
+
+  // Saved-on state restores each checkbox.
+  win.applySettingsState({ depsDirectOnly: true, testFailuresOnly: true, debugSuspend: true });
+  assert.equal(depsDirect.checked, true, "deps direct-only filter should restore checked");
+  assert.equal(failuresOnly.checked, true, "tests failures-only filter should restore checked");
+  assert.equal(dbgSuspend.checked, true, "debug suspend option should restore checked");
+
+  // Saved-off state clears them again.
+  win.applySettingsState({ depsDirectOnly: false, testFailuresOnly: false, debugSuspend: false });
+  assert.equal(depsDirect.checked, false, "deps direct-only filter should restore unchecked");
+  assert.equal(failuresOnly.checked, false, "tests failures-only filter should restore unchecked");
+  assert.equal(dbgSuspend.checked, false, "debug suspend option should restore unchecked");
+});
+
 test("renderTests renders a graphical report with a failure", () => {
   const report = {
     summary: { tests: 2, passed: 1, failures: 1, errors: 0, skipped: 0, timeSec: 0.2, files: 1 },

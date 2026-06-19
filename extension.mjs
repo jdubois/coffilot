@@ -1284,6 +1284,9 @@ const SETTINGS_KEYS = [
   "jdkHome",
   "asideTab",
   "asideOpen",
+  "depsDirectOnly",
+  "testFailuresOnly",
+  "debugSuspend",
 ];
 
 // Live-metrics polling cadence bounds (ms). Kept conservative so the UI stays
@@ -1341,6 +1344,12 @@ function defaultSettings() {
     // opened, then remembers whatever the user last did.
     asideTab: "settings",
     asideOpen: false,
+    // View/preference toggles restored across reloads/sessions: the Dependencies
+    // "Direct only" filter, the Tests "Failures only" filter, and the Debug
+    // "Suspend until debugger attaches" option. All off by default.
+    depsDirectOnly: false,
+    testFailuresOnly: false,
+    debugSuspend: false,
   };
 }
 
