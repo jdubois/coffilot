@@ -6910,29 +6910,55 @@ function gradleScopeLabel(config) {
 }
 
 /**
+ * Whether a Gradle configuration name represents a real user dependency classpath
+ * (compile / runtime / test / annotation-processor / development) rather than an
+ * internal plugin, metadata or publication configuration — e.g. the `kotlin*`
+ * compiler classpaths, `*DependenciesMetadata`, or `*Elements`. The `dependencies`
+ * report lists all of these, but only the former describe what the project actually
+ * declares, so direct/transitive classification is restricted to them. Pure
+ * (exported for tests). */
+export function gradleDepConfigFilter(name) {
+  const n = String(name || "");
+  if (/^kotlin/i.test(n)) return false; // kotlinCompilerPluginClasspath, kotlinBuildToolsApiClasspath, …
+  if (/(?:compile|runtime)classpath$/i.test(n)) return true; // compile/runtime/test (+ custom source set) classpaths
+  return /^(?:annotationProcessor|testAnnotationProcessor|developmentOnly|testAndDevelopmentOnly)$/.test(n);
+}
+
+/**
  * Parse `gradle dependencies` report output into a deduplicated list of nodes with
  * the same shape as parseDependencyTree. Gradle indents 5 characters per level
  * (`|    ` or five spaces), so depth 0 is a direct dependency and anything deeper
  * is transitive; `via` records the direct dependency that pulls a transitive one
  * in. Version coercion (`a:b:1 -> 2`) resolves to the right-hand side, and the
- * `(*)`/`(c)`/`(n)`/`FAILED` annotations are stripped. Pure (exported for tests).
+ * `(*)`/`(c)`/`(n)`/`FAILED` annotations are stripped. When `configFilter` is
+ * supplied, only rows under configurations it accepts are counted (used to skip
+ * internal plugin/metadata configs); without it every configuration is parsed.
+ * Pure (exported for tests).
  */
-export function parseGradleDependencyTree(out) {
+export function parseGradleDependencyTree(out, { configFilter = null } = {}) {
   const byKey = new Map();
   const stack = []; // stack[depth] = "group:artifact"
   let scope = "";
+  let included = !configFilter; // whether the current configuration's rows count
   for (const rawLine of String(out || "").split(/\r?\n/)) {
     const m = rawLine.match(/^([\s|]*)[+\\]--- (.+)$/);
     if (!m) {
       // Any non-connector line ends the current subtree: reset the ancestor stack
       // so the next configuration/project is depth-counted independently. A
       // configuration header ("runtimeClasspath - Runtime classpath …") also
-      // records the scope applied to its rows.
+      // records the scope applied to its rows and, with a configFilter, whether the
+      // configuration counts toward direct/transitive classification at all.
       stack.length = 0;
       const header = rawLine.match(/^([A-Za-z][A-Za-z0-9]*)\s+-\s+/);
-      if (header) scope = gradleScopeLabel(header[1]);
+      if (header) {
+        scope = gradleScopeLabel(header[1]);
+        included = configFilter ? !!configFilter(header[1]) : true;
+      } else if (configFilter) {
+        included = false;
+      }
       continue;
     }
+    if (!included) continue;
     const depth = Math.floor(m[1].length / 5);
     let coord = m[2].trim();
     coord = coord
@@ -7114,9 +7140,13 @@ export function mavenDepTreeArgs() {
 export function mavenDepUpdatesArgs() {
   return ["-ntp", "-B", `${VERSIONS_PLUGIN}:display-dependency-updates`];
 }
-/** Gradle: the built-in `dependencies` report for the runtime classpath. */
+/** Gradle: the built-in `dependencies` report. All configurations are requested
+ * (the task only accepts one `--configuration` at a time, so we resolve them all in
+ * a single pass) and `parseGradleDependencyTree` is given a filter that keeps only
+ * the real compile/runtime/test classpaths, so direct/transitive classification
+ * reflects what the project declares rather than internal plugin classpaths. */
 export function gradleDepTreeArgs() {
-  return ["dependencies", "--configuration", "runtimeClasspath", "-q"];
+  return ["dependencies", "-q"];
 }
 /** Gradle: the ben-manes `dependencyUpdates` task, injected via an init script.
  * `--no-parallel` is required on Gradle 9+ (the task fails under parallel project
@@ -7178,7 +7208,7 @@ async function runGradleDependencyScan() {
     writeFileSync(initScript, gradleDependencyUpdatesInitBody(outDir));
     const treeRes = await captureBuildTool(gradleDepTreeArgs());
     const updRes = await captureBuildTool(gradleDepUpdatesArgs(initScript));
-    const nodes = parseGradleDependencyTree(treeRes.out || "");
+    const nodes = parseGradleDependencyTree(treeRes.out || "", { configFilter: gradleDepConfigFilter });
     const updMap = new Map();
     try {
       for (const f of readdirSync(outDir)) {
@@ -7189,13 +7219,15 @@ async function runGradleDependencyScan() {
     } catch {
       /* no report file written */
     }
-    // The runtimeClasspath tree omits test/compileOnly deps; surface any outdated
-    // dependency missing from the tree as a direct one so nothing is dropped.
+    // Any outdated dependency missing from the project's compile/runtime/test
+    // classpaths comes from the buildscript or a plugin (a Gradle plugin marker, a
+    // Kotlin compiler artifact, …), not something the project declares directly, so
+    // surface it as transitive — "Direct only" then hides this plugin/build noise.
     const known = new Set(nodes.map((n) => n.key));
     for (const [key, upd] of updMap) {
       if (known.has(key)) continue;
       const [group, artifact] = key.split(":");
-      nodes.push({ key, group, artifact, version: upd.current, scope: "", depth: 0, direct: true, via: null });
+      nodes.push({ key, group, artifact, version: upd.current, scope: "", depth: 1, direct: false, via: null });
     }
     const updates = mergeDependencyUpdates(nodes, updMap);
     const error = !updMap.size && updRes.ok === false ? updRes.error || "Could not resolve dependency updates." : null;

@@ -33,6 +33,7 @@ const {
   mergeDependencyUpdates,
   parseGradleDependencyTree,
   parseGradleDependencyUpdates,
+  gradleDepConfigFilter,
   classifyVersionJump,
   isPrerelease,
 } = await import("../extension.mjs");
@@ -747,6 +748,66 @@ test("parseGradleDependencyTree resolves version coercion (a -> b)", () => {
   assert.equal(byKey["org.slf4j:slf4j-api"].version, "2.0.13");
   // A constraint-only line (no requested version) still resolves via the arrow.
   assert.equal(byKey["com.example:lib"].version, "3.1.0");
+});
+
+test("gradleDepConfigFilter keeps real dependency classpaths and drops internal configs", () => {
+  for (const ok of [
+    "compileClasspath",
+    "runtimeClasspath",
+    "testCompileClasspath",
+    "testRuntimeClasspath",
+    "productionRuntimeClasspath",
+    "integrationTestRuntimeClasspath",
+    "annotationProcessor",
+    "testAnnotationProcessor",
+    "developmentOnly",
+    "testAndDevelopmentOnly",
+  ]) {
+    assert.equal(gradleDepConfigFilter(ok), true, `${ok} should be a dependency classpath`);
+  }
+  for (const no of [
+    "kotlinCompilerPluginClasspathMain",
+    "kotlinBuildToolsApiClasspath",
+    "kotlinCompilerClasspath",
+    "apiElements",
+    "runtimeElements",
+    "mainSourceElements",
+    "implementationDependenciesMetadata",
+    "default",
+    "archives",
+  ]) {
+    assert.equal(gradleDepConfigFilter(no), false, `${no} should be excluded`);
+  }
+});
+
+test("parseGradleDependencyTree with a configFilter ignores internal plugin configs", () => {
+  // A real-world multi-config report: a plugin/compiler classpath that the user
+  // does not declare, plus the compile/test classpaths that they do.
+  const tree = [
+    "kotlinCompilerPluginClasspathMain - Kotlin compiler plugins for compilation",
+    "\\--- org.jetbrains.kotlin:kotlin-allopen-compiler-plugin-embeddable:2.2.0",
+    "",
+    "compileClasspath - Compile classpath for source set 'main'.",
+    "+--- com.example:app-lib:1.0",
+    "|    \\--- com.example:shared:1.0",
+    "",
+    "testRuntimeClasspath - Runtime classpath of source set 'test'.",
+    "\\--- org.junit.jupiter:junit-jupiter:5.10.0",
+    "     \\--- org.junit.jupiter:junit-jupiter-api:5.10.0",
+    "",
+  ].join("\n");
+  const nodes = parseGradleDependencyTree(tree, { configFilter: gradleDepConfigFilter });
+  const byKey = Object.fromEntries(nodes.map((n) => [n.key, n]));
+  // The compiler-plugin artifact lives only in a kotlin* config and is dropped.
+  assert.equal(byKey["org.jetbrains.kotlin:kotlin-allopen-compiler-plugin-embeddable"], undefined);
+  // Declared deps are direct; their transitive children are transitive.
+  assert.equal(byKey["com.example:app-lib"].direct, true);
+  assert.equal(byKey["com.example:shared"].direct, false);
+  assert.equal(byKey["org.junit.jupiter:junit-jupiter"].direct, true);
+  assert.equal(byKey["org.junit.jupiter:junit-jupiter-api"].direct, false);
+  // Without the filter every configuration is parsed, including the kotlin one.
+  const all = parseGradleDependencyTree(tree);
+  assert.ok(all.some((n) => n.key === "org.jetbrains.kotlin:kotlin-allopen-compiler-plugin-embeddable"));
 });
 
 test("parseGradleDependencyUpdates reads the ben-manes JSON outdated list", () => {

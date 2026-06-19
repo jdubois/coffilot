@@ -31,6 +31,7 @@ const {
   parseDependencyUpdates,
   parseGradleDependencyTree,
   parseGradleDependencyUpdates,
+  gradleDepConfigFilter,
   mergeDependencyUpdates,
   mavenDepTreeArgs,
   mavenDepUpdatesArgs,
@@ -261,7 +262,7 @@ async function scanOutdated(dir, tool) {
     assert.equal(tree.code, 0, `gradle dependencies failed (exit ${tree.code}):\n${tree.out.slice(-4000)}`);
     const upd = await runWrapper(dir, "gradle", gradleDepUpdatesArgs(initScript));
     assert.equal(upd.code, 0, `dependencyUpdates failed (exit ${upd.code}):\n${upd.out.slice(-4000)}`);
-    const nodes = parseGradleDependencyTree(tree.out);
+    const nodes = parseGradleDependencyTree(tree.out, { configFilter: gradleDepConfigFilter });
     const updMap = new Map();
     for (const f of readdirSync(outDir)) {
       if (!f.endsWith(".json")) continue;
