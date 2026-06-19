@@ -38,6 +38,8 @@ const {
   isPrerelease,
   pomCaps,
   gradleCaps,
+  looksLikeSmallryeHealth,
+  looksLikePrometheus,
 } = await import("../extension.mjs");
 
 // ---------------------------------------------------------------------------
@@ -279,6 +281,40 @@ test("quarkusMetrics surfaces the SmallRye health checks breakdown", () => {
 test("quarkusMetrics defaults the health checks to an empty list", () => {
   const out = quarkusMetrics(null, { status: "UP" });
   assert.deepEqual(out.health, { status: "UP", checks: [] });
+});
+
+// A secured Spring Boot app redirects /q/* to its login page; fetch follows the
+// redirect to a 200 HTML body. These guards keep that page out of the Quarkus tier.
+test("looksLikeSmallryeHealth accepts SmallRye Health but rejects login pages and Spring error JSON", () => {
+  assert.equal(looksLikeSmallryeHealth({ status: "UP", checks: [] }), true, "real SmallRye Health");
+  assert.equal(looksLikeSmallryeHealth({ status: "DOWN" }), true, "DOWN with no checks is still health");
+  assert.equal(looksLikeSmallryeHealth(null), false, "no body");
+  assert.equal(looksLikeSmallryeHealth("<html>login</html>"), false, "an HTML string isn't health JSON");
+  // Spring Boot's default error JSON carries a numeric status, not "UP"/"DOWN".
+  assert.equal(
+    looksLikeSmallryeHealth({ timestamp: "now", status: 401, error: "Unauthorized", path: "/q/health" }),
+    false,
+    "Spring's numeric-status error JSON is rejected",
+  );
+});
+
+test("looksLikePrometheus accepts a Micrometer scrape but rejects a login page", () => {
+  assert.equal(looksLikePrometheus(PROM), true, "a real Prometheus scrape with samples");
+  assert.equal(
+    looksLikePrometheus(
+      "# HELP jvm_threads_live_threads The current number of live threads\n# TYPE jvm_threads_live_threads gauge",
+    ),
+    true,
+    "HELP/TYPE comments alone are enough",
+  );
+  assert.equal(looksLikePrometheus(null), false, "no body");
+  assert.equal(
+    looksLikePrometheus(
+      '<!DOCTYPE html><html lang="en"><head><title>Please sign in</title></head><body>...</body></html>',
+    ),
+    false,
+    "a Spring Security login page is not Prometheus exposition",
+  );
 });
 
 test("pomCaps / gradleCaps detect the Quarkus Micrometer metrics dependency", () => {

@@ -5541,6 +5541,20 @@ async function actuatorMetrics(base) {
 // Micrometer output, so we normalize them into the same shape as the BootUI /
 // Actuator tiers.
 
+// A Spring Boot app behind Spring Security redirects unknown paths (including
+// /q/health and /q/metrics) to its login page, and fetch() follows the redirect
+// to a 200 HTML body. Validate the response shapes so that login page is never
+// mistaken for the Quarkus tier: SmallRye Health is JSON with a string `status`
+// (Spring's error JSON uses a numeric status, so it's rejected), and Micrometer's
+// exposition carries `# HELP`/`# TYPE` comments or at least one parseable sample.
+export function looksLikeSmallryeHealth(health) {
+  return !!health && typeof health === "object" && typeof health.status === "string";
+}
+
+export function looksLikePrometheus(text) {
+  return typeof text === "string" && (/^#\s*(HELP|TYPE)\s/m.test(text) || parsePrometheus(text).size > 0);
+}
+
 /**
  * Normalize SmallRye Health (/q/health) into { status, checks }, where each check
  * is a MicroProfile Health entry ({ name, status }) — e.g. the datasource, Kafka or
@@ -5623,8 +5637,12 @@ async function refreshMetrics() {
     return finishMetrics();
   }
 
-  // Tier 3 — Quarkus: SmallRye Health + Micrometer/Prometheus under /q/*.
-  const [qHealth, qMetrics] = await Promise.all([fetchJson(base, "/q/health"), fetchText(base, "/q/metrics")]);
+  // Tier 3 — Quarkus: SmallRye Health + Micrometer/Prometheus under /q/*. Only
+  // accept responses that actually look like SmallRye Health / Micrometer output,
+  // so a Spring Security login page served from /q/* isn't read as Quarkus.
+  const [qHealthRaw, qMetricsRaw] = await Promise.all([fetchJson(base, "/q/health"), fetchText(base, "/q/metrics")]);
+  const qHealth = looksLikeSmallryeHealth(qHealthRaw) ? qHealthRaw : null;
+  const qMetrics = looksLikePrometheus(qMetricsRaw) ? qMetricsRaw : null;
   if (qHealth || qMetrics) {
     lastMetrics = quarkusMetrics(qMetrics, qHealth);
     return finishMetrics();
