@@ -4,17 +4,17 @@ Coffilot is one of three projects by [Julien Dubois](https://www.julien-dubois.c
 single Java workflow — from scaffolding an application, to observing it from the inside, to driving
 its build and run lifecycle from Copilot. Each owns one colour in a shared **circle of color**:
 
-| Colour       | Project                                               | Role                                                                                        |
-| ------------ | ----------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| 🟢 **Green** | [BootUI](https://www.julien-dubois.com/boot-ui/)      | An in-app developer console served by the running Spring Boot app over `/bootui/`.          |
-| 🔵 **Blue**  | **Coffilot**                                          | A Copilot canvas extension that builds, tests, runs and debugs the app from the side panel. |
-| 🟡 **Gold**  | [Dr JSkill](https://www.julien-dubois.com/dr-jskill/) | Generates a Spring Boot application to start from.                                          |
+| Colour            | Project                                               | Role                                                                                        |
+| ----------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 🟢 **Green**      | [BootUI](https://www.julien-dubois.com/boot-ui/)      | An in-app developer console served by the running Spring Boot app over `/bootui/`.          |
+| 🔵 **Blue**       | **Coffilot**                                          | A Copilot canvas extension that builds, tests, runs and debugs the app from the side panel. |
+| 🟤 **Terracotta** | [Dr JSkill](https://www.julien-dubois.com/dr-jskill/) | Generates a Spring Boot application to start from.                                          |
 
 ## How they work together
 
 ```mermaid
 flowchart LR
-  A["🟡 Dr JSkill<br/>generates a Spring Boot app"] --> B["🟢 BootUI starter<br/>adds an in-app console at /bootui/"]
+  A["🟤 Dr JSkill<br/>generates a Spring Boot app"] --> B["🟢 BootUI starter<br/>adds an in-app console at /bootui/"]
   B --> C["🔵 Coffilot<br/>drives build / run / test / debug<br/>from the Copilot side panel"]
   C -. "reads /bootui/api/* for rich<br/>metrics + advisor scans" .-> B
 ```

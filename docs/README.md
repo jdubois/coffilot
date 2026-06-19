@@ -53,7 +53,7 @@ binds to `127.0.0.1`, and the `/api/fix` and `/api/scan` endpoints only fire whe
 
 Coffilot is one of three projects that share a workflow — and a "circle of color":
 **green = [BootUI](https://www.julien-dubois.com/boot-ui/)**,
-**blue = Coffilot**, **gold = [Dr JSkill](https://www.julien-dubois.com/dr-jskill/)**.
+**blue = Coffilot**, **terracotta = [Dr JSkill](https://www.julien-dubois.com/dr-jskill/)**.
 
 1. **Dr JSkill** generates a Spring Boot application.
 2. Add the **BootUI** starter for an in-app developer console exposed over `/bootui/`.
