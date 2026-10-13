@@ -2,11 +2,16 @@ import { nextTick, onMounted, onUnmounted, watch } from "vue";
 import { defineClientConfig, onContentUpdated, useRoute } from "vuepress/client";
 import "./styles/index.css";
 import ScreenshotCarousel from "./components/ScreenshotCarousel.vue";
+import CookieConsent from "./components/CookieConsent.vue";
+import CookieSettings from "./components/CookieSettings.vue";
+import { trackPageView } from "./analytics.js";
 
 export default defineClientConfig({
   enhance({ app }) {
     app.component("ScreenshotCarousel", ScreenshotCarousel);
+    app.component("CookieSettings", CookieSettings);
   },
+  rootComponents: [CookieConsent],
   setup() {
     const route = useRoute();
     let scheduleSidebarSync = () => {};
@@ -33,7 +38,14 @@ export default defineClientConfig({
     });
 
     onContentUpdated(syncAfterDomUpdate);
-    watch(() => route.fullPath, syncAfterDomUpdate);
+    watch(
+      () => route.fullPath,
+      () => {
+        syncAfterDomUpdate();
+        // Client-side navigation has no document load, so gtag.js never sees it.
+        void nextTick(() => trackPageView(window.location.pathname));
+      },
+    );
 
     onUnmounted(() => {
       cleanupSidebarSync();

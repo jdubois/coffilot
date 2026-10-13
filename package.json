@@ -25,9 +25,10 @@
   ],
   "scripts": {
     "check": "node --check extension.mjs",
-    "test": "node --test test/parsers.test.mjs test/ui-smoke.test.mjs test/integration-projects.test.mjs test/e2e-projects.test.mjs",
+    "test": "node --test test/parsers.test.mjs test/ui-smoke.test.mjs test/integration-projects.test.mjs test/e2e-projects.test.mjs docs/.vuepress/analytics.test.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "test:analytics": "node --test docs/.vuepress/analytics.test.mjs",
     "docs:dev": "vuepress dev docs --host 127.0.0.1 --port 8092",
     "docs:build": "vuepress build docs",
     "docs:preview": "VUEPRESS_BASE=/ npm run docs:build && serve docs/.vuepress/dist --listen 8092"
