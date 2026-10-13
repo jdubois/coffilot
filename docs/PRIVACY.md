@@ -25,9 +25,11 @@ documentation pages are actually read.
 - **Legal basis:** your consent, under Article 6(1)(a) GDPR and the ePrivacy Directive. You can withdraw it at any
   time using the controls below.
 
-Your answer to the banner is remembered in your browser's `localStorage` under `coffilot-analytics-consent`. That entry
+Your answer to the banner is remembered in your browser's `localStorage` under `jdubois-analytics-consent`. That entry
 is strictly necessary to honour your choice, is never sent anywhere, and is not used to identify you. If your browser
 refuses that storage, your answer is kept in memory for the current visit only.
+
+This choice is shared across all julien-dubois.com sites (including Coffilot, BootUI and the other projects hosted there): they use the same origin, so a decision made on one applies to all, and a change made in another tab takes effect immediately.
 
 ## Change your choice
 
