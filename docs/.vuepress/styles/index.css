@@ -965,3 +965,25 @@ html[data-theme="dark"] [vp-content] code {
   padding-top: 0;
   scroll-margin-top: calc(1rem + var(--header-offset));
 }
+
+.coffilot-copyright {
+  padding: 1.5rem 2rem;
+  border-top: 1px solid var(--coffilot-border);
+  color: var(--coffilot-text-muted);
+  font-size: 0.875rem;
+  text-align: center;
+}
+
+.coffilot-copyright p {
+  margin: 0;
+}
+
+.coffilot-copyright a {
+  color: var(--coffilot-green-dark);
+  font-weight: 600;
+}
+
+.coffilot-copyright--home {
+  max-width: var(--homepage-width);
+  margin: 0 auto;
+}
