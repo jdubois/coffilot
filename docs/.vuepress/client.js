@@ -2,6 +2,7 @@ import { nextTick, onMounted, onUnmounted, watch } from "vue";
 import { defineClientConfig, onContentUpdated, useRoute } from "vuepress/client";
 import "./styles/index.css";
 import ScreenshotCarousel from "./components/ScreenshotCarousel.vue";
+import Layout from "./components/Layout.vue";
 import CookieConsent from "./components/CookieConsent.vue";
 import CookieSettings from "./components/CookieSettings.vue";
 import { trackPageView } from "./analytics.js";
@@ -11,6 +12,7 @@ export default defineClientConfig({
     app.component("ScreenshotCarousel", ScreenshotCarousel);
     app.component("CookieSettings", CookieSettings);
   },
+  layouts: { Layout },
   rootComponents: [CookieConsent],
   setup() {
     const route = useRoute();
